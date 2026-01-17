@@ -1,0 +1,23 @@
+{
+  // Required
+  "scope": "environmental DNA/RNA papers for ecology and monitoring; exclude unrelated genomics or microbiome-only studies",
+  "model_path": "/path/to/model.gguf",
+
+  // Optional: llama.cpp CLI settings
+  "llama_bin": "/path/to/llama-cli",
+  "llama_args": "--ctx-size 4096 --threads 8",
+  "reuse_process": true,
+  "max_tokens": 256,
+  "temperature": 0.1,
+  "timeout": 300.0,
+
+  // Optional: downloaded files
+  "files_dir": "downloads",
+  "file_exts": [".pdf", ".txt"],
+  "file_path_col": "file_path",
+  "max_chars": 6000,
+
+  // Optional: relevance hints
+  "include_hint": "eDNA/eRNA sampling, detection, monitoring, metabarcoding, pathogen surveillance",
+  "exclude_hint": "microbiome-only, unrelated CRISPR tool development, pure genomics without environmental DNA"
+}
