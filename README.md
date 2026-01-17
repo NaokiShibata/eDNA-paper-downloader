@@ -5,28 +5,32 @@ eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして�
 - **PubMed**: `script/edna_literature_fetch.py`
   - NCBI Entrez (E-utilities) を利用
   - クエリ検索 + 期間指定 + ページング (全PMID回収)
-  - DOI重複が出た場合は **より新しい更新日** (revised/entrez/pub) を採用
-  - 出力に **公開日/登録日/受理日/改訂日**など (取得できる範囲で) を含める
+  - DOI重複が出た場合は **より新しい年/PMID** を採用
   - RUN HEADER付きログ出力 (実行者・コマンド・パラメータなど)
 
 - **bioRxiv/medRxiv**: `script/biorxiv_search.py`
   - 公式APIで期間指定取得
   - ローカルでキーワード/除外語フィルタ
-  - DOIごとに **最新版のみ (version最大) ** を採用 (デフォルト)
+  - DOIごとに **最新版のみ (version最大)** を採用 (デフォルト)
   - 逐次上書き出力 (途中で落ちても最新CSV/JSONが残る)
-  - 既存出力から **差分 (delta) ** を検出し `*.delta.csv/json` を保存 (デフォルト)
+  - 既存出力から **差分 (delta)** を検出し `*.delta.csv/json` を保存 (デフォルト)
   - DEBUGログでヒット内容 (doi/title/date/versionなど) を出力可能
+
+- **Crossref + Semantic Scholar**: `script/crossref_semantic_fetch.py`
+  - PubMed外の論文を拾う用途に便利
+  - DOI/タイトル+年で重複排除し、両ソースをマージ
+  - PubMed CSVを渡すと既存論文を除外可能
 
 ---
 
-## Requirements
+## 動作環境
 
 - Python 3.10+ (推奨: 3.11/3.12)
 - OS: Linux/macOS/Windows (WSL可)
 
 ---
 
-## Install
+## インストール
 
 ```bash
 python -m venv .venv
@@ -38,15 +42,15 @@ pip install "typer[all]" pandas requests tqdm biopython
 
 ---
 
-## Quick Start
+## クイックスタート
 
 ```bash
-# PubMed (minimal)
+# PubMed (最小例)
 python script/edna_literature_fetch.py \
   --email you@example.com \
   --out-dir results
 
-# bioRxiv (minimal)
+# bioRxiv (最小例)
 python script/biorxiv_search.py \
   --from-date 2024-01-01 \
   --to-date 2024-12-31 \
@@ -58,14 +62,13 @@ python script/biorxiv_search.py \
 
 ## PubMed: edna_literature_fetch.py
 
-### Help
+### ヘルプ
 
 ```bash
 python script/edna_literature_fetch.py --help
-python script/edna_literature_fetch.py fetch --help
 ```
 
-### Basic example
+### 基本例
 
 ```bash
 python script/edna_literature_fetch.py \
@@ -76,7 +79,7 @@ python script/edna_literature_fetch.py \
   --out-prefix pubmed_edna_2020plus
 ```
 
-### Exclude terms
+### 除外語
 
 ```bash
 python script/edna_literature_fetch.py \
@@ -88,14 +91,13 @@ python script/edna_literature_fetch.py \
   --out-prefix pubmed_edna_no_microbiome
 ```
 
-### Include abstract/keywords
+### 要旨を含める
 
 ```bash
 python script/edna_literature_fetch.py \
   --email you@example.com \
   --since 2020/01/01 \
   --abstract \
-  --keywords \
   --out-dir results \
   --out-prefix pubmed_edna_with_abstract
 ```
@@ -112,19 +114,13 @@ python script/edna_literature_fetch.py \
   --out-prefix pubmed_edna_crossref
 ```
 
-### Dates in output (columns)
+### 出力列
 
-PubMed出力には、取得できる範囲で以下の日付列が入ります。
+PubMed出力には以下の列が入ります。
 
-- `pub_date` : 公開/出版日 (YYYY-MM-DD best effort)
-- `entrez_date` : PubMed登録日 (entrez)
-- `received_date` : 受領日 (ある場合)
-- `accepted_date` : 受理日 (ある場合)
-- `revised_date` : レコード改訂日 (MedlineCitation DateRevised)
+- `pmid`, `title`, `journal`, `year`, `authors`, `doi`, `abstract`, `pubmed_url`
 
-※論文/ジャーナルによって入っていない列もあります。
-
-### Logging (RUN HEADER)
+### ログ出力 (RUN HEADER)
 
 ```bash
 python script/edna_literature_fetch.py \
@@ -138,16 +134,40 @@ python script/edna_literature_fetch.py \
 
 ---
 
+## Crossref + Semantic Scholar: crossref_semantic_fetch.py
+
+### 基本例
+
+```bash
+python script/crossref_semantic_fetch.py \
+  --query "environmental DNA eDNA" \
+  --max-items 1000 \
+  --out-dir results \
+  --out-prefix crossref_semantic_edna
+```
+
+### PubMed結果を除外
+
+```bash
+python script/crossref_semantic_fetch.py \
+  --query "environmental DNA eDNA" \
+  --exclude-pubmed-csv results/pubmed_edna_2020plus.csv \
+  --out-dir results \
+  --out-prefix crossref_semantic_edna_no_pubmed
+```
+
+---
+
 ## bioRxiv/medRxiv: biorxiv_search.py
 
-### Help
+### ヘルプ
 
 ```bash
 python script/biorxiv_search.py --help
 python script/biorxiv_search.py search --help
 ```
 
-### Basic example (bioRxiv 2024)
+### 基本例 (bioRxiv 2024)
 
 ```bash
 python script/biorxiv_search.py \
@@ -159,27 +179,27 @@ python script/biorxiv_search.py \
   --out-prefix biorxiv_edna_2024
 ```
 
-### Latest version only (default)
+### 最新版のみ (デフォルト)
 
 同一DOIで複数バージョン (v1, v2, …) がある場合、**versionが最大のものだけ**を残します (デフォルト)。
 
 `--all-versions` を付けると全バージョンを残します。
 
 ```bash
-# latest only (default)
+# 最新版のみ (デフォルト)
 python script/biorxiv_search.py \
   --from-date 2024-01-01 --to-date 2024-12-31 \
   --query "eDNA" \
   --latest-only
 
-# keep all versions
+# 全バージョンを保持
 python script/biorxiv_search.py \
   --from-date 2024-01-01 --to-date 2024-12-31 \
   --query "eDNA" \
   --all-versions
 ```
 
-### Incremental overwrite (途中停止でも最新出力が残る)
+### 逐次上書き (途中停止でも最新出力が残る)
 
 ```bash
 python script/biorxiv_search.py \
@@ -193,7 +213,7 @@ python script/biorxiv_search.py \
   --out-prefix biorxiv_edna_2024
 ```
 
-### Batch processing (weekly/monthly)
+### バッチ処理 (週/月単位)
 
 ```bash
 python script/biorxiv_search.py \
@@ -206,7 +226,7 @@ python script/biorxiv_search.py \
   --out-prefix biorxiv_edna_2024
 ```
 
-### Delta update from existing outputs
+### 差分更新 (既存出力からの更新)
 
 既存の `out_prefix.csv/json` がある場合、**新規/更新DOIのみ**を
 `out_prefix.delta.csv/json` に出力します (デフォルト)。
@@ -223,7 +243,7 @@ python script/biorxiv_search.py \
   --out-prefix biorxiv_edna_2024
 ```
 
-### Debug log hits (doi/title/date/version)
+### デバッグログ (doi/title/date/version)
 
 ```bash
 python script/biorxiv_search.py \
@@ -238,7 +258,7 @@ python script/biorxiv_search.py \
   --out-prefix biorxiv_edna_2024
 ```
 
-### Dates in output (columns)
+### 出力列 (日付)
 
 bioRxiv出力には以下が入ります：
 
@@ -247,7 +267,7 @@ bioRxiv出力には以下が入ります：
 
 ---
 
-## Notes / Troubleshooting
+## 補足 / トラブルシューティング
 
 ### PubMed (NCBI Entrez)
 - `--email` は必須です
@@ -256,3 +276,93 @@ bioRxiv出力には以下が入ります：
 ### bioRxiv
 - APIは期間指定取得が基本で、検索 (boolean) はローカルフィルタです
 - `--incremental` は安全性 (途中停止) と引き換えにI/Oが増えるため遅くなります
+
+---
+
+## llama.cppでの簡易RAG (CSV)
+
+CSVにまとめた文献メタデータを使って、llama.cppでRAG風のQAを行う簡易スクリプトです。
+以下はローカルのllama.cppサーバ (OpenAI互換API) を前提にしています。
+
+### 1) llama.cppサーバを起動
+
+```bash
+./server -m /path/to/your-model.gguf --port 8080 --embedding
+```
+
+※ 別の埋め込みモデルを使う場合は、別ポートで起動し `--embed-url` を分けて指定します。
+
+### 2) CSVから埋め込みインデックス作成
+
+```bash
+python script/llama_rag_csv.py index \
+  results/pubmed_edna_2020plus.csv \
+  --out-index results/pubmed_edna_2020plus.index.jsonl \
+  --text-cols title,journal,year,authors,doi
+```
+
+### 3) 質問する
+
+```bash
+python script/llama_rag_csv.py ask \
+  results/pubmed_edna_2020plus.index.jsonl \
+  "Which papers mention CRISPR-Cas and what are the DOIs?" \
+  --top-k 5 \
+  --show-sources
+```
+
+### 補足
+
+- `--embed-api` / `--llm-api` で `openai` (OpenAI互換) と `legacy` を切り替えできます。
+- CSVにabstractがある場合は `--text-cols` に含めると回答品質が上がります。
+
+---
+
+## ダウンロード済み論文のフラグ付け (llama.cpp CLI)
+
+ダウンロード済みファイル (PDF/TXT) をllama.cpp CLIで精査し、目的外の論文にフラグを付けます。
+llama.cppサーバは使いません。
+
+### 1) 設定ファイルを準備 (JSONC)
+
+```bash
+cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
+```
+
+`scope` と `model_path` を設定してください。
+
+#### 設定項目 (llama_flagger.jsonc)
+
+- `scope` (必須): 対象論文の範囲を1〜3文で記述
+- `model_path` (必須): 使用するGGUFモデルのパス
+- `llama_bin`: `llama-cli` のパス (省略時はPATH検索)
+- `llama_args`: `llama-cli` の追加引数 (例: `--no-conversation`)
+- `reuse_process`: `true` でモデルを1回ロードして使い回し
+- `files_dir`: PDF/TXTの検索ディレクトリ
+- `file_exts`: 検索対象拡張子 (例: `[".pdf",".txt"]`)
+- `file_path_col`: CSV内のファイルパス列名 (無ければ `null`)
+- `max_chars`: ファイルから読む最大文字数
+- `max_tokens`: 生成トークン数
+- `temperature`: 生成温度
+- `timeout`: 1件あたりのタイムアウト秒
+- `pdftotext`: `pdftotext` のパス (省略時はPATH検索)
+- `include_hint`: in-scopeの補助ヒント (文字列 or 配列)
+- `exclude_hint`: out-of-scopeの補助ヒント (文字列 or 配列)
+
+### 2) 実行
+
+```bash
+python script/llama_flagger.py \
+  results/pubmed_edna_2020plus.csv \
+  --files-dir downloads \
+  --config config/llama_flagger.jsonc \
+  --out-csv results/pubmed_edna_2020plus.flagged.csv
+```
+
+### 補足
+
+- CSVに `file_path` 列がある場合は優先的に使います (相対パスは `--files-dir` 基準)。
+- PDF抽出は `pdftotext` がある場合のみ有効。未インストールならPDF本文はスキップされます。
+- 行ごとのモデル再ロードを避けるには `--reuse-process` (またはJSONCで `reuse_process: true`) を指定します。
+- `--reuse-process` 使用時は `llama_args` に `--single-turn` を渡さないでください。
+- `llama-cli` が対話待ちになる場合は `--reuse-process` を維持し、`--llama-args "--no-conversation"` を追加してください。
