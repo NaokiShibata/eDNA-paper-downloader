@@ -102,15 +102,7 @@ class Paper:
     authors: str
     doi: Optional[str]
     abstract: Optional[str]
-    keywords: Optional[str]
     pubmed_url: str
-
-    # dates
-    pub_date: Optional[str] = None  # YYYY-MM-DD best effort
-    entrez_date: Optional[str] = None  # YYYY-MM-DD (added to PubMed)
-    received_date: Optional[str] = None  # YYYY-MM-DD
-    accepted_date: Optional[str] = None  # YYYY-MM-DD
-    revised_date: Optional[str] = None  # YYYY-MM-DD (MedlineCitation/DateRevised)
 
 
 # -------------------------
@@ -203,118 +195,6 @@ def _extract_abstract(article: dict) -> Optional[str]:
     return s if s else None
 
 
-def _extract_keywords(article: dict) -> Optional[str]:
-    kl = _safe_get(article, "MedlineCitation", "KeywordList", default=None)
-    if not isinstance(kl, list) or not kl:
-        return None
-    kws = []
-    for group in kl:
-        if isinstance(group, list):
-            kws.extend([str(x).strip() for x in group if str(x).strip()])
-    if not kws:
-        return None
-    seen = set()
-    uniq = []
-    for k in kws:
-        kk = k.lower()
-        if kk in seen:
-            continue
-        seen.add(kk)
-        uniq.append(k)
-    return "; ".join(uniq)
-
-
-def _pubmed_history_dates(article: dict) -> dict:
-    """
-    PubmedData/History/PubMedPubDate から PubStatus ごとの日付を拾う。
-    例: received / accepted / entrez / pubmed / medline など。
-    """
-    out = {}
-    hist = _safe_get(article, "PubmedData", "History", "PubMedPubDate", default=None)
-    if not isinstance(hist, list):
-        return out
-
-    def fmt(d):
-        y = _safe_get(d, "Year", default=None)
-        m = _safe_get(d, "Month", default=None)
-        day = _safe_get(d, "Day", default=None)
-        if not y:
-            return None
-        try:
-            mm = int(m) if m else 1
-        except Exception:
-            mm = 1
-        try:
-            dd = int(day) if day else 1
-        except Exception:
-            dd = 1
-        return f"{int(y):04d}-{mm:02d}-{dd:02d}"
-
-    for d in hist:
-        status = getattr(d, "attributes", {}).get("PubStatus")
-        if not status:
-            continue
-        out[str(status).lower()] = fmt(d)
-
-    return out
-
-
-def _extract_pub_date(article: dict) -> Optional[str]:
-    # 1) ArticleDate
-    ad = _safe_get(article, "MedlineCitation", "Article", "ArticleDate", default=None)
-    if isinstance(ad, list) and ad:
-        y = _safe_get(ad[0], "Year", default=None)
-        m = _safe_get(ad[0], "Month", default=None)
-        d = _safe_get(ad[0], "Day", default=None)
-        if y:
-            try:
-                mm = int(m) if m else 1
-                dd = int(d) if d else 1
-                return f"{int(y):04d}-{mm:02d}-{dd:02d}"
-            except Exception:
-                return str(y)
-
-    # 2) JournalIssue PubDate
-    pub_date = _safe_get(article, "MedlineCitation", "Article", "Journal", "JournalIssue", "PubDate", default=None)
-    y = _safe_get(pub_date, "Year", default=None)
-    if y:
-        m = _safe_get(pub_date, "Month", default=None)
-        d = _safe_get(pub_date, "Day", default=None)
-        try:
-            mm = int(m) if m else 1
-            dd = int(d) if d else 1
-            return f"{int(y):04d}-{mm:02d}-{dd:02d}"
-        except Exception:
-            return str(y)
-
-    # 3) MedlineDate
-    md = _safe_get(pub_date, "MedlineDate", default=None)
-    if md:
-        m = re.search(r"(19|20)\d{2}", str(md))
-        if m:
-            return m.group(0)
-
-    return None
-
-
-def _extract_revised_date(article: dict) -> Optional[str]:
-    """
-    MedlineCitation/DateRevised (YYYYMMDD)
-    """
-    dr = _safe_get(article, "MedlineCitation", "DateRevised", default=None)
-    if not dr:
-        return None
-    y = _safe_get(dr, "Year", default=None)
-    m = _safe_get(dr, "Month", default=None)
-    d = _safe_get(dr, "Day", default=None)
-    if not y:
-        return None
-    try:
-        mm = int(m) if m else 1
-        dd = int(d) if d else 1
-        return f"{int(y):04d}-{mm:02d}-{dd:02d}"
-    except Exception:
-        return str(y)
 
 
 def build_query_with_excludes(base_query: str, excludes: Sequence[str]) -> str:
@@ -325,15 +205,17 @@ def build_query_with_excludes(base_query: str, excludes: Sequence[str]) -> str:
     return f"({base_query.strip()}) NOT ({ex_clause})"
 
 
-def _date_key(s: Optional[str]) -> str:
-    # YYYY-MM-DD を想定。空は最小扱い
-    return s or "0000-00-00"
+def _pmid_key(pmid: str) -> int:
+    try:
+        return int(pmid)
+    except Exception:
+        return 0
 
 
 def keep_latest_per_doi_pubmed(papers: list[Paper], logger: Optional[logging.Logger] = None) -> list[Paper]:
     """
     PubMedは“バージョン”概念が薄いので、同一DOIが複数件ある場合だけ
-    (revised_date, entrez_date) が新しい方を採用する。
+    (year, PMID) が新しい方を採用する。
     DOIが無いものは PMID 単位で残す。
     """
     best: dict[str, Paper] = {}
@@ -350,16 +232,15 @@ def keep_latest_per_doi_pubmed(papers: list[Paper], logger: Optional[logging.Log
             best[doi] = p
             continue
 
-        # 比較キー：revised_date -> entrez_date -> pub_date
-        p_key = (_date_key(p.revised_date), _date_key(p.entrez_date), _date_key(p.pub_date))
-        c_key = (_date_key(cur.revised_date), _date_key(cur.entrez_date), _date_key(cur.pub_date))
+        p_key = (p.year or 0, _pmid_key(p.pmid))
+        c_key = (cur.year or 0, _pmid_key(cur.pmid))
         if p_key > c_key:
             best[doi] = p
 
     out = list(best.values()) + no_doi
-    # 並べ替え：まず“更新/登録/出版”の新しい順
+    # 並べ替え：年・PMIDの新しい順
     out.sort(
-        key=lambda x: (_date_key(x.revised_date), _date_key(x.entrez_date), _date_key(x.pub_date), x.pmid),
+        key=lambda x: (x.year or 0, _pmid_key(x.pmid)),
         reverse=True,
     )
     if logger:
@@ -463,7 +344,6 @@ def pubmed_fetch_details(
     email: str,
     api_key: Optional[str] = None,
     include_abstract: bool = False,
-    include_keywords: bool = False,
     sleep: float = 0.34,
     logger: Optional[logging.Logger] = None,
 ) -> list[Paper]:
@@ -492,15 +372,7 @@ def pubmed_fetch_details(
             authors = _extract_authors(art)
             doi = _extract_doi(art)
             abstract = _extract_abstract(art) if include_abstract else None
-            keywords = _extract_keywords(art) if include_keywords else None
             url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else ""
-
-            hist = _pubmed_history_dates(art)
-            pub_date = _extract_pub_date(art)
-            entrez_date = hist.get("entrez")
-            received_date = hist.get("received")
-            accepted_date = hist.get("accepted")
-            revised_date = _extract_revised_date(art)
 
             papers.append(
                 Paper(
@@ -511,13 +383,7 @@ def pubmed_fetch_details(
                     authors=authors,
                     doi=doi,
                     abstract=abstract,
-                    keywords=keywords,
                     pubmed_url=url,
-                    pub_date=pub_date,
-                    entrez_date=entrez_date,
-                    received_date=received_date,
-                    accepted_date=accepted_date,
-                    revised_date=revised_date,
                 )
             )
 
@@ -606,7 +472,6 @@ def fetch(
         help="Batch size for PMID paging in esearch.",
     ),
     abstract: bool = typer.Option(False, help="Include abstracts."),
-    keywords: bool = typer.Option(False, help="Include PubMed keywords if present."),
     crossref: bool = typer.Option(False, help="Try filling missing DOI via Crossref (heuristic)."),
     user_agent: str = typer.Option(
         "edna-literature-fetch/1.0 (mailto:your_email@example.com)",
@@ -620,8 +485,7 @@ def fetch(
 ):
     """
     Fetch paper metadata from PubMed and export CSV/JSON.
-    Outputs publication/entrez/received/accepted/revised dates when available.
-    If DOI duplicates occur, keeps the record with newest (revised_date, entrez_date, pub_date).
+    If DOI duplicates occur, keeps the record with newest (year, PMID).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logger(log_level=log_level, log_file=log_file)
@@ -641,7 +505,6 @@ def fetch(
         "sort": sort,
         "pmid_batch": pmid_batch,
         "abstract": abstract,
-        "keywords": keywords,
         "crossref": crossref,
         "user_agent": user_agent,
         "sleep": sleep,
@@ -673,7 +536,6 @@ def fetch(
         email=email,
         api_key=api_key,
         include_abstract=abstract,
-        include_keywords=keywords,
         sleep=sleep,
         logger=logger,
     )
