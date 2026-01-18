@@ -443,7 +443,7 @@ def flag(
     min_token_matches: Optional[int] = typer.Option(None, "--min-token-matches"),
     max_chars: Optional[int] = typer.Option(None, "--max-chars"),
     max_tokens: Optional[int] = typer.Option(None, "--max-tokens"),
-    sampling_temperature: Optional[float] = typer.Option(None, "--sampling-temperature", "--temperature"),
+    sampling_temperature: Optional[float] = typer.Option(None, "--sampling-temperature"),
     timeout: Optional[float] = typer.Option(None, "--timeout"),
     pdftotext: Optional[str] = typer.Option(None, "--pdftotext"),
     reuse_process: Optional[bool] = typer.Option(None, "--reuse-process/--no-reuse-process"),
@@ -473,9 +473,7 @@ def flag(
     min_token_matches = _coalesce(min_token_matches, cfg, "min_token_matches", 2)
     max_chars = _coalesce(max_chars, cfg, "max_chars", 6000)
     max_tokens = _coalesce(max_tokens, cfg, "max_tokens", 256)
-    sampling_temperature = _coalesce(sampling_temperature, cfg, "sampling_temperature", None)
-    if sampling_temperature is None:
-        sampling_temperature = _coalesce(None, cfg, "temperature", 0.1)
+    sampling_temperature = _coalesce(sampling_temperature, cfg, "sampling_temperature", 0.1)
     timeout = _coalesce(timeout, cfg, "timeout", 300.0)
     pdftotext = _coalesce(pdftotext, cfg, "pdftotext", None)
     reuse_process = _coalesce(reuse_process, cfg, "reuse_process", False)

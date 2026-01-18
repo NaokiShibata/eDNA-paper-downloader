@@ -438,7 +438,6 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 - `include_hint`: in-scopeの補助ヒント (文字列 or 配列)
 - `exclude_hint`: out-of-scopeの補助ヒント (文字列 or 配列)
 
-※ 旧キー `temperature` も互換で受け付けますが、`sampling_temperature` を推奨します。
 ※ `llama_args` の `--no-conversation` は会話テンプレートを無効化し、単純なテキスト生成として扱う指定です。
 
 ### 2) 実行
