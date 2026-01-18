@@ -416,6 +416,8 @@ def flag(
     timeout: Optional[float] = typer.Option(None, "--timeout"),
     pdftotext: Optional[str] = typer.Option(None, "--pdftotext"),
     reuse_process: Optional[bool] = typer.Option(None, "--reuse-process/--no-reuse-process"),
+    batch_size: Optional[int] = typer.Option(None, "--batch-size"),
+    batch_index: Optional[int] = typer.Option(None, "--batch-index"),
     resume: bool = typer.Option(True, "--resume/--no-resume"),
     limit: Optional[int] = typer.Option(None, "--limit"),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -444,6 +446,8 @@ def flag(
     timeout = _coalesce(timeout, cfg, "timeout", 300.0)
     pdftotext = _coalesce(pdftotext, cfg, "pdftotext", None)
     reuse_process = _coalesce(reuse_process, cfg, "reuse_process", False)
+    batch_size = _coalesce(batch_size, cfg, "batch_size", None)
+    batch_index = _coalesce(batch_index, cfg, "batch_index", None)
 
     if not scope:
         raise typer.BadParameter("scope is required (use --scope or config)")
@@ -477,6 +481,18 @@ def flag(
         entries = _collect_files(files_dir_path, file_ext_list, min_token_len)
 
     df = pd.read_csv(csv_path)
+    if limit and batch_size:
+        raise typer.BadParameter("--limit cannot be used with --batch-size")
+    if batch_size:
+        if batch_size <= 0:
+            raise typer.BadParameter("--batch-size must be > 0")
+        if batch_index is None:
+            batch_index = 0
+        if batch_index < 0:
+            raise typer.BadParameter("--batch-index must be >= 0")
+        start = batch_index * batch_size
+        end = start + batch_size
+        df = df.iloc[start:end]
     if limit:
         df = df.head(limit)
 
