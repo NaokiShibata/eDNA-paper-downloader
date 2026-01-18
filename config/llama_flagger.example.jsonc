@@ -7,6 +7,7 @@
   "llama_bin": "/path/to/llama-cli",
   // Extra llama-cli args (example: "--no-conversation")
   "llama_args": null,
+  "out_csv": "results/flagged.csv",
   // Optional: model profile (recommended). If omitted, inferred from model_path.
   // Defaults applied by profile unless overridden below:
   // - gpt-oss: sampling_temperature=0.05, max_chars=4000, ctx_size=8192
@@ -21,6 +22,7 @@
   "batch_index": 0,
   "limit": null,
   "resume": true,
+  "dry_run": false,
   "max_tokens": 256,
   // Set to null to use profile defaults.
   "sampling_temperature": null,

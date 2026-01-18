@@ -436,6 +436,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | --- | --- | --- |
 | `scope` | yes | 対象論文の範囲を1〜3文で記述 |
 | `model_path` | yes | 使用するGGUFモデルのパス |
+| `out_csv` | no | 出力CSVのパス |
 | `llama_bin` | no | `llama-cli` のパス (省略時はPATH検索) |
 | `llama_args` | no | `llama-cli` の追加引数 (例: `--no-conversation`) |
 | `model_profile` | no | `gpt-oss` / `gemma`。省略時は `model_path` から推定 |
@@ -451,6 +452,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `max_chars` | no | ファイルから読む最大文字数 |
 | `limit` | no | 読み込み件数の上限 (`batch_size` とは同時指定不可) |
 | `resume` | no | `true` で既存フラグ行をスキップ (`false` で再処理) |
+| `dry_run` | no | `true` でプロンプトのみ表示して終了 |
 | `max_tokens` | no | 生成トークン数 |
 | `sampling_temperature` | no | サンプリング温度 |
 | `ctx_size` | no | コンテキスト長 |
@@ -491,6 +493,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | --- | --- | --- | --- |
 | `scope` | string | `Environmental DNA/RNA papers for ecology and monitoring.` | 1〜3文推奨 |
 | `model_path` | string | `/models/gpt-oss-20b-Q4_K_M.gguf` | GGUFファイル |
+| `out_csv` | string | `results/flagged.csv` | 出力CSV |
 | `model_profile` | string/null | `gpt-oss` | `gpt-oss` / `gemma` / `null` |
 | `llama_bin` | string | `/path/to/llama-cli` | PATH上のコマンド名でも可 |
 | `llama_args` | string/null | `--threads 16 --no-conversation` | 追加CLI引数 |
@@ -501,6 +504,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `batch_index` | int | `0` | 0始まり |
 | `limit` | int/null | `100` | `batch_size` と併用不可 |
 | `resume` | bool | `true` | 既存フラグ行をスキップ |
+| `dry_run` | bool | `false` | プロンプトのみ表示 |
 | `max_tokens` | int | `256` | 生成トークン数 |
 | `sampling_temperature` | float/null | `0.05` | 低いほど安定 |
 | `timeout` | float | `300` | 秒 |
