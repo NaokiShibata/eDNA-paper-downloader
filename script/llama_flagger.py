@@ -25,6 +25,7 @@ app = typer.Typer(add_completion=False)
 PROMPT_VERSION = "v1"
 DEFAULT_FILE_EXTS = ".pdf,.txt"
 PROMPT_TAILS = ("> ", ">")
+IDLE_DONE_SECONDS = 0.5
 
 
 @dataclass
@@ -247,7 +248,7 @@ def _run_llama_cli(
     model_path: Path,
     prompt: str,
     max_tokens: int,
-    temperature: float,
+    sampling_temperature: float,
     ctx_size: Optional[int],
     threads: Optional[int],
     extra_args: Optional[str],
@@ -262,7 +263,7 @@ def _run_llama_cli(
         "-n",
         str(max_tokens),
         "--temp",
-        str(temperature),
+        str(sampling_temperature),
     ]
     if ctx_size:
         cmd += ["-c", str(ctx_size)]
@@ -356,8 +357,12 @@ class LlamaReuseProcess:
             self._read_until_prompt(self.timeout)
         except TimeoutError:
             # Nudge the CLI to show a prompt if it hasn't yet.
-            self._send_line("")
-            self._read_until_prompt(self.timeout)
+            try:
+                self._send_line("")
+                self._read_until_prompt(min(self.timeout, 10))
+            except TimeoutError:
+                # Some modes suppress prompts; continue without blocking.
+                return
 
     def _read_until_prompt(self, timeout: float) -> str:
         buf = ""
@@ -378,6 +383,32 @@ class LlamaReuseProcess:
                 raise RuntimeError("llama-cli exited unexpectedly")
             buf += data.decode(errors="ignore")
 
+    def _read_until_done(self, timeout: float) -> str:
+        buf = ""
+        start = time.time()
+        last_data = time.time()
+        seen_json = False
+        while True:
+            trimmed = buf.rstrip("\r\n")
+            if trimmed:
+                lines = trimmed.splitlines()
+                if lines and lines[-1].strip() == ">":
+                    return "\n".join(lines[:-1])
+            if time.time() - start > timeout:
+                return buf
+            rlist, _, _ = select.select([self.master_fd], [], [], 0.1)
+            if not rlist:
+                if seen_json and (time.time() - last_data) > IDLE_DONE_SECONDS:
+                    return buf
+                continue
+            data = os.read(self.master_fd, 4096)
+            if not data:
+                return buf
+            buf += data.decode(errors="ignore")
+            last_data = time.time()
+            if not seen_json and _parse_json(buf):
+                seen_json = True
+
     def _send_line(self, line: str) -> None:
         os.write(self.master_fd, (line + "\n").encode())
 
@@ -388,7 +419,7 @@ class LlamaReuseProcess:
     def generate(self, prompt: str) -> str:
         escaped = _escape_prompt(prompt)
         self._send_line(escaped)
-        out = self._read_until_prompt(self.timeout)
+        out = self._read_until_done(self.timeout)
         return out.strip()
 
 
@@ -412,7 +443,7 @@ def flag(
     min_token_matches: Optional[int] = typer.Option(None, "--min-token-matches"),
     max_chars: Optional[int] = typer.Option(None, "--max-chars"),
     max_tokens: Optional[int] = typer.Option(None, "--max-tokens"),
-    temperature: Optional[float] = typer.Option(None, "--temperature"),
+    sampling_temperature: Optional[float] = typer.Option(None, "--sampling-temperature", "--temperature"),
     timeout: Optional[float] = typer.Option(None, "--timeout"),
     pdftotext: Optional[str] = typer.Option(None, "--pdftotext"),
     reuse_process: Optional[bool] = typer.Option(None, "--reuse-process/--no-reuse-process"),
@@ -442,7 +473,9 @@ def flag(
     min_token_matches = _coalesce(min_token_matches, cfg, "min_token_matches", 2)
     max_chars = _coalesce(max_chars, cfg, "max_chars", 6000)
     max_tokens = _coalesce(max_tokens, cfg, "max_tokens", 256)
-    temperature = _coalesce(temperature, cfg, "temperature", 0.1)
+    sampling_temperature = _coalesce(sampling_temperature, cfg, "sampling_temperature", None)
+    if sampling_temperature is None:
+        sampling_temperature = _coalesce(None, cfg, "temperature", 0.1)
     timeout = _coalesce(timeout, cfg, "timeout", 300.0)
     pdftotext = _coalesce(pdftotext, cfg, "pdftotext", None)
     reuse_process = _coalesce(reuse_process, cfg, "reuse_process", False)
@@ -529,7 +562,7 @@ def flag(
             "-n",
             str(max_tokens),
             "--temp",
-            str(temperature),
+            str(sampling_temperature),
         ]
         if ctx_size:
             cmd += ["-c", str(ctx_size)]
@@ -576,7 +609,7 @@ def flag(
                         model_path,
                         prompt,
                         max_tokens,
-                        temperature,
+                        sampling_temperature,
                         ctx_size,
                         threads,
                         llama_args,

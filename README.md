@@ -7,12 +7,14 @@
 eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして保存するPython CLIツールです。
 
 - **PubMed**: `script/edna_literature_fetch.py`
+
   - NCBI Entrez (E-utilities) を利用
   - クエリ検索 + 期間指定 + ページング (全PMID回収)
   - DOI重複が出た場合は **より新しい年/PMID** を採用
   - RUN HEADER付きログ出力 (実行者・コマンド・パラメータなど)
 
 - **bioRxiv/medRxiv**: `script/biorxiv_search.py`
+
   - 公式APIで期間指定取得
   - ローカルでキーワード/除外語フィルタ
   - DOIごとに **最新版のみ (version最大)** を採用 (デフォルト)
@@ -42,6 +44,42 @@ source .venv/bin/activate
 
 pip install -U pip
 pip install "typer[all]" pandas requests tqdm biopython
+```
+
+---
+
+## uvでの環境構築
+
+uvの導入から環境作成までの手順です。
+
+### 1) uvをインストール
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+インストール後、シェルを再起動するか `~/.profile` 等を読み直してください。
+
+### 2) 仮想環境の作成と依存導入
+
+```bash
+uv venv .venv
+source .venv/bin/activate
+uv pip install "typer[all]" pandas requests tqdm biopython
+```
+
+PubMed (Entrez) を含むダウンロード系スクリプトに必要な主なパッケージは以下です。
+
+- `biopython` (Entrez)
+- `requests`
+- `pandas`
+- `tqdm`
+- `typer[all]`
+
+YAML設定ファイルを使う場合は `pyyaml` も追加してください。
+
+```bash
+uv pip install pyyaml
 ```
 
 ---
@@ -183,7 +221,7 @@ python script/biorxiv_search.py \
   --out-prefix biorxiv_edna_2024
 ```
 
-### 最新版のみ (デフォルト)
+### 最新版のみ
 
 同一DOIで複数バージョン (v1, v2, …) がある場合、**versionが最大のものだけ**を残します (デフォルト)。
 
@@ -203,7 +241,9 @@ python script/biorxiv_search.py \
   --all-versions
 ```
 
-### 逐次上書き (途中停止でも最新出力が残る)
+### 逐次上書き
+
+途中で停止しても最新出力が残るようになっています。
 
 ```bash
 python script/biorxiv_search.py \
@@ -217,7 +257,9 @@ python script/biorxiv_search.py \
   --out-prefix biorxiv_edna_2024
 ```
 
-### バッチ処理 (週/月単位)
+### バッチ処理
+
+週や月単位でのバッチ処理例です。
 
 ```bash
 python script/biorxiv_search.py \
@@ -232,8 +274,8 @@ python script/biorxiv_search.py \
 
 ### 差分更新 (既存出力からの更新)
 
-既存の `out_prefix.csv/json` がある場合、**新規/更新DOIのみ**を
-`out_prefix.delta.csv/json` に出力します (デフォルト)。
+既存出力からの更新処理です。
+既存の `out_prefix.csv/json` がある場合、**新規/更新DOIのみ**を`out_prefix.delta.csv/json` に出力します ()デフォルト)。
 
 ```bash
 python script/biorxiv_search.py \
@@ -247,7 +289,9 @@ python script/biorxiv_search.py \
   --out-prefix biorxiv_edna_2024
 ```
 
-### デバッグログ (doi/title/date/version)
+### デバッグログ
+
+- doi/title/date/versionが記載されるDEBUGう実行モードです。
 
 ```bash
 python script/biorxiv_search.py \
@@ -264,7 +308,7 @@ python script/biorxiv_search.py \
 
 ### 出力列 (日付)
 
-bioRxiv出力には以下が入ります：
+bioRxivの出力には以下が入ります。
 
 - `date` / `posted_date` : 投稿/掲載日 (APIのdate)
 - `retrieved_at` : 取得時刻 (スクリプト実行時)
@@ -274,24 +318,55 @@ bioRxiv出力には以下が入ります：
 ## 補足 / トラブルシューティング
 
 ### PubMed (NCBI Entrez)
+
 - `--email` は必須です
 - 大量取得時は `--sleep` を増やすと安定します (例: 0.5〜1.0)
 
 ### bioRxiv
+
 - APIは期間指定取得が基本で、検索 (boolean) はローカルフィルタです
 - `--incremental` は安全性 (途中停止) と引き換えにI/Oが増えるため遅くなります
 
 ---
 
-## llama.cppでの簡易RAG (CSV)
+## llama.cppの導入とビルド
 
-CSVにまとめた文献メタデータを使って、llama.cppでRAG風のQAを行う簡易スクリプトです。
+llama.cppをローカルで使うための最小手順です。
+
+### CPUビルド (最小)
+
+```bash
+git clone https://github.com/ggerganov/llama.cpp.git
+cd llama.cpp
+cmake -S . -B build
+cmake --build build -j
+```
+
+### GPUビルド (CUDA例)
+
+NVIDIA GPU + CUDA環境の例です。
+
+```bash
+git clone https://github.com/ggerganov/llama.cpp.git
+cd llama.cpp
+cmake -S . -B build -DGGML_CUDA=ON
+cmake --build build -j
+```
+
+ビルド後、`build/bin/llama-cli` と `build/bin/llama-server` を利用します。
+環境によってはGPUバックエンドが異なるため、公式READMEの該当手順も参照してください。
+
+---
+
+## llama.cppでの簡易RAG
+
+csvにまとめた文献メタデータを使って、llama.cppでRAG風のQAを行う簡易スクリプトです。
 以下はローカルのllama.cppサーバ (OpenAI互換API) を前提にしています。
 
 ### 1) llama.cppサーバを起動
 
 ```bash
-./server -m /path/to/your-model.gguf --port 8080 --embedding
+./path/to/llama-server -m /path/to/your-model.gguf --port 8080 --embedding
 ```
 
 ※ 別の埋め込みモデルを使う場合は、別ポートで起動し `--embed-url` を分けて指定します。
@@ -324,8 +399,13 @@ python script/llama_rag_csv.py ask \
 
 ## ダウンロード済み論文のフラグ付け (llama.cpp CLI)
 
-ダウンロード済みファイル (PDF/TXT) をllama.cpp CLIで精査し、目的外の論文にフラグを付けます。
-llama.cppサーバは使いません。
+`edna_literature_fetch.py`で取得したcsvファイルを精査し、論文情報にフラグをつけます。`llama-cli`を使用します。
+
+検討時は下記モデルを使用しました。
+
+- gpt-oss-120b-Q4_K_M-00001-of-00002.gguf & gpt-oss-120b-Q4_K_M-00002-of-00002.gguf
+- gemma-3-4b-it-abliterated.q5_k.gguf
+- gpt-oss-20b-Q4_K_M.gguf
 
 ### 1) 設定ファイルを準備 (JSONC)
 
@@ -352,11 +432,14 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 - `max_chars`: ファイルから読む最大文字数
 - `limit`: 読み込み件数の上限 (`batch_size` とは同時指定不可)
 - `max_tokens`: 生成トークン数
-- `temperature`: 生成温度
+- `sampling_temperature`: サンプリング温度 (出力のランダム性)
 - `timeout`: 1件あたりのタイムアウト秒
 - `pdftotext`: `pdftotext` のパス (省略時はPATH検索)
 - `include_hint`: in-scopeの補助ヒント (文字列 or 配列)
 - `exclude_hint`: out-of-scopeの補助ヒント (文字列 or 配列)
+
+※ 旧キー `temperature` も互換で受け付けますが、`sampling_temperature` を推奨します。
+※ `llama_args` の `--no-conversation` は会話テンプレートを無効化し、単純なテキスト生成として扱う指定です。
 
 ### 2) 実行
 
