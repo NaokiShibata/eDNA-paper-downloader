@@ -1,0 +1,4 @@
+test/
+*.gguf
+.vscode
+
