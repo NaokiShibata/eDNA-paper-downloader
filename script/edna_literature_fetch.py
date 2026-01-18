@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import platform
@@ -125,6 +126,12 @@ def _norm_title(title: str) -> str:
     t = re.sub(r"\s+", " ", t)
     t = re.sub(r"[^a-z0-9 ]+", "", t)
     return t
+
+
+def _clean_text(text: str) -> str:
+    s = html.unescape(text or "")
+    s = re.sub(r"<[^>]+>", "", s)
+    return s.strip()
 
 
 def _extract_doi(article: dict) -> Optional[str]:
@@ -366,7 +373,7 @@ def pubmed_fetch_details(
 
         for art in records.get("PubmedArticle", []):
             pmid = str(_safe_get(art, "MedlineCitation", "PMID", default="")).strip()
-            title = str(_safe_get(art, "MedlineCitation", "Article", "ArticleTitle", default="")).strip()
+            title = _clean_text(str(_safe_get(art, "MedlineCitation", "Article", "ArticleTitle", default="")))
             journal = str(_safe_get(art, "MedlineCitation", "Article", "Journal", "Title", default="")).strip()
             year = _extract_year(art)
             authors = _extract_authors(art)

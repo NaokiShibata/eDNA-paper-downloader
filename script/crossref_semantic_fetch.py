@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import platform
@@ -148,6 +149,12 @@ def _norm_title(title: str) -> str:
     return t
 
 
+def _clean_text(text: str) -> str:
+    s = html.unescape(text or "")
+    s = re.sub(r"<[^>]+>", "", s)
+    return s.strip()
+
+
 def _clean_doi(doi: Optional[str]) -> str:
     v = (doi or "").strip().lower()
     v = re.sub(r"^https?://(dx\.)?doi\.org/", "", v)
@@ -189,8 +196,8 @@ def _authors_from_semantic(item: dict) -> str:
 def _pick_title(item: dict) -> str:
     title = item.get("title", "")
     if isinstance(title, list):
-        return str(title[0]) if title else ""
-    return str(title or "")
+        return _clean_text(str(title[0]) if title else "")
+    return _clean_text(str(title or ""))
 
 
 def _merge_sources(existing: PaperInfo, incoming: PaperInfo) -> PaperInfo:
@@ -376,7 +383,7 @@ def semantic_fetch(
             break
 
         for it in items:
-            title = (it.get("title") or "").strip()
+            title = _clean_text(it.get("title") or "")
             doi = (it.get("doi") or "").strip() or None
             authors = _authors_from_semantic(it)
             year = it.get("year")

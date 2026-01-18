@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import platform
@@ -142,7 +143,9 @@ class Preprint:
 # Helpers
 # -------------------------
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip())
+    cleaned = html.unescape(s or "")
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    return re.sub(r"\s+", " ", cleaned.strip())
 
 
 def _parse_date(s: str) -> date:
