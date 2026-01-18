@@ -338,10 +338,15 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 - `llama_bin`: `llama-cli` のパス (省略時はPATH検索)
 - `llama_args`: `llama-cli` の追加引数 (例: `--no-conversation`)
 - `reuse_process`: `true` でモデルを1回ロードして使い回し
+- `batch_size`: バッチ件数 (例: `500`)
+- `batch_index`: バッチ番号 (0始まり)
 - `files_dir`: PDF/TXTの検索ディレクトリ
 - `file_exts`: 検索対象拡張子 (例: `[".pdf",".txt"]`)
 - `file_path_col`: CSV内のファイルパス列名 (無ければ `null`)
+- `min_token_len`: タイトル一致判定の最小トークン長
+- `min_token_matches`: タイトル一致判定に必要な一致数
 - `max_chars`: ファイルから読む最大文字数
+- `limit`: 読み込み件数の上限 (`batch_size` とは同時指定不可)
 - `max_tokens`: 生成トークン数
 - `temperature`: 生成温度
 - `timeout`: 1件あたりのタイムアウト秒
@@ -356,6 +361,19 @@ python script/llama_flagger.py \
   results/pubmed_edna_2020plus.csv \
   --files-dir downloads \
   --config config/llama_flagger.jsonc \
+  --out-csv results/pubmed_edna_2020plus.flagged.csv
+```
+
+### バッチ実行例
+
+```bash
+# 0番目のバッチ (0始まり) を実行
+python script/llama_flagger.py \
+  results/pubmed_edna_2020plus.csv \
+  --files-dir downloads \
+  --config config/llama_flagger.jsonc \
+  --batch-size 500 \
+  --batch-index 0 \
   --out-csv results/pubmed_edna_2020plus.flagged.csv
 ```
 
