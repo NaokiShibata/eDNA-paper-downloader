@@ -14,7 +14,7 @@ import termios
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import pandas as pd
 import typer
@@ -44,7 +44,35 @@ class FileEntry:
 def _strip_jsonc(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
-    return text
+    return _remove_trailing_commas(text)
+
+
+def _remove_trailing_commas(text: str) -> str:
+    out: List[str] = []
+    in_str = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_str:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < len(text) and text[j] in " \t\r\n":
+                j += 1
+            if j < len(text) and text[j] in "]}":
+                continue
+        out.append(ch)
+    return "".join(out)
 
 
 def _load_config(path: Optional[Path]) -> Dict[str, Any]:
@@ -392,6 +420,13 @@ def _strip_prompt_echo(text: str, prompt: str) -> str:
     return cleaned.strip()
 
 
+def _expand_path(value: Optional[Union[str, Path]]) -> Optional[Path]:
+    if value is None:
+        return None
+    expanded = os.path.expandvars(str(value))
+    return Path(expanded).expanduser()
+
+
 def _has_value(value: Any) -> bool:
     if value is None:
         return False
@@ -580,7 +615,7 @@ class LlamaReuseProcess:
 @app.command()
 def flag(
     csv_path: Path = typer.Argument(..., exists=True, dir_okay=False),
-    out_csv: Path = typer.Option(Path("results/flagged.csv"), "--out-csv"),
+    out_csv: Optional[Path] = typer.Option(None, "--out-csv"),
     files_dir: Optional[Path] = typer.Option(None, "--files-dir"),
     config: Optional[Path] = typer.Option(None, "--config"),
     model_path: Optional[Path] = typer.Option(None, "--model"),
@@ -597,7 +632,7 @@ def flag(
     include_hint: Optional[str] = typer.Option(None, "--include-hint"),
     exclude_hint: Optional[str] = typer.Option(None, "--exclude-hint"),
     file_exts: Optional[str] = typer.Option(None, "--file-exts"),
-    file_path_col: Optional[str] = typer.Option("file_path", "--file-path-col"),
+    file_path_col: Optional[str] = typer.Option(None, "--file-path-col"),
     min_token_len: Optional[int] = typer.Option(None, "--min-token-len"),
     min_token_matches: Optional[int] = typer.Option(None, "--min-token-matches"),
     max_chars: Optional[int] = typer.Option(None, "--max-chars"),
@@ -617,11 +652,12 @@ def flag(
         ),
     ),
     limit: Optional[int] = typer.Option(None, "--limit"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    dry_run: Optional[bool] = typer.Option(None, "--dry-run"),
 ) -> None:
     """Flag out-of-scope papers by inspecting downloaded files with llama.cpp CLI."""
     cfg = _load_config(config)
 
+    out_csv = _coalesce(out_csv, cfg, "out_csv", "results/flagged.csv")
     files_dir = _coalesce(files_dir, cfg, "files_dir", None)
     model_path = _coalesce(model_path, cfg, "model_path", None)
     llama_bin = _coalesce(llama_bin, cfg, "llama_bin", "llama-cli")
@@ -648,13 +684,16 @@ def flag(
     batch_index = _coalesce(batch_index, cfg, "batch_index", None)
     resume = _coalesce(resume, cfg, "resume", True)
     limit = _coalesce(limit, cfg, "limit", None)
+    dry_run = _coalesce(dry_run, cfg, "dry_run", False)
 
     if not scope:
         raise typer.BadParameter("scope is required (use --scope or config)")
     if not model_path:
         raise typer.BadParameter("model_path is required (use --model or config)")
 
-    model_path = Path(model_path)
+    model_path = _expand_path(model_path)
+    if not model_path:
+        raise typer.BadParameter("model_path is required (use --model or config)")
     if not model_path.exists():
         raise typer.BadParameter(f"model not found: {model_path}")
 
@@ -664,15 +703,18 @@ def flag(
         model_profile = _infer_model_profile(model_path)
     defaults = _model_defaults(model_profile)
 
-    llama_path = _resolve_llama_bin(str(llama_bin))
-    files_dir_path = Path(files_dir) if files_dir else None
+    out_csv = _expand_path(out_csv) or Path("results/flagged.csv")
+    llama_bin = str(_expand_path(llama_bin) or llama_bin)
+    llama_path = _resolve_llama_bin(llama_bin)
+    files_dir_path = _expand_path(files_dir) if files_dir else None
 
     if isinstance(file_exts, (list, tuple)):
         file_ext_list = [str(e).strip().lower() for e in file_exts if str(e).strip()]
     else:
         file_ext_list = [e.strip().lower() for e in str(file_exts).split(",") if e.strip()]
     file_ext_list = [e if e.startswith(".") else f".{e}" for e in file_ext_list]
-    pdftotext_path = pdftotext or shutil.which("pdftotext")
+    pdftotext_path = str(_expand_path(pdftotext)) if pdftotext else None
+    pdftotext_path = pdftotext_path or shutil.which("pdftotext")
     if not pdftotext_path and ".pdf" in file_ext_list:
         typer.echo("pdftotext not found; PDF files will be skipped.", err=True)
 
