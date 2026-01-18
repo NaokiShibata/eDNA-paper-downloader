@@ -26,6 +26,12 @@ PROMPT_VERSION = "v1"
 DEFAULT_FILE_EXTS = ".pdf,.txt"
 PROMPT_TAILS = ("> ", ">")
 IDLE_DONE_SECONDS = 0.5
+MODEL_DEFAULTS = {
+    "gpt-oss": {"sampling_temperature": 0.05, "max_chars": 4000, "ctx_size": 8192},
+    "gemma": {"sampling_temperature": 0.05, "max_chars": 3000, "ctx_size": 4096},
+}
+DEFAULT_SAMPLING_TEMPERATURE = 0.1
+DEFAULT_MAX_CHARS = 6000
 
 
 @dataclass
@@ -269,8 +275,14 @@ def _run_llama_cli(
         cmd += ["-c", str(ctx_size)]
     if threads:
         cmd += ["-t", str(threads)]
-    if extra_args:
-        cmd += shlex.split(extra_args)
+    extra = shlex.split(extra_args) if extra_args else []
+    if not _has_flag(extra, ["--color", "-co"]):
+        extra += ["--color", "off"]
+    if not _has_flag(extra, ["--no-show-timings", "--show-timings"]):
+        extra.append("--no-show-timings")
+    if not _has_flag(extra, ["--no-display-prompt", "--display-prompt"]):
+        extra.append("--no-display-prompt")
+    cmd += extra
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         err = (result.stderr or "").strip()
@@ -312,14 +324,25 @@ def _run_llama_cli_safe(
 
 def _parse_json(text: str) -> Optional[Dict[str, Any]]:
     cleaned = _sanitize_output(text)
-    matches = list(re.finditer(r"\{.*?\}", cleaned, flags=re.DOTALL))
-    for match in reversed(matches):
-        snippet = match.group(0)
-        try:
-            return json.loads(snippet)
-        except Exception:
+    decoder = json.JSONDecoder()
+    idx = 0
+    found: Optional[Dict[str, Any]] = None
+    while idx < len(cleaned):
+        if cleaned[idx] != "{":
+            next_idx = cleaned.find("{", idx + 1)
+            if next_idx == -1:
+                break
+            idx = next_idx
             continue
-    return None
+        try:
+            obj, end = decoder.raw_decode(cleaned, idx)
+        except json.JSONDecodeError:
+            idx += 1
+            continue
+        if isinstance(obj, dict) and "label" in obj:
+            found = obj
+        idx = end if end > idx else idx + 1
+    return found
 
 
 def _sanitize_output(text: str) -> str:
@@ -349,6 +372,26 @@ def _flatten_cell(value: Any) -> Any:
     return value
 
 
+def _strip_prompt_echo(text: str, prompt: str) -> str:
+    if not text or not prompt:
+        return text
+    cleaned = text
+    if prompt in cleaned:
+        cleaned = cleaned.replace(prompt, "")
+    escaped = _escape_prompt(prompt)
+    if escaped in cleaned:
+        cleaned = cleaned.replace(escaped, "")
+    prompt_lines = {line.strip() for line in prompt.splitlines() if line.strip()}
+    if prompt_lines:
+        cleaned_lines = [
+            line
+            for line in cleaned.splitlines()
+            if line.strip() and line.strip() not in prompt_lines
+        ]
+        cleaned = "\n".join(cleaned_lines)
+    return cleaned.strip()
+
+
 def _has_value(value: Any) -> bool:
     if value is None:
         return False
@@ -367,6 +410,21 @@ def _row_has_output(row: pd.Series, columns: Sequence[str]) -> bool:
         if col in row and _has_value(row[col]):
             return True
     return False
+
+
+def _infer_model_profile(model_path: Path) -> Optional[str]:
+    name = model_path.name.lower()
+    if "gpt-oss" in name or "gpt_oss" in name:
+        return "gpt-oss"
+    if "gemma" in name:
+        return "gemma"
+    return None
+
+
+def _model_defaults(profile: Optional[str]) -> Dict[str, Any]:
+    if not profile:
+        return {}
+    return MODEL_DEFAULTS.get(profile, {})
 
 
 def _escape_prompt(prompt: str) -> str:
@@ -528,13 +586,10 @@ def flag(
     model_path: Optional[Path] = typer.Option(None, "--model"),
     llama_bin: Optional[str] = typer.Option(None, "--llama-bin"),
     llama_args: Optional[str] = typer.Option(None, "--llama-args"),
-    chat_template: Optional[str] = typer.Option(
+    model_profile: Optional[str] = typer.Option(
         None,
-        "--chat-template",
-        help=(
-            "Passes --chat-template to llama-cli. Examples: gemma, llama-3, mistral, chatml. "
-            "See llama-cli --help for available templates."
-        ),
+        "--model-profile",
+        help="Model profile for defaults: gpt-oss or gemma. If omitted, inferred from model filename.",
     ),
     ctx_size: Optional[int] = typer.Option(None, "--ctx-size"),
     threads: Optional[int] = typer.Option(None, "--threads"),
@@ -553,8 +608,8 @@ def flag(
     reuse_process: Optional[bool] = typer.Option(None, "--reuse-process/--no-reuse-process"),
     batch_size: Optional[int] = typer.Option(None, "--batch-size"),
     batch_index: Optional[int] = typer.Option(None, "--batch-index"),
-    resume: bool = typer.Option(
-        True,
+    resume: Optional[bool] = typer.Option(
+        None,
         "--resume/--no-resume",
         help=(
             "Skip rows already flagged in the input CSV or present in the output CSV. "
@@ -571,7 +626,7 @@ def flag(
     model_path = _coalesce(model_path, cfg, "model_path", None)
     llama_bin = _coalesce(llama_bin, cfg, "llama_bin", "llama-cli")
     llama_args = _coalesce(llama_args, cfg, "llama_args", None)
-    chat_template = _coalesce(chat_template, cfg, "chat_template", None)
+    model_profile = _coalesce(model_profile, cfg, "model_profile", None)
     ctx_size = _coalesce(ctx_size, cfg, "ctx_size", None)
     threads = _coalesce(threads, cfg, "threads", None)
     scope = _normalize_hint(_coalesce(scope, cfg, "scope", None))
@@ -583,14 +638,16 @@ def flag(
         file_path_col = None
     min_token_len = _coalesce(min_token_len, cfg, "min_token_len", 4)
     min_token_matches = _coalesce(min_token_matches, cfg, "min_token_matches", 2)
-    max_chars = _coalesce(max_chars, cfg, "max_chars", 6000)
+    max_chars = _coalesce(max_chars, cfg, "max_chars", None)
     max_tokens = _coalesce(max_tokens, cfg, "max_tokens", 256)
-    sampling_temperature = _coalesce(sampling_temperature, cfg, "sampling_temperature", 0.1)
+    sampling_temperature = _coalesce(sampling_temperature, cfg, "sampling_temperature", None)
     timeout = _coalesce(timeout, cfg, "timeout", 300.0)
     pdftotext = _coalesce(pdftotext, cfg, "pdftotext", None)
     reuse_process = _coalesce(reuse_process, cfg, "reuse_process", False)
     batch_size = _coalesce(batch_size, cfg, "batch_size", None)
     batch_index = _coalesce(batch_index, cfg, "batch_index", None)
+    resume = _coalesce(resume, cfg, "resume", True)
+    limit = _coalesce(limit, cfg, "limit", None)
 
     if not scope:
         raise typer.BadParameter("scope is required (use --scope or config)")
@@ -600,6 +657,12 @@ def flag(
     model_path = Path(model_path)
     if not model_path.exists():
         raise typer.BadParameter(f"model not found: {model_path}")
+
+    if isinstance(model_profile, str) and not model_profile.strip():
+        model_profile = None
+    if not model_profile:
+        model_profile = _infer_model_profile(model_path)
+    defaults = _model_defaults(model_profile)
 
     llama_path = _resolve_llama_bin(str(llama_bin))
     files_dir_path = Path(files_dir) if files_dir else None
@@ -613,14 +676,16 @@ def flag(
     if not pdftotext_path and ".pdf" in file_ext_list:
         typer.echo("pdftotext not found; PDF files will be skipped.", err=True)
 
-    if isinstance(chat_template, str) and not chat_template.strip():
-        chat_template = None
     llama_args_list = shlex.split(llama_args) if llama_args else []
-    if chat_template and not _has_flag(llama_args_list, ["--chat-template"]):
-        llama_args_list += ["--chat-template", chat_template]
     llama_args = shlex.join(llama_args_list) if llama_args_list else None
     if reuse_process and (_has_flag(llama_args_list, ["--single-turn", "-st"])):
         raise typer.BadParameter("--single-turn cannot be used with --reuse-process")
+    if sampling_temperature is None:
+        sampling_temperature = float(defaults.get("sampling_temperature", DEFAULT_SAMPLING_TEMPERATURE))
+    if max_chars is None:
+        max_chars = int(defaults.get("max_chars", DEFAULT_MAX_CHARS))
+    if ctx_size is None and not _has_flag(llama_args_list, ["--ctx-size", "-c"]):
+        ctx_size = defaults.get("ctx_size", None)
 
     entries: List[FileEntry] = []
     if files_dir_path:
@@ -745,9 +810,13 @@ def flag(
 
                 cleaned = _sanitize_output(raw)
                 parsed = _parse_json(cleaned)
+                cleaned_no_prompt = cleaned
+                if not parsed:
+                    cleaned_no_prompt = _strip_prompt_echo(cleaned, prompt)
+                    parsed = _parse_json(cleaned_no_prompt)
                 label = "parse_error"
                 confidence = ""
-                reason = cleaned.strip()
+                reason = ""
                 if error:
                     label = "process_error"
                     confidence = ""
@@ -757,7 +826,9 @@ def flag(
                     if label not in ("in_scope", "out_of_scope", "unsure"):
                         label = "parse_error"
                     confidence = parsed.get("confidence", "")
-                    reason = str(parsed.get("reason", "")).strip() or reason
+                    reason = str(parsed.get("reason", "")).strip() or ""
+                if not reason:
+                    reason = "parse_error: no JSON found"
 
                 out_row = meta.copy()
                 out_row.update(

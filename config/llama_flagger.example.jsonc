@@ -5,20 +5,36 @@
 
   // Optional: llama.cpp CLI settings
   "llama_bin": "/path/to/llama-cli",
-  "llama_args": "--ctx-size 4096 --threads 8",
-  "chat_template": "gemma",
+  // Extra llama-cli args (example: "--no-conversation")
+  "llama_args": null,
+  // Optional: model profile (recommended). If omitted, inferred from model_path.
+  // Defaults applied by profile unless overridden below:
+  // - gpt-oss: sampling_temperature=0.05, max_chars=4000, ctx_size=8192
+  // - gemma:   sampling_temperature=0.05, max_chars=3000, ctx_size=4096
+  // - other:   sampling_temperature=0.1, max_chars=6000, ctx_size=unchanged
+  "model_profile": "gpt-oss",
+  // Set to null to use profile defaults.
+  "ctx_size": null,
+  "threads": 8,
   "reuse_process": true,
   "batch_size": 500,
   "batch_index": 0,
+  "limit": null,
+  "resume": true,
   "max_tokens": 256,
-  "sampling_temperature": 0.1,
+  // Set to null to use profile defaults.
+  "sampling_temperature": null,
   "timeout": 300.0,
+  "pdftotext": null,
 
   // Optional: downloaded files
   "files_dir": "downloads",
   "file_exts": [".pdf", ".txt"],
   "file_path_col": "file_path",
-  "max_chars": 6000,
+  "min_token_len": 4,
+  "min_token_matches": 2,
+  // Set to null to use profile defaults.
+  "max_chars": null,
 
   // Optional: relevance hints
   "include_hint": "eDNA/eRNA sampling, detection, monitoring, metabarcoding, pathogen surveillance",
