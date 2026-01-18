@@ -156,6 +156,21 @@ python script/edna_literature_fetch.py \
   --out-prefix pubmed_edna_crossref
 ```
 
+### 色々総まとめ
+
+```bash
+python3 script/edna_literature_fetch.py \
+--email you@example.com \
+--since 2008/01/01 \
+--out-dir results \
+--out-prefix pubme_edna_$(date +%Y%m%d) \
+--log-file logs/pubmed_edna_$(date +%Y%m%d).log \
+--crossref \
+--abstract \
+--exclude 'metagenome OR probiotic OR "skin microbiome" OR "oral microbiome"  OR "rumen microbiome" OR dysbiosis OR probiotic OR "gut microbiome" OR metagenome OR "shotgun metagenomics" OR microbiome OR resistome OR "antimicrobial resistance" OR AMR OR virome OR "viral metagenome" OR "ITS community profiling" OR "wastewater epidemiology" OR mycobiome' \
+--query '("environmental DNA"[Title/Abstract] OR eDNA[Title] OR "environmental RNA[Title/Abstract]" OR eRNA[Title])'
+```
+
 ### 出力列
 
 PubMed出力には以下の列が入ります。
@@ -417,29 +432,87 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 
 #### 設定項目 (llama_flagger.jsonc)
 
-- `scope` (必須): 対象論文の範囲を1〜3文で記述
-- `model_path` (必須): 使用するGGUFモデルのパス
-- `llama_bin`: `llama-cli` のパス (省略時はPATH検索)
-- `llama_args`: `llama-cli` の追加引数 (例: `--no-conversation`)
-- `chat_template`: `llama-cli --chat-template` に渡すテンプレート名 (例: `gemma`, `llama-3`)
-- `reuse_process`: `true` でモデルを1回ロードして使い回し
-- `batch_size`: バッチ件数 (例: `500`)
-- `batch_index`: バッチ番号 (0始まり)
-- `files_dir`: PDF/TXTの検索ディレクトリ
-- `file_exts`: 検索対象拡張子 (例: `[".pdf",".txt"]`)
-- `file_path_col`: CSV内のファイルパス列名 (無ければ `null`)
-- `min_token_len`: タイトル一致判定の最小トークン長
-- `min_token_matches`: タイトル一致判定に必要な一致数
-- `max_chars`: ファイルから読む最大文字数
-- `limit`: 読み込み件数の上限 (`batch_size` とは同時指定不可)
-- `max_tokens`: 生成トークン数
-- `sampling_temperature`: サンプリング温度 (出力のランダム性)
-- `timeout`: 1件あたりのタイムアウト秒
-- `pdftotext`: `pdftotext` のパス (省略時はPATH検索)
-- `include_hint`: in-scopeの補助ヒント (文字列 or 配列)
-- `exclude_hint`: out-of-scopeの補助ヒント (文字列 or 配列)
+| 設定キー | 必須 | 説明 |
+| --- | --- | --- |
+| `scope` | yes | 対象論文の範囲を1〜3文で記述 |
+| `model_path` | yes | 使用するGGUFモデルのパス |
+| `llama_bin` | no | `llama-cli` のパス (省略時はPATH検索) |
+| `llama_args` | no | `llama-cli` の追加引数 (例: `--no-conversation`) |
+| `model_profile` | no | `gpt-oss` / `gemma`。省略時は `model_path` から推定 |
+| `reuse_process` | no | `true` でモデルを1回ロードして使い回し |
+| `batch_size` | no | バッチ件数 (例: `500`) |
+| `batch_index` | no | バッチ番号 (0始まり) |
+| `threads` | no | 使用スレッド数 |
+| `files_dir` | no | PDF/TXTの検索ディレクトリ |
+| `file_exts` | no | 検索対象拡張子 (例: `[".pdf",".txt"]`) |
+| `file_path_col` | no | CSV内のファイルパス列名 (無ければ `null`) |
+| `min_token_len` | no | タイトル一致判定の最小トークン長 |
+| `min_token_matches` | no | タイトル一致判定に必要な一致数 |
+| `max_chars` | no | ファイルから読む最大文字数 |
+| `limit` | no | 読み込み件数の上限 (`batch_size` とは同時指定不可) |
+| `resume` | no | `true` で既存フラグ行をスキップ (`false` で再処理) |
+| `max_tokens` | no | 生成トークン数 |
+| `sampling_temperature` | no | サンプリング温度 |
+| `ctx_size` | no | コンテキスト長 |
+| `timeout` | no | 1件あたりのタイムアウト秒 |
+| `pdftotext` | no | `pdftotext` のパス (省略時はPATH検索) |
+| `include_hint` | no | in-scopeの補助ヒント (文字列 or 配列) |
+| `exclude_hint` | no | out-of-scopeの補助ヒント (文字列 or 配列) |
 
 ※ `llama_args` の `--no-conversation` は会話テンプレートを無効化し、単純なテキスト生成として扱う指定です。
+
+設定のポイント:
+
+- `model_profile` を指定するとモデル別の推奨値が自動適用されます。`sampling_temperature` / `max_chars` / `ctx_size` を `null` にするとデフォルトが有効になります。
+- `model_profile` を省略した場合は `model_path` のファイル名から推定します (`gpt-oss` / `gpt_oss` / `gemma` を含むかで判定)。
+- `ctx_size` を `llama_args` に指定した場合は、その値が優先されます (configの `ctx_size` は無視されます)。
+- `resume=true` は入力CSVに `flag_*` が埋まっている行、または出力CSVに `flag_*` が埋まっている行をスキップします (`flag_record_id` だけの行は再処理されます)。
+
+設定例 (gpt-oss):
+
+```jsonc
+{
+  "scope": "environmental DNA/RNA papers for ecology and monitoring",
+  "model_path": "/path/to/gpt-oss-20b-Q4_K_M.gguf",
+  "model_profile": "gpt-oss",
+  "llama_bin": "/path/to/llama-cli",
+  "llama_args": "--threads 16 --no-conversation",
+  "ctx_size": null,
+  "sampling_temperature": null,
+  "max_chars": null,
+  "reuse_process": true,
+  "files_dir": "downloads",
+}
+```
+
+設定値の具体例:
+
+| 設定キー | 型 | 例 | 補足 |
+| --- | --- | --- | --- |
+| `scope` | string | `Environmental DNA/RNA papers for ecology and monitoring.` | 1〜3文推奨 |
+| `model_path` | string | `/models/gpt-oss-20b-Q4_K_M.gguf` | GGUFファイル |
+| `model_profile` | string/null | `gpt-oss` | `gpt-oss` / `gemma` / `null` |
+| `llama_bin` | string | `/path/to/llama-cli` | PATH上のコマンド名でも可 |
+| `llama_args` | string/null | `--threads 16 --no-conversation` | 追加CLI引数 |
+| `ctx_size` | int/null | `8192` | `llama_args` の指定が優先 |
+| `threads` | int | `16` | CPUスレッド数 |
+| `reuse_process` | bool | `true` | モデルを使い回す |
+| `batch_size` | int | `500` | |
+| `batch_index` | int | `0` | 0始まり |
+| `limit` | int/null | `100` | `batch_size` と併用不可 |
+| `resume` | bool | `true` | 既存フラグ行をスキップ |
+| `max_tokens` | int | `256` | 生成トークン数 |
+| `sampling_temperature` | float/null | `0.05` | 低いほど安定 |
+| `timeout` | float | `300` | 秒 |
+| `pdftotext` | string/null | `/usr/bin/pdftotext` | 省略時はPATH検索 |
+| `files_dir` | string | `downloads` | PDF/TXT格納先 |
+| `file_exts` | array | `[".pdf",".txt"]` | |
+| `file_path_col` | string/null | `file_path` | CSV内のパス列 |
+| `min_token_len` | int | `4` | タイトル一致判定 |
+| `min_token_matches` | int | `2` | タイトル一致判定 |
+| `max_chars` | int/null | `4000` | 読み込み最大文字数 |
+| `include_hint` | string/array | `eDNA, eRNA, metabarcoding` | ヒント |
+| `exclude_hint` | string/array | `microbiome, metagenomics` | ヒント |
 
 ### 2) 実行
 
@@ -460,15 +533,15 @@ python3 /path/to/eDNA-paper-downloader/script/llama_flagger.py \
   --out-csv results/pubmed_edna_20260118plus.flagged.csv \
   --model /path/to/model.gguf \
   --llama-bin /path/to/llama.cpp/build/bin/llama-cli \
-  --scope "Environmental DNA/RNA (eDNA/eRNA) for ecology, biodiversity monitoring, and pathogen surveillance in natural or aquaculture systems. Methods or applications involving eDNA sampling, detection, metabarcoding, or monitoring are in-scope." \
-  --exclude-hint "microbiome" \
-  --reuse-process
+  --scope "You are screening papers using only the title and abstract. Classify a paper as OUT-OF-SCOPE if the primary focus is: - Microbial or algal community profiling (e.g., 16S rRNA, ITS, 18S rRNA, rbcL used to characterize microbial/algal communities or microbiome composition), - Host-associated microbiomes or microbiota (gut, skin, oral, rumen, dysbiosis, probiotics), - Shotgun metagenomics or related approaches (shotgun sequencing, metagenome, MAGs, genome assembly, binning), - Functional or applied microbial themes such as resistome, antimicrobial resistance (AMR), virome, wastewater-based epidemiology, or microbial biogeochemistry. Classify a paper as IN-SCOPE when the study uses environmental DNA or RNA (eDNA/eRNA) from environmental samples (water, soil, sediment, air, etc.) to detect, monitor, or assess the presence, distribution, abundance, or biodiversity of: - Animals (vertebrates or invertebrates), - Plants or macrophytes, - Or microorganisms when the study focuses on detecting specific microbial taxa from environmental DNA (NOT microbiome/community profiling). Marker gene guidance: - Do NOT classify a paper as OUT-OF-SCOPE solely because markers such as "16S", "18S", "28S", or "COI" appear. - Treat these markers as OUT-OF-SCOPE only when they are used primarily for microbial/algal community profiling. - Treat these markers as IN-SCOPE when used to detect non-microbial organisms (e.g., vertebrates, invertebrates, macrofauna, macroflora), or to detect specific microbial taxa via eDNA rather than profiling whole communities. If the focus is ambiguous or cannot be clearly determined from the title and abstract alone, prefer OUT-OF-SCOPE to minimize false positives." \
+  --exclude-hint "microbiome; microbiota; gut microbiome; gut microbiota; skin microbiome; oral microbiome; rumen microbiome; dysbiosis; probiotic; metagenomics; shotgun metagenomics; metagenome; metagenome-assembled genome; MAG; genome assembly; binning; resistome; antimicrobial resistance; AMR; virome; viral metagenomics; bacteriome; mycobiome; 16S profiling; 16S community profiling; ITS community profiling; wastewater epidemiology" \
+  --reuse-process --model-profile gemma
 ```
 
 `--scope`に指定するプロンプト例
 
 ```English
-You are screening papers using only title and abstract. Classify as OUT-OF-SCOPE when the main focus is microorganisms or host-associated microbiomes (gut/skin/oral/rumen microbiome/microbiota, dysbiosis, probiotics), microbial community profiling (e.g., 16S/ITS used to profile bacteria/fungi communities), or shotgun metagenomics (shotgun, metagenome, MAG, assembly, binning), or themes like resistome/AMR/virome/wastewater epidemiology. IMPORTANT: do NOT mark OUT-OF-SCOPE just because “16S” appears; 16S can be used outside microbiome contexts. Treat 16S as out-of-scope only when it is clearly used for microbiome/microbial community profiling. If the study is about eDNA/eRNA from environmental samples for detecting or monitoring non-microbial organisms (animals/plants) or biodiversity, it is IN-SCOPE. If unsure, prefer OUT-OF-SCOPE to avoid false positives.
+You are screening papers using only the title and abstract. Classify a paper as OUT-OF-SCOPE if the primary focus is: - Microbial or algal community profiling (e.g., 16S rRNA, ITS, 18S rRNA, rbcL used to characterize microbial/algal communities or microbiome composition), - Host-associated microbiomes or microbiota (gut, skin, oral, rumen, dysbiosis, probiotics), - Shotgun metagenomics or related approaches (shotgun sequencing, metagenome, MAGs, genome assembly, binning), - Functional or applied microbial themes such as resistome, antimicrobial resistance (AMR), virome, wastewater-based epidemiology, or microbial biogeochemistry. Classify a paper as IN-SCOPE when the study uses environmental DNA or RNA (eDNA/eRNA) from environmental samples (water, soil, sediment, air, etc.) to detect, monitor, or assess the presence, distribution, abundance, or biodiversity of: - Animals (vertebrates or invertebrates), - Plants or macrophytes, - Or microorganisms when the study focuses on detecting specific microbial taxa from environmental DNA (NOT microbiome/community profiling). Marker gene guidance: - Do NOT classify a paper as OUT-OF-SCOPE solely because markers such as "16S", "18S", "28S", or "COI" appear. - Treat these markers as OUT-OF-SCOPE only when they are used primarily for microbial/algal community profiling. - Treat these markers as IN-SCOPE when used to detect non-microbial organisms (e.g., vertebrates, invertebrates, macrofauna, macroflora), or to detect specific microbial taxa via eDNA rather than profiling whole communities. If the focus is ambiguous or cannot be clearly determined from the title and abstract alone, prefer OUT-OF-SCOPE to minimize false positives.
 ```
 
 `--exclude-hint`に指定するプロンプト例
