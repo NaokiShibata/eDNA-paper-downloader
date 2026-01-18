@@ -278,6 +278,38 @@ def _run_llama_cli(
     return (result.stdout or "").strip()
 
 
+def _run_llama_cli_safe(
+    llama_bin: Path,
+    model_path: Path,
+    prompt: str,
+    max_tokens: int,
+    sampling_temperature: float,
+    ctx_size: Optional[int],
+    threads: Optional[int],
+    extra_args: Optional[str],
+    timeout: float,
+) -> Tuple[str, Optional[str]]:
+    try:
+        return (
+            _run_llama_cli(
+                llama_bin,
+                model_path,
+                prompt,
+                max_tokens,
+                sampling_temperature,
+                ctx_size,
+                threads,
+                extra_args,
+                timeout,
+            ),
+            None,
+        )
+    except subprocess.TimeoutExpired:
+        return "", f"llama-cli timed out after {timeout:.0f}s (prompt may be too long)"
+    except Exception as exc:
+        return "", f"llama-cli failed: {exc}"
+
+
 def _parse_json(text: str) -> Optional[Dict[str, Any]]:
     cleaned = _sanitize_output(text)
     matches = list(re.finditer(r"\{.*?\}", cleaned, flags=re.DOTALL))
@@ -317,6 +349,26 @@ def _flatten_cell(value: Any) -> Any:
     return value
 
 
+def _has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except Exception:
+        pass
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _row_has_output(row: pd.Series, columns: Sequence[str]) -> bool:
+    for col in columns:
+        if col in row and _has_value(row[col]):
+            return True
+    return False
+
+
 def _escape_prompt(prompt: str) -> str:
     # llama-cli processes escape sequences; keep prompt on one line.
     return prompt.replace("\\", "\\\\").replace("\n", "\\n")
@@ -336,6 +388,13 @@ def _append_if_missing(args: List[str], flag: str, value: Optional[str] = None) 
     args.append(flag)
     if value is not None:
         args.append(value)
+
+
+@dataclass
+class GenerationResult:
+    text: str
+    error: Optional[str] = None
+    timed_out: bool = False
 
 
 @dataclass
@@ -415,7 +474,7 @@ class LlamaReuseProcess:
                 raise RuntimeError("llama-cli exited unexpectedly")
             buf += data.decode(errors="ignore")
 
-    def _read_until_done(self, timeout: float) -> str:
+    def _read_until_done(self, timeout: float) -> Tuple[str, bool]:
         buf = ""
         start = time.time()
         last_data = time.time()
@@ -425,17 +484,17 @@ class LlamaReuseProcess:
             if trimmed:
                 lines = trimmed.splitlines()
                 if lines and lines[-1].strip() == ">":
-                    return "\n".join(lines[:-1])
+                    return "\n".join(lines[:-1]), False
             if time.time() - start > timeout:
-                return buf
+                return buf, True
             rlist, _, _ = select.select([self.master_fd], [], [], 0.1)
             if not rlist:
                 if seen_json and (time.time() - last_data) > IDLE_DONE_SECONDS:
-                    return buf
+                    return buf, False
                 continue
             data = os.read(self.master_fd, 4096)
             if not data:
-                return buf
+                return buf, False
             buf += data.decode(errors="ignore")
             last_data = time.time()
             if not seen_json and _parse_json(buf):
@@ -448,11 +507,16 @@ class LlamaReuseProcess:
         self._send_line("/clear")
         self._drain_to_prompt()
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str) -> GenerationResult:
         escaped = _escape_prompt(prompt)
         self._send_line(escaped)
-        out = self._read_until_done(self.timeout)
-        return out.strip()
+        out, timed_out = self._read_until_done(self.timeout)
+        error = None
+        if timed_out:
+            error = f"llama-cli timed out after {self.timeout:.0f}s (prompt may be too long)"
+        elif self.proc.poll() is not None and self.proc.returncode not in (0, None):
+            error = f"llama-cli exited with code {self.proc.returncode}"
+        return GenerationResult(text=out.strip(), error=error, timed_out=timed_out)
 
 
 @app.command()
@@ -489,7 +553,14 @@ def flag(
     reuse_process: Optional[bool] = typer.Option(None, "--reuse-process/--no-reuse-process"),
     batch_size: Optional[int] = typer.Option(None, "--batch-size"),
     batch_index: Optional[int] = typer.Option(None, "--batch-index"),
-    resume: bool = typer.Option(True, "--resume/--no-resume"),
+    resume: bool = typer.Option(
+        True,
+        "--resume/--no-resume",
+        help=(
+            "Skip rows already flagged in the input CSV or present in the output CSV. "
+            "Use --no-resume to reprocess everything."
+        ),
+    ),
     limit: Optional[int] = typer.Option(None, "--limit"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
@@ -573,16 +644,6 @@ def flag(
     if limit:
         df = df.head(limit)
 
-    processed: set[str] = set()
-    if out_csv.exists() and resume:
-        existing = pd.read_csv(out_csv)
-        if "flag_record_id" in existing.columns:
-            processed = set(existing["flag_record_id"].astype(str).tolist())
-
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    if out_csv.exists() and not resume:
-        out_csv.unlink()
-
     new_columns = [
         "flag_record_id",
         "flag_label",
@@ -594,8 +655,24 @@ def flag(
         "flag_model_path",
         "flag_prompt_version",
     ]
+    output_check_columns = [c for c in new_columns if c != "flag_record_id"]
     fieldnames = list(df.columns) + [c for c in new_columns if c not in df.columns]
     write_header = not out_csv.exists()
+    processed: set[str] = set()
+    if out_csv.exists() and resume:
+        existing = pd.read_csv(out_csv)
+        if "flag_record_id" in existing.columns:
+            for _, row in existing.iterrows():
+                record_id = row.get("flag_record_id")
+                if not _has_value(record_id):
+                    continue
+                if not _row_has_output(row, output_check_columns):
+                    continue
+                processed.add(str(record_id))
+
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    if out_csv.exists() and not resume:
+        out_csv.unlink()
 
     runner: Optional[LlamaReuseProcess] = None
     if reuse_process and not dry_run:
@@ -629,6 +706,8 @@ def flag(
                 writer.writeheader()
 
             for _, row in tqdm(df.iterrows(), total=len(df), desc="flag"):
+                if resume and _row_has_output(row, output_check_columns):
+                    continue
                 meta = _row_to_meta(row)
                 record_id = _record_id(meta)
                 if resume and record_id in processed:
@@ -644,11 +723,15 @@ def flag(
                     typer.echo(prompt)
                     return
 
+                raw = ""
+                error: Optional[str] = None
                 if runner:
                     runner.reset()
-                    raw = runner.generate(prompt)
+                    result = runner.generate(prompt)
+                    raw = result.text
+                    error = result.error
                 else:
-                    raw = _run_llama_cli(
+                    raw, error = _run_llama_cli_safe(
                         llama_path,
                         model_path,
                         prompt,
@@ -665,7 +748,11 @@ def flag(
                 label = "parse_error"
                 confidence = ""
                 reason = cleaned.strip()
-                if parsed:
+                if error:
+                    label = "process_error"
+                    confidence = ""
+                    reason = error
+                elif parsed:
                     label = str(parsed.get("label", "")).strip().lower() or "parse_error"
                     if label not in ("in_scope", "out_of_scope", "unsure"):
                         label = "parse_error"

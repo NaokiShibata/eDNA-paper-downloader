@@ -465,21 +465,33 @@ python3 /path/to/eDNA-paper-downloader/script/llama_flagger.py \
   --reuse-process
 ```
 
-### 出力 (CSV)
+`--scope`に指定するプロンプト例
+
+```English
+You are screening papers using only title and abstract. Classify as OUT-OF-SCOPE when the main focus is microorganisms or host-associated microbiomes (gut/skin/oral/rumen microbiome/microbiota, dysbiosis, probiotics), microbial community profiling (e.g., 16S/ITS used to profile bacteria/fungi communities), or shotgun metagenomics (shotgun, metagenome, MAG, assembly, binning), or themes like resistome/AMR/virome/wastewater epidemiology. IMPORTANT: do NOT mark OUT-OF-SCOPE just because “16S” appears; 16S can be used outside microbiome contexts. Treat 16S as out-of-scope only when it is clearly used for microbiome/microbial community profiling. If the study is about eDNA/eRNA from environmental samples for detecting or monitoring non-microbial organisms (animals/plants) or biodiversity, it is IN-SCOPE. If unsure, prefer OUT-OF-SCOPE to avoid false positives.
+```
+
+`--exclude-hint`に指定するプロンプト例
+
+```English
+microbiome; microbiota; gut microbiome; gut microbiota; skin microbiome; oral microbiome; rumen microbiome; dysbiosis; probiotic; metagenomics; shotgun metagenomics; metagenome; metagenome-assembled genome; MAG; genome assembly; binning; resistome; antimicrobial resistance; AMR; virome; viral metagenomics; bacteriome; mycobiome; 16S profiling; 16S community profiling; ITS community profiling; wastewater epidemiology
+```
+
+### 出力
 
 元CSVの列に加えて、以下の列が追加されます。
 
-| 列名 | 説明 |
-| --- | --- |
-| `flag_record_id` | 識別子 (DOI優先、無ければタイトル+年) |
-| `flag_label` | `in_scope` / `out_of_scope` / `unsure` / `parse_error` |
-| `flag_confidence` | モデルが返した信頼度 (0〜1) |
-| `flag_reason` | 判定理由 (短文) |
-| `flag_file_path` | 参照したファイルのパス |
-| `flag_file_match` | ファイル一致方法 (`file_path_col` / `doi_in_filename` / `title_tokens:n` / `none`) |
-| `flag_content_source` | 取得元種別 (`text` / `pdf` / `pdf_empty` / `pdf_no_tool` / `missing` 等) |
-| `flag_model_path` | 使用モデルパス |
-| `flag_prompt_version` | プロンプトのバージョン |
+| 列名                  | 説明                                                                               |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| `flag_record_id`      | 識別子 (DOI優先、無ければタイトル+年)                                              |
+| `flag_label`          | `in_scope` / `out_of_scope` / `unsure` / `parse_error` / `process_error`           |
+| `flag_confidence`     | モデルが返した信頼度 (0〜1)                                                        |
+| `flag_reason`         | 判定理由 (短文)                                                                    |
+| `flag_file_path`      | 参照したファイルのパス                                                             |
+| `flag_file_match`     | ファイル一致方法 (`file_path_col` / `doi_in_filename` / `title_tokens:n` / `none`) |
+| `flag_content_source` | 取得元種別 (`text` / `pdf` / `pdf_empty` / `pdf_no_tool` / `missing` 等)           |
+| `flag_model_path`     | 使用モデルパス                                                                     |
+| `flag_prompt_version` | プロンプトのバージョン                                                             |
 
 ### バッチ実行例
 
@@ -501,3 +513,4 @@ python script/llama_flagger.py \
 - 行ごとのモデル再ロードを避けるには `--reuse-process` (またはJSONCで `reuse_process: true`) を指定します。
 - `--reuse-process` 使用時は `llama_args` に `--single-turn` を渡さないでください。
 - `llama-cli` が対話待ちになる場合は `--reuse-process` を維持し、`--llama-args "--no-conversation"` を追加してください。
+- `--resume` は入力CSVで `flag_*` が埋まっている行と、出力CSVで `flag_*` が埋まっている行をスキップします。`flag_record_id` だけがある行は再処理されます。再実行する場合は `--no-resume` を使ってください。
