@@ -421,6 +421,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 - `model_path` (必須): 使用するGGUFモデルのパス
 - `llama_bin`: `llama-cli` のパス (省略時はPATH検索)
 - `llama_args`: `llama-cli` の追加引数 (例: `--no-conversation`)
+- `chat_template`: `llama-cli --chat-template` に渡すテンプレート名 (例: `gemma`, `llama-3`)
 - `reuse_process`: `true` でモデルを1回ロードして使い回し
 - `batch_size`: バッチ件数 (例: `500`)
 - `batch_index`: バッチ番号 (0始まり)

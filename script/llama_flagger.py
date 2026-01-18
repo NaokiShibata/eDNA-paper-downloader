@@ -279,7 +279,8 @@ def _run_llama_cli(
 
 
 def _parse_json(text: str) -> Optional[Dict[str, Any]]:
-    matches = list(re.finditer(r"\{.*?\}", text, flags=re.DOTALL))
+    cleaned = _sanitize_output(text)
+    matches = list(re.finditer(r"\{.*?\}", cleaned, flags=re.DOTALL))
     for match in reversed(matches):
         snippet = match.group(0)
         try:
@@ -289,13 +290,44 @@ def _parse_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _sanitize_output(text: str) -> str:
+    # Remove ANSI escape sequences.
+    cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    # Remove backspaces and their effects.
+    out: List[str] = []
+    for ch in cleaned:
+        if ch == "\b":
+            if out:
+                out.pop()
+            continue
+        out.append(ch)
+    cleaned = "".join(out)
+    # Drop common special tokens like <|channel|>...<|message|>.
+    cleaned = re.sub(r"<\|[^>]+?\|>", "", cleaned)
+    # Strip non-printable control chars except newlines and tabs.
+    cleaned = "".join(ch for ch in cleaned if ch == "\n" or ch == "\t" or ord(ch) >= 32)
+    return cleaned
+
+
+def _flatten_cell(value: Any) -> Any:
+    if value is None:
+        return value
+    if isinstance(value, str):
+        return re.sub(r"\s+", " ", value).strip()
+    return value
+
+
 def _escape_prompt(prompt: str) -> str:
     # llama-cli processes escape sequences; keep prompt on one line.
     return prompt.replace("\\", "\\\\").replace("\n", "\\n")
 
 
 def _has_flag(args: Sequence[str], flags: Sequence[str]) -> bool:
-    return any(a in flags for a in args)
+    for arg in args:
+        base = arg.split("=", 1)[0]
+        if base in flags:
+            return True
+    return False
 
 
 def _append_if_missing(args: List[str], flag: str, value: Optional[str] = None) -> None:
@@ -432,6 +464,14 @@ def flag(
     model_path: Optional[Path] = typer.Option(None, "--model"),
     llama_bin: Optional[str] = typer.Option(None, "--llama-bin"),
     llama_args: Optional[str] = typer.Option(None, "--llama-args"),
+    chat_template: Optional[str] = typer.Option(
+        None,
+        "--chat-template",
+        help=(
+            "Passes --chat-template to llama-cli. Examples: gemma, llama-3, mistral, chatml. "
+            "See llama-cli --help for available templates."
+        ),
+    ),
     ctx_size: Optional[int] = typer.Option(None, "--ctx-size"),
     threads: Optional[int] = typer.Option(None, "--threads"),
     scope: Optional[str] = typer.Option(None, "--scope"),
@@ -460,6 +500,7 @@ def flag(
     model_path = _coalesce(model_path, cfg, "model_path", None)
     llama_bin = _coalesce(llama_bin, cfg, "llama_bin", "llama-cli")
     llama_args = _coalesce(llama_args, cfg, "llama_args", None)
+    chat_template = _coalesce(chat_template, cfg, "chat_template", None)
     ctx_size = _coalesce(ctx_size, cfg, "ctx_size", None)
     threads = _coalesce(threads, cfg, "threads", None)
     scope = _normalize_hint(_coalesce(scope, cfg, "scope", None))
@@ -501,7 +542,12 @@ def flag(
     if not pdftotext_path and ".pdf" in file_ext_list:
         typer.echo("pdftotext not found; PDF files will be skipped.", err=True)
 
+    if isinstance(chat_template, str) and not chat_template.strip():
+        chat_template = None
     llama_args_list = shlex.split(llama_args) if llama_args else []
+    if chat_template and not _has_flag(llama_args_list, ["--chat-template"]):
+        llama_args_list += ["--chat-template", chat_template]
+    llama_args = shlex.join(llama_args_list) if llama_args_list else None
     if reuse_process and (_has_flag(llama_args_list, ["--single-turn", "-st"])):
         raise typer.BadParameter("--single-turn cannot be used with --reuse-process")
 
@@ -614,10 +660,11 @@ def flag(
                         timeout,
                     )
 
-                parsed = _parse_json(raw)
+                cleaned = _sanitize_output(raw)
+                parsed = _parse_json(cleaned)
                 label = "parse_error"
                 confidence = ""
-                reason = raw.strip()
+                reason = cleaned.strip()
                 if parsed:
                     label = str(parsed.get("label", "")).strip().lower() or "parse_error"
                     if label not in ("in_scope", "out_of_scope", "unsure"):
@@ -639,6 +686,7 @@ def flag(
                         "flag_prompt_version": PROMPT_VERSION,
                     }
                 )
+                out_row = {key: _flatten_cell(value) for key, value in out_row.items()}
                 writer.writerow(out_row)
                 f.flush()
     finally:

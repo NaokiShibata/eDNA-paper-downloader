@@ -6,6 +6,7 @@
   // Optional: llama.cpp CLI settings
   "llama_bin": "/path/to/llama-cli",
   "llama_args": "--ctx-size 4096 --threads 8",
+  "chat_template": "gemma",
   "reuse_process": true,
   "batch_size": 500,
   "batch_index": 0,

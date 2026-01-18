@@ -196,10 +196,12 @@ def _extract_abstract(article: dict) -> Optional[str]:
         return None
     if isinstance(ab, list):
         parts = [str(x).strip() for x in ab if str(x).strip()]
-        joined = "\n".join(parts).strip()
-        return joined if joined else None
+        joined = " ".join(parts).strip()
+        normalized = re.sub(r"\s+", " ", joined).strip()
+        return normalized if normalized else None
     s = str(ab).strip()
-    return s if s else None
+    normalized = re.sub(r"\s+", " ", s).strip()
+    return normalized if normalized else None
 
 
 
