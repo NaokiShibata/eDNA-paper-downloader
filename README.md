@@ -450,6 +450,36 @@ python script/llama_flagger.py \
   --out-csv results/pubmed_edna_2020plus.flagged.csv
 ```
 
+### 実行例 (コマンド指定)
+
+```bash
+python3 /path/to/eDNA-paper-downloader/script/llama_flagger.py \
+  results/pubmed_edna_20260118.csv \
+  --files-dir results \
+  --out-csv results/pubmed_edna_20260118plus.flagged.csv \
+  --model /path/to/model.gguf \
+  --llama-bin /path/to/llama.cpp/build/bin/llama-cli \
+  --scope "Environmental DNA/RNA (eDNA/eRNA) for ecology, biodiversity monitoring, and pathogen surveillance in natural or aquaculture systems. Methods or applications involving eDNA sampling, detection, metabarcoding, or monitoring are in-scope." \
+  --exclude-hint "microbiome" \
+  --reuse-process
+```
+
+### 出力 (CSV)
+
+元CSVの列に加えて、以下の列が追加されます。
+
+| 列名 | 説明 |
+| --- | --- |
+| `flag_record_id` | 識別子 (DOI優先、無ければタイトル+年) |
+| `flag_label` | `in_scope` / `out_of_scope` / `unsure` / `parse_error` |
+| `flag_confidence` | モデルが返した信頼度 (0〜1) |
+| `flag_reason` | 判定理由 (短文) |
+| `flag_file_path` | 参照したファイルのパス |
+| `flag_file_match` | ファイル一致方法 (`file_path_col` / `doi_in_filename` / `title_tokens:n` / `none`) |
+| `flag_content_source` | 取得元種別 (`text` / `pdf` / `pdf_empty` / `pdf_no_tool` / `missing` 等) |
+| `flag_model_path` | 使用モデルパス |
+| `flag_prompt_version` | プロンプトのバージョン |
+
 ### バッチ実行例
 
 ```bash
