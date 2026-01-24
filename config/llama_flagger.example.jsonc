@@ -3,20 +3,29 @@
   "scope": "environmental DNA/RNA papers for ecology and monitoring; exclude unrelated genomics or microbiome-only studies",
   "model_path": "/path/to/model.gguf",
 
-  // Optional: llama.cpp CLI settings
+  // Output
+  "out_csv": "results/flagged.csv",
+
+  // Optional: llama.cpp + model settings
   "llama_bin": "/path/to/llama-cli",
+  // model_profile is optional when explicit overrides are set; if omitted, inferred from model_path.
+  "model_profile": "gpt-oss",
+  // Profile defaults:
+  // - gpt-oss: sampling_temperature=0.05, ctx_size=8192
+  // - gemma:   sampling_temperature=0.05, ctx_size=4096
+  // - other:   sampling_temperature=0.1, ctx_size=unchanged
+  // Overrides (set to null to use profile defaults).
+  "ctx_size": null,
+  "sampling_temperature": null,
+  "threads": 8,
   // Extra llama-cli args (example: "--no-conversation")
   "llama_args": null,
-  "out_csv": "results/flagged.csv",
-  // Optional: model profile (recommended). If omitted, inferred from model_path.
-  // Defaults applied by profile unless overridden below:
-  // - gpt-oss: sampling_temperature=0.05, max_chars=4000, ctx_size=8192
-  // - gemma:   sampling_temperature=0.05, max_chars=3000, ctx_size=4096
-  // - other:   sampling_temperature=0.1, max_chars=6000, ctx_size=unchanged
-  "model_profile": "gpt-oss",
-  // Set to null to use profile defaults.
-  "ctx_size": null,
-  "threads": 8,
+  // Example preset: GLM-4.7-Flash (llama.cpp)
+  // "model_profile": null,
+  // "threads": -1,
+  // "ctx_size": 16384,
+  // "sampling_temperature": 1.0,
+  // "llama_args": "--top-p 0.95 --min-p 0.01 --fit on --seed 3407 --jinja",
   "reuse_process": true,
   "batch_size": 500,
   "batch_index": 0,
@@ -24,19 +33,7 @@
   "resume": true,
   "dry_run": false,
   "max_tokens": 256,
-  // Set to null to use profile defaults.
-  "sampling_temperature": null,
   "timeout": 300.0,
-  "pdftotext": null,
-
-  // Optional: downloaded files
-  "files_dir": "downloads",
-  "file_exts": [".pdf", ".txt"],
-  "file_path_col": "file_path",
-  "min_token_len": 4,
-  "min_token_matches": 2,
-  // Set to null to use profile defaults.
-  "max_chars": null,
 
   // Optional: relevance hints
   "include_hint": "eDNA/eRNA sampling, detection, monitoring, metabarcoding, pathogen surveillance",

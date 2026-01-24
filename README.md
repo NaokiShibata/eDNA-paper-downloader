@@ -444,12 +444,6 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `batch_size` | no | バッチ件数 (例: `500`) |
 | `batch_index` | no | バッチ番号 (0始まり) |
 | `threads` | no | 使用スレッド数 |
-| `files_dir` | no | PDF/TXTの検索ディレクトリ |
-| `file_exts` | no | 検索対象拡張子 (例: `[".pdf",".txt"]`) |
-| `file_path_col` | no | CSV内のファイルパス列名 (無ければ `null`) |
-| `min_token_len` | no | タイトル一致判定の最小トークン長 |
-| `min_token_matches` | no | タイトル一致判定に必要な一致数 |
-| `max_chars` | no | ファイルから読む最大文字数 |
 | `limit` | no | 読み込み件数の上限 (`batch_size` とは同時指定不可) |
 | `resume` | no | `true` で既存フラグ行をスキップ (`false` で再処理) |
 | `dry_run` | no | `true` でプロンプトのみ表示して終了 |
@@ -457,7 +451,6 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `sampling_temperature` | no | サンプリング温度 |
 | `ctx_size` | no | コンテキスト長 |
 | `timeout` | no | 1件あたりのタイムアウト秒 |
-| `pdftotext` | no | `pdftotext` のパス (省略時はPATH検索) |
 | `include_hint` | no | in-scopeの補助ヒント (文字列 or 配列) |
 | `exclude_hint` | no | out-of-scopeの補助ヒント (文字列 or 配列) |
 
@@ -465,7 +458,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 
 設定のポイント:
 
-- `model_profile` を指定するとモデル別の推奨値が自動適用されます。`sampling_temperature` / `max_chars` / `ctx_size` を `null` にするとデフォルトが有効になります。
+- `model_profile` を指定するとモデル別の推奨値が自動適用されます。`sampling_temperature` / `ctx_size` を `null` にするとデフォルトが有効になります。
 - `model_profile` を省略した場合は `model_path` のファイル名から推定します (`gpt-oss` / `gpt_oss` / `gemma` を含むかで判定)。
 - `ctx_size` を `llama_args` に指定した場合は、その値が優先されます (configの `ctx_size` は無視されます)。
 - `resume=true` は入力CSVに `flag_*` が埋まっている行、または出力CSVに `flag_*` が埋まっている行をスキップします (`flag_record_id` だけの行は再処理されます)。
@@ -481,9 +474,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
   "llama_args": "--threads 16 --no-conversation",
   "ctx_size": null,
   "sampling_temperature": null,
-  "max_chars": null,
-  "reuse_process": true,
-  "files_dir": "downloads",
+  "reuse_process": true
 }
 ```
 
@@ -508,13 +499,6 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `max_tokens` | int | `256` | 生成トークン数 |
 | `sampling_temperature` | float/null | `0.05` | 低いほど安定 |
 | `timeout` | float | `300` | 秒 |
-| `pdftotext` | string/null | `/usr/bin/pdftotext` | 省略時はPATH検索 |
-| `files_dir` | string | `downloads` | PDF/TXT格納先 |
-| `file_exts` | array | `[".pdf",".txt"]` | |
-| `file_path_col` | string/null | `file_path` | CSV内のパス列 |
-| `min_token_len` | int | `4` | タイトル一致判定 |
-| `min_token_matches` | int | `2` | タイトル一致判定 |
-| `max_chars` | int/null | `4000` | 読み込み最大文字数 |
 | `include_hint` | string/array | `eDNA, eRNA, metabarcoding` | ヒント |
 | `exclude_hint` | string/array | `microbiome, metagenomics` | ヒント |
 
@@ -523,7 +507,6 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 ```bash
 python script/llama_flagger.py \
   results/pubmed_edna_2020plus.csv \
-  --files-dir downloads \
   --config config/llama_flagger.jsonc \
   --out-csv results/pubmed_edna_2020plus.flagged.csv
 ```
@@ -533,7 +516,6 @@ python script/llama_flagger.py \
 ```bash
 python3 /path/to/eDNA-paper-downloader/script/llama_flagger.py \
   results/pubmed_edna_20260118.csv \
-  --files-dir results \
   --out-csv results/pubmed_edna_20260118plus.flagged.csv \
   --model /path/to/model.gguf \
   --llama-bin /path/to/llama.cpp/build/bin/llama-cli \
@@ -564,9 +546,6 @@ microbiome; microbiota; gut microbiome; gut microbiota; skin microbiome; oral mi
 | `flag_label`          | `in_scope` / `out_of_scope` / `unsure` / `parse_error` / `process_error`           |
 | `flag_confidence`     | モデルが返した信頼度 (0〜1)                                                        |
 | `flag_reason`         | 判定理由 (短文)                                                                    |
-| `flag_file_path`      | 参照したファイルのパス                                                             |
-| `flag_file_match`     | ファイル一致方法 (`file_path_col` / `doi_in_filename` / `title_tokens:n` / `none`) |
-| `flag_content_source` | 取得元種別 (`text` / `pdf` / `pdf_empty` / `pdf_no_tool` / `missing` 等)           |
 | `flag_model_path`     | 使用モデルパス                                                                     |
 | `flag_prompt_version` | プロンプトのバージョン                                                             |
 
@@ -576,7 +555,6 @@ microbiome; microbiota; gut microbiome; gut microbiota; skin microbiome; oral mi
 # 0番目のバッチ (0始まり) を実行
 python script/llama_flagger.py \
   results/pubmed_edna_2020plus.csv \
-  --files-dir downloads \
   --config config/llama_flagger.jsonc \
   --batch-size 500 \
   --batch-index 0 \
@@ -585,8 +563,6 @@ python script/llama_flagger.py \
 
 ### 補足
 
-- CSVに `file_path` 列がある場合は優先的に使います (相対パスは `--files-dir` 基準)。
-- PDF抽出は `pdftotext` がある場合のみ有効。未インストールならPDF本文はスキップされます。
 - 行ごとのモデル再ロードを避けるには `--reuse-process` (またはJSONCで `reuse_process: true`) を指定します。
 - `--reuse-process` 使用時は `llama_args` に `--single-turn` を渡さないでください。
 - `llama-cli` が対話待ちになる場合は `--reuse-process` を維持し、`--llama-args "--no-conversation"` を追加してください。
