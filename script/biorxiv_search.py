@@ -212,11 +212,25 @@ def item_to_preprint(server: str, it: dict, retrieved_at: str) -> Preprint:
     )
 
 
-def _to_int_version(v: Optional[str]) -> int:
-    try:
-        return int(str(v))
-    except Exception:
+def _to_int_version(v: Optional[object]) -> int:
+    if v is None:
         return -1
+    if hasattr(pd, "isna") and pd.isna(v):
+        return -1
+    if isinstance(v, bool):
+        return -1
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v) if v.is_integer() else -1
+    s = str(v).strip()
+    if not s:
+        return -1
+    if s.isdigit():
+        return int(s)
+    if re.fullmatch(r"\d+\.0+", s):
+        return int(float(s))
+    return -1
 
 
 def _date_key(d: Optional[str]) -> str:

@@ -200,6 +200,27 @@ def _pick_title(item: dict) -> str:
     return _clean_text(str(title or ""))
 
 
+def _norm_year_value(value: object) -> str:
+    if value is None:
+        return ""
+    if hasattr(pd, "isna") and pd.isna(value):
+        return ""
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else ""
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    if s.isdigit():
+        return s
+    if re.fullmatch(r"\d+\.0+", s):
+        return s.split(".")[0]
+    return s
+
+
 def _merge_sources(existing: PaperInfo, incoming: PaperInfo) -> PaperInfo:
     sources = {s.strip() for s in (existing.source + "," + incoming.source).split(",") if s.strip()}
     merged = asdict(existing)
@@ -243,9 +264,7 @@ def load_pubmed_index(csv_path: Path, logger: logging.Logger) -> tuple[set[str],
         else:
             years = ["" for _ in range(len(df))]
         for title, year in zip(df["title"].fillna("").astype(str), years):
-            y = str(year).strip()
-            if y.lower() == "nan":
-                y = ""
+            y = _norm_year_value(year)
             key = f"{_norm_title(title)}::{y}"
             if key != "::":
                 title_year_set.add(key)
