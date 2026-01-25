@@ -618,3 +618,48 @@ python script/llama_flagger.py \
 - `--reuse-process` 使用時は `llama_args` に `--single-turn` を渡さないでください。
 - `llama-cli` が対話待ちになる場合は `--reuse-process` を維持し、`--llama-args "--no-conversation"` を追加してください。
 - `--resume` は入力CSVで `flag_*` が埋まっている行と、出力CSVで `flag_*` が埋まっている行をスキップします。`flag_record_id` だけがある行は再処理されます。再実行する場合は `--no-resume` を使ってください。
+
+---
+
+## 複数モデルの一致度チェック (llama_flagger_overlap.py)
+
+複数モデルのフラグ結果CSVから、ラベルの一致度合いを集計・可視化します。
+
+### 依存関係
+
+```bash
+pip install matplotlib
+# Venn図も使う場合
+pip install matplotlib-venn
+```
+
+### 基本例
+
+```bash
+python script/llama_flagger_overlap.py \
+  results/modelA.flagged.csv \
+  results/modelB.flagged.csv \
+  results/modelC.flagged.csv \
+  --out results/flag_overlap.csv \
+  --plots-dir results \
+  --plots-prefix flag_overlap
+```
+
+### Venn図の対象ラベル/モデルを指定
+
+```bash
+python script/llama_flagger_overlap.py \
+  results/modelA.flagged.csv \
+  results/modelB.flagged.csv \
+  results/modelC.flagged.csv \
+  --plots-dir results \
+  --venn-label out_of_scope \
+  --venn-models modelA.gguf modelB.gguf modelC.gguf
+```
+
+出力される図:
+
+- `flag_overlap.agreement.png` (合意ステータス)
+- `flag_overlap.pairwise.png` (ペア一致率)
+- `flag_overlap.labels.png` (モデル別ラベル分布)
+- `flag_overlap.venn_<label>.png` (ラベル別Venn)
