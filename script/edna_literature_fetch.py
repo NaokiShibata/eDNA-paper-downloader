@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import io
 import json
 import logging
 import platform
@@ -214,6 +215,69 @@ def build_query_with_excludes(base_query: str, excludes: Sequence[str]) -> str:
     return f"({base_query.strip()}) NOT ({ex_clause})"
 
 
+def _normalize_date_str(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    return s.replace("-", "/")
+
+
+def _date_range_clause(since: Optional[str], until: Optional[str], datetype: str) -> Optional[str]:
+    since_norm = _normalize_date_str(since)
+    until_norm = _normalize_date_str(until)
+    if not since_norm and not until_norm:
+        return None
+    field = datetype.upper()
+    if field not in ("PDAT", "EDAT"):
+        field = field.upper()
+    start = since_norm or "0001/01/01"
+    end = until_norm or "3000/12/31"
+    return f'("{start}"[{field}] : "{end}"[{field}])'
+
+
+def _entrez_read_handle(handle, logger: Optional[logging.Logger], context: str):
+    raw = b""
+    try:
+        raw = handle.read()
+    finally:
+        handle.close()
+    if isinstance(raw, str):
+        raw_bytes = raw.encode("utf-8", errors="replace")
+    elif isinstance(raw, (bytes, bytearray, memoryview)):
+        raw_bytes = bytes(raw)
+    else:
+        raw_bytes = str(raw).encode("utf-8", errors="replace")
+    try:
+        return Entrez.read(io.BytesIO(raw_bytes))
+    except Exception as exc:
+        if logger:
+            logger.warning(f"Entrez parse failed ({context}): {exc}")
+            if logger.isEnabledFor(logging.DEBUG):
+                snippet = raw_bytes[:500].decode("utf-8", errors="replace").replace("\n", "\\n")
+                logger.debug(f"Entrez raw head ({context}): {snippet}")
+        raise
+
+
+def _entrez_request(read_fn, logger: Optional[logging.Logger], context: str, retries: int = 3):
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, retries + 1):
+        handle = read_fn()
+        try:
+            return _entrez_read_handle(handle, logger, context)
+        except Exception as exc:
+            last_exc = exc
+            if logger and attempt < retries:
+                logger.warning(f"Retrying Entrez request ({context}) attempt {attempt}/{retries}")
+            if attempt < retries:
+                time.sleep(0.5 * attempt)
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+
+
 def _pmid_key(pmid: str) -> int:
     try:
         return int(pmid)
@@ -297,9 +361,7 @@ def pubmed_search_all_pmids(
     if logger:
         logger.info(f"Entrez.esearch initial (retmax=0) sort={sort} datetype={datetype}")
 
-    h = Entrez.esearch(**kwargs)
-    res = Entrez.read(h)
-    h.close()
+    res = _entrez_request(lambda: Entrez.esearch(**kwargs), logger, "esearch initial")
 
     count = int(res.get("Count", "0"))
     if logger:
@@ -316,19 +378,29 @@ def pubmed_search_all_pmids(
         if logger and logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Paging PMIDs retstart={retstart} retmax={min(batch, count - retstart)}")
 
-        h2 = Entrez.esearch(
-            db="pubmed",
-            term=query,
-            usehistory="y",
-            retmode="xml",
-            retstart=retstart,
-            retmax=min(batch, count - retstart),
-            webenv=webenv,
-            query_key=query_key,
-            sort=sort,
+        kwargs_page = {}
+        if mindate or maxdate:
+            kwargs_page.update({"datetype": datetype})
+            if mindate:
+                kwargs_page["mindate"] = mindate
+            if maxdate:
+                kwargs_page["maxdate"] = maxdate
+
+        res2 = _entrez_request(
+            lambda: Entrez.esearch(
+                db="pubmed",
+                term=query,
+                retmode="xml",
+                retstart=retstart,
+                retmax=min(batch, count - retstart),
+                webenv=webenv,
+                query_key=query_key,
+                sort=sort,
+                **kwargs_page,
+            ),
+            logger,
+            f"esearch page retstart={retstart}",
         )
-        res2 = Entrez.read(h2)
-        h2.close()
         pmids.extend(list(res2.get("IdList", [])))
 
         if sleep > 0:
@@ -369,9 +441,11 @@ def pubmed_fetch_details(
 
     for i in tqdm(range(0, len(pmids), chunk_size), desc="Fetching PubMed details"):
         chunk = pmids[i : i + chunk_size]
-        h = Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml")
-        records = Entrez.read(h)
-        h.close()
+        records = _entrez_request(
+            lambda: Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml"),
+            logger,
+            f"efetch chunk start={i}",
+        )
 
         for art in records.get("PubmedArticle", []):
             pmid = str(_safe_get(art, "MedlineCitation", "PMID", default="")).strip()
@@ -501,6 +575,9 @@ def fetch(
 
     exclude_terms = exclude or []
     final_query = build_query_with_excludes(query, exclude_terms)
+    date_clause = _date_range_clause(since, until, datetype)
+    if date_clause:
+        final_query = f"({final_query}) AND {date_clause}"
 
     params = {
         "email": email,
@@ -510,6 +587,7 @@ def fetch(
         "final_query": final_query,
         "since": since,
         "until": until,
+        "date_clause": date_clause,
         "datetype": datetype,
         "sort": sort,
         "pmid_batch": pmid_batch,
@@ -523,12 +601,17 @@ def fetch(
     }
     log_run_header(logger, params=params, log_file=log_file)
 
+    since_norm = _normalize_date_str(since)
+    until_norm = _normalize_date_str(until)
+    if date_clause:
+        logger.info(f"Date clause applied: {date_clause}")
+
     pmids = pubmed_search_all_pmids(
         query=final_query,
         email=email,
         api_key=api_key,
-        mindate=since,
-        maxdate=until,
+        mindate=since_norm,
+        maxdate=until_norm,
         datetype=datetype,
         sort=sort,
         batch=pmid_batch,
