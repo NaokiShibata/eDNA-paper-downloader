@@ -377,6 +377,8 @@ cmake --build build -j
 
 csvにまとめた文献メタデータを使って、llama.cppでRAG風のQAを行う簡易スクリプトです。
 以下はローカルのllama.cppサーバ (OpenAI互換API) を前提にしています。
+`edna_literature_fetch.py` のCSVはデフォルト列でそのまま使えます。
+`biorxiv_search.py` のCSVは列名が異なるため、`--text-cols`/`--context-cols` を指定してください。
 
 ### 1) llama.cppサーバを起動
 
@@ -388,11 +390,22 @@ csvにまとめた文献メタデータを使って、llama.cppでRAG風のQAを
 
 ### 2) CSVから埋め込みインデックス作成
 
+PubMed (edna_literature_fetch.py) のCSV:
+
 ```bash
 python script/llama_rag_csv.py index \
   results/pubmed_edna_2020plus.csv \
   --out-index results/pubmed_edna_2020plus.index.jsonl \
   --text-cols title,journal,year,authors,doi
+```
+
+bioRxiv (biorxiv_search.py) のCSV:
+
+```bash
+python script/llama_rag_csv.py index \
+  results/biorxiv_results.csv \
+  --out-index results/biorxiv_results.index.jsonl \
+  --text-cols title,authors,doi,date,category,abstract,biorxiv_url
 ```
 
 ### 3) 質問する
@@ -402,6 +415,31 @@ python script/llama_rag_csv.py ask \
   results/pubmed_edna_2020plus.index.jsonl \
   "Which papers mention CRISPR-Cas and what are the DOIs?" \
   --top-k 5 \
+  --show-sources
+```
+
+bioRxivのindexに対する質問例:
+
+```bash
+python script/llama_rag_csv.py ask \
+  results/biorxiv_results.index.jsonl \
+  "Which preprints focus on metabarcoding and what are the DOIs?" \
+  --context-cols title,authors,doi,date,category,biorxiv_url \
+  --top-k 5 \
+  --show-sources
+```
+
+### 追加例: 埋め込みとLLMを別URLで指定
+
+```bash
+python script/llama_rag_csv.py ask \
+  results/pubmed_edna_2020plus.index.jsonl \
+  "Summarize trends in eDNA monitoring from 2020 onward." \
+  --embed-url http://localhost:8081 \
+  --embed-api openai \
+  --llm-url http://localhost:8080 \
+  --llm-api openai-chat \
+  --top-k 8 \
   --show-sources
 ```
 
@@ -437,6 +475,8 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `scope` | yes | 対象論文の範囲を1〜3文で記述 |
 | `model_path` | yes | 使用するGGUFモデルのパス |
 | `out_csv` | no | 出力CSVのパス |
+| `log_file` | no | ログファイルのパス |
+| `log_level` | no | ログレベル (`DEBUG` / `INFO` / `WARNING` / `ERROR`) |
 | `llama_bin` | no | `llama-cli` のパス (省略時はPATH検索) |
 | `llama_args` | no | `llama-cli` の追加引数 (例: `--no-conversation`) |
 | `model_profile` | no | `gpt-oss` / `gemma`。省略時は `model_path` から推定 |
@@ -472,6 +512,8 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
   "model_profile": "gpt-oss",
   "llama_bin": "/path/to/llama-cli",
   "llama_args": "--threads 16 --no-conversation",
+  "log_file": "logs/llama_flagger.log",
+  "log_level": "INFO",
   "ctx_size": null,
   "sampling_temperature": null,
   "reuse_process": true
@@ -485,6 +527,8 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `scope` | string | `Environmental DNA/RNA papers for ecology and monitoring.` | 1〜3文推奨 |
 | `model_path` | string | `/models/gpt-oss-20b-Q4_K_M.gguf` | GGUFファイル |
 | `out_csv` | string | `results/flagged.csv` | 出力CSV |
+| `log_file` | string/null | `logs/llama_flagger.log` | ログファイル |
+| `log_level` | string | `INFO` | ログレベル |
 | `model_profile` | string/null | `gpt-oss` | `gpt-oss` / `gemma` / `null` |
 | `llama_bin` | string | `/path/to/llama-cli` | PATH上のコマンド名でも可 |
 | `llama_args` | string/null | `--threads 16 --no-conversation` | 追加CLI引数 |
