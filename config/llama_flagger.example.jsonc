@@ -5,6 +5,8 @@
 
   // Output
   "out_csv": "results/flagged.csv",
+  "log_file": "logs/llama_flagger.log",
+  "log_level": "INFO",
 
   // Optional: llama.cpp + model settings
   "llama_bin": "/path/to/llama-cli",

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import pty
 import re
+import sys
 import fcntl
 import select
 import shlex
@@ -30,6 +32,34 @@ MODEL_DEFAULTS = {
     "gemma": {"sampling_temperature": 0.05, "ctx_size": 4096},
 }
 DEFAULT_SAMPLING_TEMPERATURE = 0.1
+
+
+def setup_logger(log_level: str = "INFO", log_file: Optional[Path] = None) -> logging.Logger:
+    logger = logging.getLogger("llama_flagger")
+    logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    logger.propagate = False
+
+    if logger.handlers:
+        logger.handlers.clear()
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s\t%(levelname)s\t%(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    sh = logging.StreamHandler(sys.stderr)
+    sh.setFormatter(fmt)
+    sh.setLevel(logger.level)
+    logger.addHandler(sh)
+
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(log_file, encoding="utf-8")
+        fh.setFormatter(fmt)
+        fh.setLevel(logger.level)
+        logger.addHandler(fh)
+
+    return logger
 
 
 def _strip_jsonc(text: str) -> str:
@@ -348,6 +378,135 @@ def _sanitize_output(text: str) -> str:
     return cleaned
 
 
+def _normalize_label(value: str) -> Optional[str]:
+    if not value:
+        return None
+    cleaned = re.sub(r"[^a-z]+", " ", value.lower()).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned:
+        return None
+    if cleaned in ("in scope", "in_scope", "inscope", "include", "relevant"):
+        return "in_scope"
+    if cleaned in ("out of scope", "out_of_scope", "outofscope", "exclude", "irrelevant"):
+        return "out_of_scope"
+    if cleaned in ("unsure", "uncertain", "unknown", "maybe"):
+        return "unsure"
+    cleaned_key = cleaned.replace(" ", "_")
+    if cleaned_key in ("in_scope", "out_of_scope", "unsure"):
+        return cleaned_key
+    return None
+
+
+def _infer_label_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    lowered = text.lower()
+    explicit = re.search(
+        r"\b(in[_\- ]?scope|out[_\- ]?of[_\- ]?scope|unsure|uncertain)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if explicit:
+        return _normalize_label(explicit.group(1))
+
+    if re.search(r"\b(no|not|without)\b.{0,12}\b(e?dna|erna)\b", lowered):
+        return "out_of_scope"
+    if re.search(r"\b(out of scope|outside scope|not in scope|not within scope)\b", lowered):
+        return "out_of_scope"
+    if re.search(r"\b(does not align|doesn't align|not aligned)\b", lowered) and "scope" in lowered:
+        return "out_of_scope"
+    if re.search(r"\b(unrelated|irrelevant)\b", lowered):
+        return "out_of_scope"
+    if re.search(r"\b(microbiome|metagenomics|shotgun)\b", lowered):
+        if not re.search(r"\b(exclude|excluding|not)\b.{0,20}\b(microbiome|metagenomics|shotgun)\b", lowered):
+            return "out_of_scope"
+
+    if re.search(r"\b(edna|erna|environmental dna|environmental rna)\b", lowered):
+        return "in_scope"
+    if re.search(r"\b(in scope|within scope|fits scope)\b", lowered):
+        return "in_scope"
+    if re.search(r"\balign\w*\s+with\s+(the\s+)?scope\b", lowered):
+        return "in_scope"
+    if re.search(r"\balign\w*\s+with\b", lowered):
+        return "in_scope"
+    if re.search(r"\b(monitoring|sampling|metabarcoding|biodiversity)\b", lowered):
+        return "in_scope"
+
+    if re.search(r"\b(unclear|insufficient|ambiguous|unsure|uncertain)\b", lowered):
+        return "unsure"
+    if "relevant" in lowered and "not relevant" not in lowered:
+        return "in_scope"
+    if "not relevant" in lowered or "irrelevant" in lowered:
+        return "out_of_scope"
+    return None
+
+
+def _normalize_confidence(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value).strip()
+    if not text:
+        return ""
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
+    if not match:
+        return ""
+    num = float(match.group(1))
+    if "%" in text and 0 <= num <= 100:
+        num = num / 100.0
+    return str(num)
+
+
+def _parse_fallback(text: str) -> Optional[Dict[str, Any]]:
+    cleaned = _sanitize_output(text)
+    label = ""
+    confidence: Any = ""
+    reason = ""
+
+    label_match = re.search(
+        r"(?:^|\b)(label|decision|classification)\s*[:=]\s*([^\r\n]+)",
+        cleaned,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if label_match:
+        label = label_match.group(2).strip()
+    else:
+        keyword_match = re.search(
+            r"\b(in[_\- ]?scope|out[_\- ]?of[_\- ]?scope|unsure|uncertain)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+        if keyword_match:
+            label = keyword_match.group(1).strip()
+
+    conf_match = re.search(
+        r"(?:^|\b)(confidence|score|probability)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?%?)",
+        cleaned,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if conf_match:
+        confidence = conf_match.group(2).strip()
+
+    reason_match = re.search(
+        r"(?:^|\b)(reason|rationale|explanation)\s*[:=]\s*(.+)$",
+        cleaned,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if reason_match:
+        reason = reason_match.group(2).strip()
+
+    if not label:
+        return None
+    return {"label": label, "confidence": confidence, "reason": reason}
+
+
+def _truncate(text: str, limit: int = 400) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...(truncated)"
+
+
 def _flatten_cell(value: Any) -> Any:
     if value is None:
         return value
@@ -573,6 +732,8 @@ def flag(
     csv_path: Path = typer.Argument(..., exists=True, dir_okay=False),
     out_csv: Optional[Path] = typer.Option(None, "--out-csv"),
     config: Optional[Path] = typer.Option(None, "--config"),
+    log_file: Optional[Path] = typer.Option(None, "--log-file"),
+    log_level: Optional[str] = typer.Option(None, "--log-level"),
     model_path: Optional[Path] = typer.Option(None, "--model"),
     llama_bin: Optional[str] = typer.Option(None, "--llama-bin"),
     llama_args: Optional[str] = typer.Option(None, "--llama-args"),
@@ -607,6 +768,10 @@ def flag(
     cfg = _load_config(config)
 
     out_csv = _coalesce(out_csv, cfg, "out_csv", "results/flagged.csv")
+    log_file = _coalesce(log_file, cfg, "log_file", None)
+    log_level = _coalesce(log_level, cfg, "log_level", "INFO")
+    if isinstance(log_level, str) and not log_level.strip():
+        log_level = "INFO"
     model_path = _coalesce(model_path, cfg, "model_path", None)
     llama_bin = _coalesce(llama_bin, cfg, "llama_bin", "llama-cli")
     llama_args = _coalesce(llama_args, cfg, "llama_args", None)
@@ -646,6 +811,18 @@ def flag(
     out_csv = _expand_path(out_csv) or Path("results/flagged.csv")
     llama_bin = str(_expand_path(llama_bin) or llama_bin)
     llama_path = _resolve_llama_bin(llama_bin)
+    log_file_path = _expand_path(log_file) if log_file else None
+    logger = setup_logger(str(log_level), log_file_path)
+    logger.info("Starting flagger: csv=%s out=%s model=%s", csv_path, out_csv, model_path)
+    logger.info(
+        "Options: profile=%s ctx=%s threads=%s temp=%s max_tokens=%s reuse=%s",
+        model_profile,
+        ctx_size,
+        threads,
+        sampling_temperature,
+        max_tokens,
+        reuse_process,
+    )
 
     llama_args_list = shlex.split(llama_args) if llama_args else []
     llama_args = shlex.join(llama_args_list) if llama_args_list else None
@@ -655,9 +832,11 @@ def flag(
         sampling_temperature = float(defaults.get("sampling_temperature", DEFAULT_SAMPLING_TEMPERATURE))
     if ctx_size is None and not _has_flag(llama_args_list, ["--ctx-size", "-c"]):
         ctx_size = defaults.get("ctx_size", None)
+    logger.info("Resolved: ctx=%s temp=%s", ctx_size, sampling_temperature)
 
     df = pd.read_csv(csv_path)
     df = df.drop(columns=["flag_file_path", "flag_file_match", "flag_content_source"], errors="ignore")
+    logger.info("Loaded rows: %d", len(df))
     if limit and batch_size:
         raise typer.BadParameter("--limit cannot be used with --batch-size")
     if batch_size:
@@ -672,6 +851,7 @@ def flag(
         df = df.iloc[start:end]
     if limit:
         df = df.head(limit)
+        logger.info("Applied limit: %d", len(df))
 
     new_columns = [
         "flag_record_id",
@@ -739,6 +919,7 @@ def flag(
                 if resume and record_id in processed:
                     continue
                 prompt = _build_prompt(scope, include_hint, exclude_hint, meta)
+                logger.debug("record=%s prompt_chars=%d", record_id, len(prompt))
 
                 if dry_run:
                     typer.echo(prompt)
@@ -765,11 +946,15 @@ def flag(
                     )
 
                 cleaned = _sanitize_output(raw)
+                cleaned_no_prompt = _strip_prompt_echo(cleaned, prompt)
                 parsed = _parse_json(cleaned)
-                cleaned_no_prompt = cleaned
+                parse_source = "json"
                 if not parsed:
-                    cleaned_no_prompt = _strip_prompt_echo(cleaned, prompt)
                     parsed = _parse_json(cleaned_no_prompt)
+                    parse_source = "json_no_prompt"
+                if not parsed:
+                    parsed = _parse_fallback(cleaned_no_prompt)
+                    parse_source = "fallback" if parsed else "none"
                 label = "parse_error"
                 confidence = ""
                 reason = ""
@@ -778,13 +963,44 @@ def flag(
                     confidence = ""
                     reason = error
                 elif parsed:
-                    label = str(parsed.get("label", "")).strip().lower() or "parse_error"
-                    if label not in ("in_scope", "out_of_scope", "unsure"):
-                        label = "parse_error"
-                    confidence = parsed.get("confidence", "")
+                    label_raw = str(parsed.get("label", "")).strip()
+                    label_norm = _normalize_label(label_raw)
+                    template_label = "|" in label_raw
+                    label = label_norm or "parse_error"
+                    confidence = _normalize_confidence(parsed.get("confidence", ""))
                     reason = str(parsed.get("reason", "")).strip() or ""
+                    if label == "parse_error":
+                        label_hint = _infer_label_from_text(reason)
+                        if not label_hint and not template_label:
+                            label_hint = _infer_label_from_text(cleaned_no_prompt)
+                        if label_hint:
+                            label = label_hint
+                            parse_source = f"{parse_source}_label_infer"
+                        else:
+                            reason = f"parse_error: invalid label {label_raw!r}"
                 if not reason:
-                    reason = "parse_error: no JSON found"
+                    if label == "parse_error":
+                        reason = "parse_error: could not parse output"
+                    else:
+                        reason = "no reason provided"
+
+                if label == "parse_error":
+                    logger.warning(
+                        "parse_error record=%s source=%s output=%s",
+                        record_id,
+                        parse_source,
+                        _truncate(cleaned_no_prompt),
+                    )
+                elif label == "process_error":
+                    logger.warning("process_error record=%s error=%s", record_id, reason)
+                else:
+                    logger.debug(
+                        "parsed record=%s label=%s confidence=%s source=%s",
+                        record_id,
+                        label,
+                        confidence,
+                        parse_source,
+                    )
 
                 out_row = meta.copy()
                 out_row.update(
@@ -793,7 +1009,7 @@ def flag(
                         "flag_label": label,
                         "flag_confidence": confidence,
                         "flag_reason": reason,
-                        "flag_model_path": str(model_path),
+                        "flag_model_path": model_path.name,
                         "flag_prompt_version": PROMPT_VERSION,
                     }
                 )
