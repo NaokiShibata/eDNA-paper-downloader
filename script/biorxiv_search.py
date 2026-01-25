@@ -149,7 +149,10 @@ def _norm(s: str) -> str:
 
 
 def _parse_date(s: str) -> date:
-    return datetime.strptime(s, "%Y-%m-%d").date()
+    s_norm = s.strip()
+    if not s_norm:
+        raise ValueError("date is required (YYYY/MM/DD)")
+    return datetime.strptime(s_norm, "%Y/%m/%d").date()
 
 
 def _fmt_date(d: date) -> str:
@@ -431,8 +434,8 @@ def compute_delta(rows: list[Preprint], existing_idx: dict[str, tuple[int, str]]
 @app.command()
 def search(
     server: str = typer.Option("biorxiv", help='Target server: "biorxiv" or "medrxiv".'),
-    from_date: str = typer.Option(..., help="Start date YYYY-MM-DD"),
-    to_date: str = typer.Option(..., help="End date YYYY-MM-DD"),
+    from_date: str = typer.Option(..., help="Start date YYYY/MM/DD"),
+    to_date: str = typer.Option(..., help="End date YYYY/MM/DD"),
     query: str = typer.Option("", help="Local keyword filter over title/abstract/authors/category."),
     exclude: Optional[list[str]] = typer.Option(None, "--exclude", help="Exclude term(s). Can be repeated."),
     category: Optional[str] = typer.Option(None, help="Filter by category (exact match, e.g., 'ecology')."),
