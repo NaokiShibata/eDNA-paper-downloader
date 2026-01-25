@@ -1,7 +1,16 @@
 {
   // Required
-  "scope": "environmental DNA/RNA papers for ecology and monitoring; exclude unrelated genomics or microbiome-only studies",
+  "scope": "Include papers that use environmental DNA/RNA (eDNA/eRNA) from environmental samples (water/soil/sediment/air) for ecology, biodiversity assessment, monitoring, detection, or surveillance. Exclude unrelated genomics, lab-only sequencing, tool development, and host-associated microbiome-only studies.",
+
   "model_path": "/path/to/model.gguf",
+
+  // Optional: if CSV has "abstract", it is used by default (head+tail excerpt).
+  // Optional: override full prompt template (uses ${...} placeholders).
+  // Available: ${scope}, ${include_hint}, ${exclude_hint}, ${title}, ${journal},
+  // ${year}, ${authors}, ${doi}, ${abstract_excerpt}
+  //
+  // Updated default: hardened for JSON compliance + less false positives.
+  "prompt_template": "You are a strict relevance screener for scientific papers.\nProject scope: ${scope}\n\nIn-scope hints: ${include_hint}\nOut-of-scope hints: ${exclude_hint}\n\nInstructions (MUST follow):\n- Use ONLY the provided metadata and abstract excerpt. Do NOT assume missing information.\n- Output MUST be a single JSON object on ONE line.\n- Do NOT output markdown, code fences, or any text outside the JSON.\n- Allowed keys: label, confidence, reason. Do not add any other keys.\n- label must be exactly one of: in_scope, out_of_scope, unsure\n- confidence must be a number from 0 to 1.\n- If evidence is insufficient or ambiguous, label = unsure.\n\nDecision rules (priority order):\n1) If it is host-associated microbiome-only (gut/skin/oral) and not environmental DNA/RNA monitoring, label = out_of_scope.\n2) Include only if eDNA/eRNA from environmental samples is used for ecology/monitoring/detection/surveillance (e.g., metabarcoding, amplicon sequencing, qPCR/ddPCR, species/pathogen detection).\n3) Tool development (e.g., CRISPR/platform) or pure genomics/transcriptomics without environmental monitoring => out_of_scope.\n\nPaper metadata:\nTitle: ${title}\nJournal: ${journal}\nYear: ${year}\nAuthors: ${authors}\nDOI: ${doi}\n\nAbstract excerpt:\n${abstract_excerpt}",
 
   // Output
   "out_csv": "results/flagged.csv",
@@ -10,34 +19,65 @@
 
   // Optional: llama.cpp + model settings
   "llama_bin": "/path/to/llama-cli",
-  // model_profile is optional when explicit overrides are set; if omitted, inferred from model_path.
-  "model_profile": "gpt-oss",
-  // Profile defaults:
-  // - gpt-oss: sampling_temperature=0.05, ctx_size=8192
-  // - gemma:   sampling_temperature=0.05, ctx_size=4096
-  // - other:   sampling_temperature=0.1, ctx_size=unchanged
-  // Overrides (set to null to use profile defaults).
-  "ctx_size": null,
-  "sampling_temperature": null,
+
+  // Default profile: keep "other" behavior by leaving null and setting explicit overrides below.
+  // (If you prefer profile defaults, set model_profile to "gpt-oss" or "gemma" and remove overrides.)
+  "model_profile": null,
+
+  // Classification settings (stable / near-deterministic)
+  "ctx_size": 8192,
+  "sampling_temperature": 0.0,
+
+  // threads: 8 is a safe default; set -1 to auto in many llama-cli builds
   "threads": 8,
-  // Extra llama-cli args (example: "--no-conversation")
-  "llama_args": null,
-  // Example preset: GLM-4.7-Flash (llama.cpp)
-  // "model_profile": null,
-  // "threads": -1,
-  // "ctx_size": 16384,
-  // "sampling_temperature": 1.0,
-  // "llama_args": "--top-p 0.95 --min-p 0.01 --fit on --seed 3407 --jinja",
+
+  // Extra llama-cli args (aimed at stable 1-line JSON outputs)
+  // NOTE: remove any flags your llama-cli doesn't support.
+  "llama_args": "--seed 3407 --top-k 1 --top-p 1.0 --repeat-penalty 1.0 --no-display-prompt --no-show-timings --color off",
+
   "reuse_process": true,
+
+  // Batching
   "batch_size": 500,
   "batch_index": 0,
   "limit": null,
+
   "resume": true,
   "dry_run": false,
-  "max_tokens": 256,
-  "timeout": 300.0,
 
-  // Optional: relevance hints
-  "include_hint": "eDNA/eRNA sampling, detection, monitoring, metabarcoding, pathogen surveillance",
-  "exclude_hint": "microbiome-only, unrelated CRISPR tool development, pure genomics without environmental DNA"
+  // JSON is short; keep max_tokens tight to prevent rambling / JSON breakage
+  "max_tokens": 96,
+
+  // For local screening, 120–180s is usually plenty; keep 300 if you see timeouts
+  "timeout": 180.0,
+
+  // Optional: relevance hints (expanded; list or string both supported)
+  "include_hint": [
+    "environmental DNA",
+    "eDNA",
+    "environmental RNA",
+    "eRNA",
+    "environmental samples (water/soil/sediment/air)",
+    "biomonitoring",
+    "biodiversity assessment",
+    "metabarcoding",
+    "amplicon sequencing",
+    "qPCR",
+    "ddPCR",
+    "species detection",
+    "invasive species detection",
+    "pathogen surveillance in environmental samples",
+    "wastewater surveillance (monitoring context)",
+  ],
+  "exclude_hint": [
+    "host-associated microbiome (gut/skin/oral)",
+    "microbiome-only",
+    "pure genomics",
+    "genome assembly",
+    "transcriptomics not from environmental samples",
+    "CRISPR tool development",
+    "platform/tooling only",
+    "lab culture only",
+    "clinical-only samples",
+  ],
 }

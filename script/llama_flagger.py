@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import json
 import logging
 import os
 import pty
 import re
-import sys
-import fcntl
 import select
 import shlex
 import shutil
 import subprocess
+import sys
 import termios
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from string import Template
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import pandas as pd
@@ -195,6 +196,29 @@ def _clean_doi(value: str) -> str:
     return v.strip()
 
 
+def _abstract_excerpt(
+    value: Optional[str],
+    max_chars: int = 1200,
+    head_ratio: float = 0.7,
+) -> Optional[str]:
+    if not value:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if not text:
+        return None
+    if len(text) <= max_chars:
+        return text
+    head_len = max(1, int(max_chars * head_ratio))
+    tail_len = max_chars - head_len
+    if tail_len <= 0:
+        return text[:max_chars]
+    head = text[:head_len].rstrip()
+    tail = text[-tail_len:].lstrip()
+    if not tail:
+        return head
+    return f"{head} ... {tail}"
+
+
 def _tokenize(value: str, min_len: int) -> List[str]:
     tokens = re.split(r"[^a-z0-9]+", (value or "").lower())
     return [t for t in tokens if len(t) >= min_len]
@@ -236,7 +260,22 @@ def _build_prompt(
     include_hint: Optional[str],
     exclude_hint: Optional[str],
     meta: Dict[str, str],
+    prompt_template: Optional[str],
 ) -> str:
+    abstract_excerpt = _abstract_excerpt(meta.get("abstract"))
+    if prompt_template:
+        template = Template(str(prompt_template))
+        return template.safe_substitute(
+            scope=scope,
+            include_hint=include_hint or "",
+            exclude_hint=exclude_hint or "",
+            title=meta.get("title", ""),
+            journal=meta.get("journal", ""),
+            year=meta.get("year", ""),
+            authors=meta.get("authors", ""),
+            doi=meta.get("doi", ""),
+            abstract_excerpt=abstract_excerpt or "",
+        ).strip()
     lines = [
         "You are a strict relevance screener for papers.",
         f"Project scope: {scope}",
@@ -248,17 +287,26 @@ def _build_prompt(
     lines += [
         "",
         "Instructions:",
-        "- Use metadata only.",
-        "- If evidence is insufficient, answer with label \"unsure\".",
-        "- Reply with JSON only.",
-        "Format: {\"label\":\"in_scope|out_of_scope|unsure\",\"confidence\":0-1,\"reason\":\"short\"}",
+        "- Use ONLY the provided metadata (title + abstract etc.). Do NOT assume missing info.",
+        "- Output MUST be a single JSON object on ONE line. No markdown. No code fences.",
+        "- Allowed keys: label, confidence, reason. Do not add any other keys.",
+        "- label must be exactly one of: in_scope, out_of_scope, unsure",
+        "- confidence must be a number from 0 to 1.",
+        "- If evidence is insufficient, label = unsure.",
+        "Decision rules (priority order):",
+        "1) If it is host-associated microbiome-only (gut/skin/oral) and not environmental DNA/RNA monitoring, label = out_of_scope.",
+        "2) Include only if eDNA/eRNA from environmental samples is used for ecology/monitoring/detection/surveillance.",
+        "3) Tool development / CRISPR / pure genomics without environmental monitoring => out_of_scope.",
         "",
         "Paper metadata:",
-        f"Title: {meta.get('title','')}",
-        f"Journal: {meta.get('journal','')}",
-        f"Year: {meta.get('year','')}",
-        f"Authors: {meta.get('authors','')}",
-        f"DOI: {meta.get('doi','')}",
+        f"Title: {meta.get('title', '')}",
+        f"Journal: {meta.get('journal', '')}",
+        f"Year: {meta.get('year', '')}",
+        f"Authors: {meta.get('authors', '')}",
+        f"DOI: {meta.get('doi', '')}",
+        "",
+        "Abstract excerpt:",
+        abstract_excerpt if abstract_excerpt else "NO ABSTRACT AVAILABLE",
     ]
     return "\n".join(lines).strip()
 
@@ -526,11 +574,7 @@ def _strip_prompt_echo(text: str, prompt: str) -> str:
         cleaned = cleaned.replace(escaped, "")
     prompt_lines = {line.strip() for line in prompt.splitlines() if line.strip()}
     if prompt_lines:
-        cleaned_lines = [
-            line
-            for line in cleaned.splitlines()
-            if line.strip() and line.strip() not in prompt_lines
-        ]
+        cleaned_lines = [line for line in cleaned.splitlines() if line.strip() and line.strip() not in prompt_lines]
         cleaned = "\n".join(cleaned_lines)
     return cleaned.strip()
 
@@ -757,8 +801,7 @@ def flag(
         None,
         "--resume/--no-resume",
         help=(
-            "Skip rows already flagged in the input CSV or present in the output CSV. "
-            "Use --no-resume to reprocess everything."
+            "Skip rows already flagged in the input CSV or present in the output CSV. Use --no-resume to reprocess everything."
         ),
     ),
     limit: Optional[int] = typer.Option(None, "--limit"),
@@ -772,6 +815,7 @@ def flag(
     log_level = _coalesce(log_level, cfg, "log_level", "INFO")
     if isinstance(log_level, str) and not log_level.strip():
         log_level = "INFO"
+    prompt_template = _coalesce(None, cfg, "prompt_template", None)
     model_path = _coalesce(model_path, cfg, "model_path", None)
     llama_bin = _coalesce(llama_bin, cfg, "llama_bin", "llama-cli")
     llama_args = _coalesce(llama_args, cfg, "llama_args", None)
@@ -918,7 +962,7 @@ def flag(
                 record_id = _record_id(meta)
                 if resume and record_id in processed:
                     continue
-                prompt = _build_prompt(scope, include_hint, exclude_hint, meta)
+                prompt = _build_prompt(scope, include_hint, exclude_hint, meta, prompt_template)
                 logger.debug("record=%s prompt_chars=%d", record_id, len(prompt))
 
                 if dry_run:

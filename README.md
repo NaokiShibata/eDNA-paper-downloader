@@ -217,6 +217,8 @@ python script/crossref_semantic_fetch.py \
 
 ## bioRxiv/medRxiv: biorxiv_search.py
 
+`--query`に指定する内容の書き方は、Biorxivの[`Search-Tips`](https://www.biorxiv.org/content/search-tips)を参照下さい。
+
 ### ヘルプ
 
 ```bash
@@ -477,6 +479,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `out_csv` | no | 出力CSVのパス |
 | `log_file` | no | ログファイルのパス |
 | `log_level` | no | ログレベル (`DEBUG` / `INFO` / `WARNING` / `ERROR`) |
+| `prompt_template` | no | プロンプト全体のテンプレート (指定時は内部テンプレを置換) |
 | `llama_bin` | no | `llama-cli` のパス (省略時はPATH検索) |
 | `llama_args` | no | `llama-cli` の追加引数 (例: `--no-conversation`) |
 | `model_profile` | no | `gpt-oss` / `gemma`。省略時は `model_path` から推定 |
@@ -502,6 +505,8 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 - `model_profile` を省略した場合は `model_path` のファイル名から推定します (`gpt-oss` / `gpt_oss` / `gemma` を含むかで判定)。
 - `ctx_size` を `llama_args` に指定した場合は、その値が優先されます (configの `ctx_size` は無視されます)。
 - `resume=true` は入力CSVに `flag_*` が埋まっている行、または出力CSVに `flag_*` が埋まっている行をスキップします (`flag_record_id` だけの行は再処理されます)。
+- CSVに `abstract` 列がある場合は、文頭+末尾の抜粋を自動的に使います。
+- `prompt_template` を指定すると内部のプロンプト生成を上書きします (JSON出力の指示も含めて記述してください)。
 
 設定例 (gpt-oss):
 
@@ -514,6 +519,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
   "llama_args": "--threads 16 --no-conversation",
   "log_file": "logs/llama_flagger.log",
   "log_level": "INFO",
+  "prompt_template": null,
   "ctx_size": null,
   "sampling_temperature": null,
   "reuse_process": true
@@ -529,6 +535,7 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `out_csv` | string | `results/flagged.csv` | 出力CSV |
 | `log_file` | string/null | `logs/llama_flagger.log` | ログファイル |
 | `log_level` | string | `INFO` | ログレベル |
+| `prompt_template` | string/null | `null` | プロンプトテンプレ |
 | `model_profile` | string/null | `gpt-oss` | `gpt-oss` / `gemma` / `null` |
 | `llama_bin` | string | `/path/to/llama-cli` | PATH上のコマンド名でも可 |
 | `llama_args` | string/null | `--threads 16 --no-conversation` | 追加CLI引数 |
