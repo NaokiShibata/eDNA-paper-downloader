@@ -159,6 +159,15 @@ def _fmt_date(d: date) -> str:
     return d.strftime("%Y-%m-%d")
 
 
+def _clean_term(term: str) -> str:
+    t = term.strip()
+    while t.startswith("(") and t.endswith(")") and len(t) > 2:
+        t = t[1:-1].strip()
+    if (t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'")):
+        t = t[1:-1].strip()
+    return t
+
+
 def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[dict]:
     """
     Local filter: require all tokens in query to appear in title/abstract/authors/category.
@@ -177,7 +186,22 @@ def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[di
             ]
         ).lower()
 
-    q_tokens = [t.lower() for t in re.split(r"\s+", q) if t.strip()]
+    or_terms = [t for t in re.split(r"\s+OR\s+", q, flags=re.IGNORECASE) if t.strip()]
+    if len(or_terms) > 1:
+        or_terms_clean = [_clean_term(t).lower() for t in or_terms]
+        or_terms_clean = [t for t in or_terms_clean if t]
+        out = []
+        for it in items:
+            h = hay(it)
+            if any(e.lower() in h for e in ex):
+                continue
+            if or_terms_clean and not any(t in h for t in or_terms_clean):
+                continue
+            out.append(it)
+        return out
+
+    q_tokens = [_clean_term(t).lower() for t in re.split(r"\s+", q) if t.strip()]
+    q_tokens = [t for t in q_tokens if t and t not in {"or", "and"}]
 
     out = []
     for it in items:
@@ -381,7 +405,14 @@ def load_existing_index(csv_path: Path, json_path: Path, logger: logging.Logger)
     df = None
     if csv_path.exists():
         logger.info(f"Loading existing CSV: {csv_path}")
-        df = pd.read_csv(csv_path)
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            empty_err = getattr(getattr(pd, "errors", None), "EmptyDataError", None)
+            if empty_err is not None and isinstance(e, empty_err):
+                logger.warning(f"Existing CSV is empty; skipping: {csv_path}")
+                return idx
+            raise
     elif json_path.exists():
         logger.info(f"Loading existing JSON: {json_path}")
         df = pd.DataFrame(json.loads(json_path.read_text(encoding="utf-8")))
@@ -436,7 +467,10 @@ def search(
     server: str = typer.Option("biorxiv", help='Target server: "biorxiv" or "medrxiv".'),
     from_date: str = typer.Option(..., help="Start date YYYY/MM/DD"),
     to_date: str = typer.Option(..., help="End date YYYY/MM/DD"),
-    query: str = typer.Option("", help="Local keyword filter over title/abstract/authors/category."),
+    query: str = typer.Option(
+        "",
+        help="Local keyword filter over title/abstract/authors/category. Spaces=AND; use OR for OR.",
+    ),
     exclude: Optional[list[str]] = typer.Option(None, "--exclude", help="Exclude term(s). Can be repeated."),
     category: Optional[str] = typer.Option(None, help="Filter by category (exact match, e.g., 'ecology')."),
     sleep: float = typer.Option(0.5, min=0.0, help="Sleep seconds between API pages (recommended >=0.3)."),
