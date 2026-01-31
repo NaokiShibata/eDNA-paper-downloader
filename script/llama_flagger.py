@@ -28,10 +28,6 @@ app = typer.Typer(add_completion=False)
 PROMPT_VERSION = "v1"
 PROMPT_TAILS = ("> ", ">")
 IDLE_DONE_SECONDS = 0.5
-MODEL_DEFAULTS = {
-    "gpt-oss": {"sampling_temperature": 0.05, "ctx_size": 8192},
-    "gemma": {"sampling_temperature": 0.05, "ctx_size": 4096},
-}
 DEFAULT_SAMPLING_TEMPERATURE = 0.1
 
 
@@ -606,21 +602,6 @@ def _row_has_output(row: pd.Series, columns: Sequence[str]) -> bool:
     return False
 
 
-def _infer_model_profile(model_path: Path) -> Optional[str]:
-    name = model_path.name.lower()
-    if "gpt-oss" in name or "gpt_oss" in name:
-        return "gpt-oss"
-    if "gemma" in name:
-        return "gemma"
-    return None
-
-
-def _model_defaults(profile: Optional[str]) -> Dict[str, Any]:
-    if not profile:
-        return {}
-    return MODEL_DEFAULTS.get(profile, {})
-
-
 def _escape_prompt(prompt: str) -> str:
     # llama-cli processes escape sequences; keep prompt on one line.
     return prompt.replace("\\", "\\\\").replace("\n", "\\n")
@@ -781,11 +762,6 @@ def flag(
     model_path: Optional[Path] = typer.Option(None, "--model"),
     llama_bin: Optional[str] = typer.Option(None, "--llama-bin"),
     llama_args: Optional[str] = typer.Option(None, "--llama-args"),
-    model_profile: Optional[str] = typer.Option(
-        None,
-        "--model-profile",
-        help="Model profile for defaults: gpt-oss or gemma. If omitted, inferred from model filename.",
-    ),
     ctx_size: Optional[int] = typer.Option(None, "--ctx-size"),
     threads: Optional[int] = typer.Option(None, "--threads"),
     scope: Optional[str] = typer.Option(None, "--scope"),
@@ -819,7 +795,6 @@ def flag(
     model_path = _coalesce(model_path, cfg, "model_path", None)
     llama_bin = _coalesce(llama_bin, cfg, "llama_bin", "llama-cli")
     llama_args = _coalesce(llama_args, cfg, "llama_args", None)
-    model_profile = _coalesce(model_profile, cfg, "model_profile", None)
     ctx_size = _coalesce(ctx_size, cfg, "ctx_size", None)
     threads = _coalesce(threads, cfg, "threads", None)
     scope = _normalize_hint(_coalesce(scope, cfg, "scope", None))
@@ -846,12 +821,6 @@ def flag(
     if not model_path.exists():
         raise typer.BadParameter(f"model not found: {model_path}")
 
-    if isinstance(model_profile, str) and not model_profile.strip():
-        model_profile = None
-    if not model_profile:
-        model_profile = _infer_model_profile(model_path)
-    defaults = _model_defaults(model_profile)
-
     out_csv = _expand_path(out_csv) or Path("results/flagged.csv")
     llama_bin = str(_expand_path(llama_bin) or llama_bin)
     llama_path = _resolve_llama_bin(llama_bin)
@@ -859,8 +828,7 @@ def flag(
     logger = setup_logger(str(log_level), log_file_path)
     logger.info("Starting flagger: csv=%s out=%s model=%s", csv_path, out_csv, model_path)
     logger.info(
-        "Options: profile=%s ctx=%s threads=%s temp=%s max_tokens=%s reuse=%s",
-        model_profile,
+        "Options: ctx=%s threads=%s temp=%s max_tokens=%s reuse=%s",
         ctx_size,
         threads,
         sampling_temperature,
@@ -873,9 +841,7 @@ def flag(
     if reuse_process and (_has_flag(llama_args_list, ["--single-turn", "-st"])):
         raise typer.BadParameter("--single-turn cannot be used with --reuse-process")
     if sampling_temperature is None:
-        sampling_temperature = float(defaults.get("sampling_temperature", DEFAULT_SAMPLING_TEMPERATURE))
-    if ctx_size is None and not _has_flag(llama_args_list, ["--ctx-size", "-c"]):
-        ctx_size = defaults.get("ctx_size", None)
+        sampling_temperature = float(DEFAULT_SAMPLING_TEMPERATURE)
     logger.info("Resolved: ctx=%s temp=%s", ctx_size, sampling_temperature)
 
     df = pd.read_csv(csv_path)

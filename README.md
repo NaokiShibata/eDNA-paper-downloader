@@ -482,7 +482,6 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `prompt_template` | no | プロンプト全体のテンプレート (指定時は内部テンプレを置換) |
 | `llama_bin` | no | `llama-cli` のパス (省略時はPATH検索) |
 | `llama_args` | no | `llama-cli` の追加引数 (例: `--no-conversation`) |
-| `model_profile` | no | `gpt-oss` / `gemma`。省略時は `model_path` から推定 |
 | `reuse_process` | no | `true` でモデルを1回ロードして使い回し |
 | `batch_size` | no | バッチ件数 (例: `500`) |
 | `batch_index` | no | バッチ番号 (0始まり) |
@@ -501,8 +500,6 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 
 設定のポイント:
 
-- `model_profile` を指定するとモデル別の推奨値が自動適用されます。`sampling_temperature` / `ctx_size` を `null` にするとデフォルトが有効になります。
-- `model_profile` を省略した場合は `model_path` のファイル名から推定します (`gpt-oss` / `gpt_oss` / `gemma` を含むかで判定)。
 - `ctx_size` を `llama_args` に指定した場合は、その値が優先されます (configの `ctx_size` は無視されます)。
 - `resume=true` は入力CSVに `flag_*` が埋まっている行、または出力CSVに `flag_*` が埋まっている行をスキップします (`flag_record_id` だけの行は再処理されます)。
 - CSVに `abstract` 列がある場合は、文頭+末尾の抜粋を自動的に使います。
@@ -514,7 +511,6 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 {
   "scope": "environmental DNA/RNA papers for ecology and monitoring",
   "model_path": "/path/to/gpt-oss-20b-Q4_K_M.gguf",
-  "model_profile": "gpt-oss",
   "llama_bin": "/path/to/llama-cli",
   "llama_args": "--threads 16 --no-conversation",
   "log_file": "logs/llama_flagger.log",
@@ -536,7 +532,6 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 | `log_file` | string/null | `logs/llama_flagger.log` | ログファイル |
 | `log_level` | string | `INFO` | ログレベル |
 | `prompt_template` | string/null | `null` | プロンプトテンプレ |
-| `model_profile` | string/null | `gpt-oss` | `gpt-oss` / `gemma` / `null` |
 | `llama_bin` | string | `/path/to/llama-cli` | PATH上のコマンド名でも可 |
 | `llama_args` | string/null | `--threads 16 --no-conversation` | 追加CLI引数 |
 | `ctx_size` | int/null | `8192` | `llama_args` の指定が優先 |

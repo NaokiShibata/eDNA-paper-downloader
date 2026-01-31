@@ -20,10 +20,6 @@
   // Optional: llama.cpp + model settings
   "llama_bin": "/path/to/llama-cli",
 
-  // Default profile: keep "other" behavior by leaving null and setting explicit overrides below.
-  // (If you prefer profile defaults, set model_profile to "gpt-oss" or "gemma" and remove overrides.)
-  "model_profile": null,
-
   // Classification settings (stable / near-deterministic)
   "ctx_size": 8192,
   "sampling_temperature": 0.0,
