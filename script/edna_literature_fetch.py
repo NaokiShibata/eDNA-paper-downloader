@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import io
 import json
 import logging
 import platform
@@ -102,15 +104,7 @@ class Paper:
     authors: str
     doi: Optional[str]
     abstract: Optional[str]
-    keywords: Optional[str]
     pubmed_url: str
-
-    # dates
-    pub_date: Optional[str] = None  # YYYY-MM-DD best effort
-    entrez_date: Optional[str] = None  # YYYY-MM-DD (added to PubMed)
-    received_date: Optional[str] = None  # YYYY-MM-DD
-    accepted_date: Optional[str] = None  # YYYY-MM-DD
-    revised_date: Optional[str] = None  # YYYY-MM-DD (MedlineCitation/DateRevised)
 
 
 # -------------------------
@@ -133,6 +127,12 @@ def _norm_title(title: str) -> str:
     t = re.sub(r"\s+", " ", t)
     t = re.sub(r"[^a-z0-9 ]+", "", t)
     return t
+
+
+def _clean_text(text: str) -> str:
+    s = html.unescape(text or "")
+    s = re.sub(r"<[^>]+>", "", s)
+    return s.strip()
 
 
 def _extract_doi(article: dict) -> Optional[str]:
@@ -197,124 +197,14 @@ def _extract_abstract(article: dict) -> Optional[str]:
         return None
     if isinstance(ab, list):
         parts = [str(x).strip() for x in ab if str(x).strip()]
-        joined = "\n".join(parts).strip()
-        return joined if joined else None
+        joined = " ".join(parts).strip()
+        normalized = re.sub(r"\s+", " ", joined).strip()
+        return normalized if normalized else None
     s = str(ab).strip()
-    return s if s else None
+    normalized = re.sub(r"\s+", " ", s).strip()
+    return normalized if normalized else None
 
 
-def _extract_keywords(article: dict) -> Optional[str]:
-    kl = _safe_get(article, "MedlineCitation", "KeywordList", default=None)
-    if not isinstance(kl, list) or not kl:
-        return None
-    kws = []
-    for group in kl:
-        if isinstance(group, list):
-            kws.extend([str(x).strip() for x in group if str(x).strip()])
-    if not kws:
-        return None
-    seen = set()
-    uniq = []
-    for k in kws:
-        kk = k.lower()
-        if kk in seen:
-            continue
-        seen.add(kk)
-        uniq.append(k)
-    return "; ".join(uniq)
-
-
-def _pubmed_history_dates(article: dict) -> dict:
-    """
-    PubmedData/History/PubMedPubDate から PubStatus ごとの日付を拾う。
-    例: received / accepted / entrez / pubmed / medline など。
-    """
-    out = {}
-    hist = _safe_get(article, "PubmedData", "History", "PubMedPubDate", default=None)
-    if not isinstance(hist, list):
-        return out
-
-    def fmt(d):
-        y = _safe_get(d, "Year", default=None)
-        m = _safe_get(d, "Month", default=None)
-        day = _safe_get(d, "Day", default=None)
-        if not y:
-            return None
-        try:
-            mm = int(m) if m else 1
-        except Exception:
-            mm = 1
-        try:
-            dd = int(day) if day else 1
-        except Exception:
-            dd = 1
-        return f"{int(y):04d}-{mm:02d}-{dd:02d}"
-
-    for d in hist:
-        status = getattr(d, "attributes", {}).get("PubStatus")
-        if not status:
-            continue
-        out[str(status).lower()] = fmt(d)
-
-    return out
-
-
-def _extract_pub_date(article: dict) -> Optional[str]:
-    # 1) ArticleDate
-    ad = _safe_get(article, "MedlineCitation", "Article", "ArticleDate", default=None)
-    if isinstance(ad, list) and ad:
-        y = _safe_get(ad[0], "Year", default=None)
-        m = _safe_get(ad[0], "Month", default=None)
-        d = _safe_get(ad[0], "Day", default=None)
-        if y:
-            try:
-                mm = int(m) if m else 1
-                dd = int(d) if d else 1
-                return f"{int(y):04d}-{mm:02d}-{dd:02d}"
-            except Exception:
-                return str(y)
-
-    # 2) JournalIssue PubDate
-    pub_date = _safe_get(article, "MedlineCitation", "Article", "Journal", "JournalIssue", "PubDate", default=None)
-    y = _safe_get(pub_date, "Year", default=None)
-    if y:
-        m = _safe_get(pub_date, "Month", default=None)
-        d = _safe_get(pub_date, "Day", default=None)
-        try:
-            mm = int(m) if m else 1
-            dd = int(d) if d else 1
-            return f"{int(y):04d}-{mm:02d}-{dd:02d}"
-        except Exception:
-            return str(y)
-
-    # 3) MedlineDate
-    md = _safe_get(pub_date, "MedlineDate", default=None)
-    if md:
-        m = re.search(r"(19|20)\d{2}", str(md))
-        if m:
-            return m.group(0)
-
-    return None
-
-
-def _extract_revised_date(article: dict) -> Optional[str]:
-    """
-    MedlineCitation/DateRevised (YYYYMMDD)
-    """
-    dr = _safe_get(article, "MedlineCitation", "DateRevised", default=None)
-    if not dr:
-        return None
-    y = _safe_get(dr, "Year", default=None)
-    m = _safe_get(dr, "Month", default=None)
-    d = _safe_get(dr, "Day", default=None)
-    if not y:
-        return None
-    try:
-        mm = int(m) if m else 1
-        dd = int(d) if d else 1
-        return f"{int(y):04d}-{mm:02d}-{dd:02d}"
-    except Exception:
-        return str(y)
 
 
 def build_query_with_excludes(base_query: str, excludes: Sequence[str]) -> str:
@@ -325,15 +215,80 @@ def build_query_with_excludes(base_query: str, excludes: Sequence[str]) -> str:
     return f"({base_query.strip()}) NOT ({ex_clause})"
 
 
-def _date_key(s: Optional[str]) -> str:
-    # YYYY-MM-DD を想定。空は最小扱い
-    return s or "0000-00-00"
+def _normalize_date_str(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    return s.replace("-", "/")
+
+
+def _date_range_clause(since: Optional[str], until: Optional[str], datetype: str) -> Optional[str]:
+    since_norm = _normalize_date_str(since)
+    until_norm = _normalize_date_str(until)
+    if not since_norm and not until_norm:
+        return None
+    field = datetype.upper()
+    if field not in ("PDAT", "EDAT"):
+        field = field.upper()
+    start = since_norm or "0001/01/01"
+    end = until_norm or "3000/12/31"
+    return f'("{start}"[{field}] : "{end}"[{field}])'
+
+
+def _entrez_read_handle(handle, logger: Optional[logging.Logger], context: str):
+    raw = b""
+    try:
+        raw = handle.read()
+    finally:
+        handle.close()
+    if isinstance(raw, str):
+        raw_bytes = raw.encode("utf-8", errors="replace")
+    elif isinstance(raw, (bytes, bytearray, memoryview)):
+        raw_bytes = bytes(raw)
+    else:
+        raw_bytes = str(raw).encode("utf-8", errors="replace")
+    try:
+        return Entrez.read(io.BytesIO(raw_bytes))
+    except Exception as exc:
+        if logger:
+            logger.warning(f"Entrez parse failed ({context}): {exc}")
+            if logger.isEnabledFor(logging.DEBUG):
+                snippet = raw_bytes[:500].decode("utf-8", errors="replace").replace("\n", "\\n")
+                logger.debug(f"Entrez raw head ({context}): {snippet}")
+        raise
+
+
+def _entrez_request(read_fn, logger: Optional[logging.Logger], context: str, retries: int = 3):
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, retries + 1):
+        handle = read_fn()
+        try:
+            return _entrez_read_handle(handle, logger, context)
+        except Exception as exc:
+            last_exc = exc
+            if logger and attempt < retries:
+                logger.warning(f"Retrying Entrez request ({context}) attempt {attempt}/{retries}")
+            if attempt < retries:
+                time.sleep(0.5 * attempt)
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+
+
+def _pmid_key(pmid: str) -> int:
+    try:
+        return int(pmid)
+    except Exception:
+        return 0
 
 
 def keep_latest_per_doi_pubmed(papers: list[Paper], logger: Optional[logging.Logger] = None) -> list[Paper]:
     """
     PubMedは“バージョン”概念が薄いので、同一DOIが複数件ある場合だけ
-    (revised_date, entrez_date) が新しい方を採用する。
+    (year, PMID) が新しい方を採用する。
     DOIが無いものは PMID 単位で残す。
     """
     best: dict[str, Paper] = {}
@@ -350,16 +305,15 @@ def keep_latest_per_doi_pubmed(papers: list[Paper], logger: Optional[logging.Log
             best[doi] = p
             continue
 
-        # 比較キー：revised_date -> entrez_date -> pub_date
-        p_key = (_date_key(p.revised_date), _date_key(p.entrez_date), _date_key(p.pub_date))
-        c_key = (_date_key(cur.revised_date), _date_key(cur.entrez_date), _date_key(cur.pub_date))
+        p_key = (p.year or 0, _pmid_key(p.pmid))
+        c_key = (cur.year or 0, _pmid_key(cur.pmid))
         if p_key > c_key:
             best[doi] = p
 
     out = list(best.values()) + no_doi
-    # 並べ替え：まず“更新/登録/出版”の新しい順
+    # 並べ替え：年・PMIDの新しい順
     out.sort(
-        key=lambda x: (_date_key(x.revised_date), _date_key(x.entrez_date), _date_key(x.pub_date), x.pmid),
+        key=lambda x: (x.year or 0, _pmid_key(x.pmid)),
         reverse=True,
     )
     if logger:
@@ -407,9 +361,7 @@ def pubmed_search_all_pmids(
     if logger:
         logger.info(f"Entrez.esearch initial (retmax=0) sort={sort} datetype={datetype}")
 
-    h = Entrez.esearch(**kwargs)
-    res = Entrez.read(h)
-    h.close()
+    res = _entrez_request(lambda: Entrez.esearch(**kwargs), logger, "esearch initial")
 
     count = int(res.get("Count", "0"))
     if logger:
@@ -426,19 +378,29 @@ def pubmed_search_all_pmids(
         if logger and logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Paging PMIDs retstart={retstart} retmax={min(batch, count - retstart)}")
 
-        h2 = Entrez.esearch(
-            db="pubmed",
-            term=query,
-            usehistory="y",
-            retmode="xml",
-            retstart=retstart,
-            retmax=min(batch, count - retstart),
-            webenv=webenv,
-            query_key=query_key,
-            sort=sort,
+        kwargs_page = {}
+        if mindate or maxdate:
+            kwargs_page.update({"datetype": datetype})
+            if mindate:
+                kwargs_page["mindate"] = mindate
+            if maxdate:
+                kwargs_page["maxdate"] = maxdate
+
+        res2 = _entrez_request(
+            lambda: Entrez.esearch(
+                db="pubmed",
+                term=query,
+                retmode="xml",
+                retstart=retstart,
+                retmax=min(batch, count - retstart),
+                webenv=webenv,
+                query_key=query_key,
+                sort=sort,
+                **kwargs_page,
+            ),
+            logger,
+            f"esearch page retstart={retstart}",
         )
-        res2 = Entrez.read(h2)
-        h2.close()
         pmids.extend(list(res2.get("IdList", [])))
 
         if sleep > 0:
@@ -463,7 +425,6 @@ def pubmed_fetch_details(
     email: str,
     api_key: Optional[str] = None,
     include_abstract: bool = False,
-    include_keywords: bool = False,
     sleep: float = 0.34,
     logger: Optional[logging.Logger] = None,
 ) -> list[Paper]:
@@ -480,27 +441,21 @@ def pubmed_fetch_details(
 
     for i in tqdm(range(0, len(pmids), chunk_size), desc="Fetching PubMed details"):
         chunk = pmids[i : i + chunk_size]
-        h = Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml")
-        records = Entrez.read(h)
-        h.close()
+        records = _entrez_request(
+            lambda: Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml"),
+            logger,
+            f"efetch chunk start={i}",
+        )
 
         for art in records.get("PubmedArticle", []):
             pmid = str(_safe_get(art, "MedlineCitation", "PMID", default="")).strip()
-            title = str(_safe_get(art, "MedlineCitation", "Article", "ArticleTitle", default="")).strip()
+            title = _clean_text(str(_safe_get(art, "MedlineCitation", "Article", "ArticleTitle", default="")))
             journal = str(_safe_get(art, "MedlineCitation", "Article", "Journal", "Title", default="")).strip()
             year = _extract_year(art)
             authors = _extract_authors(art)
             doi = _extract_doi(art)
             abstract = _extract_abstract(art) if include_abstract else None
-            keywords = _extract_keywords(art) if include_keywords else None
             url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else ""
-
-            hist = _pubmed_history_dates(art)
-            pub_date = _extract_pub_date(art)
-            entrez_date = hist.get("entrez")
-            received_date = hist.get("received")
-            accepted_date = hist.get("accepted")
-            revised_date = _extract_revised_date(art)
 
             papers.append(
                 Paper(
@@ -511,13 +466,7 @@ def pubmed_fetch_details(
                     authors=authors,
                     doi=doi,
                     abstract=abstract,
-                    keywords=keywords,
                     pubmed_url=url,
-                    pub_date=pub_date,
-                    entrez_date=entrez_date,
-                    received_date=received_date,
-                    accepted_date=accepted_date,
-                    revised_date=revised_date,
                 )
             )
 
@@ -606,7 +555,6 @@ def fetch(
         help="Batch size for PMID paging in esearch.",
     ),
     abstract: bool = typer.Option(False, help="Include abstracts."),
-    keywords: bool = typer.Option(False, help="Include PubMed keywords if present."),
     crossref: bool = typer.Option(False, help="Try filling missing DOI via Crossref (heuristic)."),
     user_agent: str = typer.Option(
         "edna-literature-fetch/1.0 (mailto:your_email@example.com)",
@@ -620,14 +568,16 @@ def fetch(
 ):
     """
     Fetch paper metadata from PubMed and export CSV/JSON.
-    Outputs publication/entrez/received/accepted/revised dates when available.
-    If DOI duplicates occur, keeps the record with newest (revised_date, entrez_date, pub_date).
+    If DOI duplicates occur, keeps the record with newest (year, PMID).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logger(log_level=log_level, log_file=log_file)
 
     exclude_terms = exclude or []
     final_query = build_query_with_excludes(query, exclude_terms)
+    date_clause = _date_range_clause(since, until, datetype)
+    if date_clause:
+        final_query = f"({final_query}) AND {date_clause}"
 
     params = {
         "email": email,
@@ -637,11 +587,11 @@ def fetch(
         "final_query": final_query,
         "since": since,
         "until": until,
+        "date_clause": date_clause,
         "datetype": datetype,
         "sort": sort,
         "pmid_batch": pmid_batch,
         "abstract": abstract,
-        "keywords": keywords,
         "crossref": crossref,
         "user_agent": user_agent,
         "sleep": sleep,
@@ -651,12 +601,17 @@ def fetch(
     }
     log_run_header(logger, params=params, log_file=log_file)
 
+    since_norm = _normalize_date_str(since)
+    until_norm = _normalize_date_str(until)
+    if date_clause:
+        logger.info(f"Date clause applied: {date_clause}")
+
     pmids = pubmed_search_all_pmids(
         query=final_query,
         email=email,
         api_key=api_key,
-        mindate=since,
-        maxdate=until,
+        mindate=since_norm,
+        maxdate=until_norm,
         datetype=datetype,
         sort=sort,
         batch=pmid_batch,
@@ -673,7 +628,6 @@ def fetch(
         email=email,
         api_key=api_key,
         include_abstract=abstract,
-        include_keywords=keywords,
         sleep=sleep,
         logger=logger,
     )
