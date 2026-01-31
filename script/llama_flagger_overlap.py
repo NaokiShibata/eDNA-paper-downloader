@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import re
+from itertools import combinations
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pandas as pd
 import typer
+from matplotlib_venn import venn2, venn3
 
 app = typer.Typer(add_completion=False)
 
@@ -56,19 +62,6 @@ def _sanitize_column_name(value: str) -> str:
 def _label_counts_str(counter: Counter[str]) -> str:
     parts = [f"{label}:{count}" for label, count in counter.most_common()]
     return "|".join(parts)
-
-
-def _try_import_plotting():
-    try:
-        import matplotlib.pyplot as plt
-    except Exception:
-        return None, None, None
-    try:
-        from matplotlib_venn import venn2, venn3
-    except Exception:
-        venn2 = None
-        venn3 = None
-    return plt, venn2, venn3
 
 
 def _plot_agreement_status(
@@ -178,19 +171,107 @@ def _plot_label_distribution(
     plt.close()
 
 
+def _short_model_label(value: str, max_len: int = 24) -> str:
+    try:
+        name = Path(str(value)).name
+    except Exception:
+        name = str(value)
+    stem = Path(name).stem if name else str(value)
+    # Drop common quant suffixes for compact labels.
+    stem = re.sub(r"-(Q\d+[_A-Za-z0-9]+)$", "", stem)
+    stem = re.sub(r"-(Q\d+)$", "", stem)
+    label = stem or name or str(value)
+    if len(label) > max_len:
+        label = label[: max_len - 3] + "..."
+    return label
+
+
+def _model_aliases(value: str) -> List[str]:
+    raw = str(value)
+    try:
+        name = Path(raw).name
+    except Exception:
+        name = raw
+    stem = Path(name).stem if name else raw
+    cleaned = _sanitize_column_name(raw).lower()
+    aliases = [
+        raw,
+        raw.lower(),
+        name,
+        name.lower(),
+        stem,
+        stem.lower(),
+        cleaned,
+    ]
+    seen = set()
+    out = []
+    for a in aliases:
+        if not a:
+            continue
+        key = a.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _resolve_venn_models(models: List[str], requested: Optional[List[str]]) -> tuple[List[str], List[str]]:
+    if not requested:
+        return models[:], []
+    alias_map = {m: set(_model_aliases(m)) for m in models}
+    selected: List[str] = []
+    unmatched: List[str] = []
+    for req in requested:
+        req_key = str(req).strip()
+        if not req_key:
+            continue
+        req_norm = req_key.lower()
+        match = None
+        for model, aliases in alias_map.items():
+            if model in selected:
+                continue
+            if req_key in aliases or req_norm in aliases:
+                match = model
+                break
+        if match:
+            selected.append(match)
+        else:
+            unmatched.append(req_key)
+    return selected, unmatched
+
+
+def _build_venn_groups(
+    models: List[str],
+    requested: Optional[List[str]],
+) -> tuple[List[List[str]], List[str], bool]:
+    selected, unmatched = _resolve_venn_models(models, requested)
+    if len(selected) < 2:
+        return [], unmatched, True
+    if len(selected) <= 3:
+        return [selected], unmatched, False
+    # More than 3 models: generate all 3-way combinations.
+    groups = [list(g) for g in combinations(selected, 3)]
+    return groups, unmatched, False
+
+
 def _plot_venn(
     records: Dict[str, Dict[str, str]],
     models: List[str],
     label: str,
-    venn_models: Optional[List[str]],
+    venn_models: List[str],
+    display_labels: List[str],
     out_path: Path,
     plt,
-    venn2,
-    venn3,
 ) -> None:
-    selected = venn_models[:] if venn_models else models[:]
-    selected = [m for m in selected if m in models]
+    selected = [m for m in venn_models if m in models]
     if len(selected) < 2:
+        plt.figure(figsize=(4.5, 4.0))
+        plt.text(0.5, 0.5, "Venn plot skipped\n(need 2-3 models)", ha="center", va="center")
+        plt.axis("off")
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=150)
+        plt.close()
         return
     if len(selected) > 3:
         selected = selected[:3]
@@ -200,16 +281,38 @@ def _plot_venn(
         ids = {rid for rid, labels in records.items() if labels.get(model, "") == label}
         sets.append(ids)
 
-    plt.figure(figsize=(4.5, 4.5))
+    # Degenerate case: all selected sets are identical.
+    if sets and all(s == sets[0] for s in sets):
+        plt.figure(figsize=(4.5, 4.0))
+        plt.text(
+            0.5,
+            0.55,
+            "All selected models\nhave identical membership",
+            ha="center",
+            va="center",
+        )
+        plt.text(0.5, 0.35, f"count = {len(sets[0])}", ha="center", va="center")
+        plt.axis("off")
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=150)
+        plt.close()
+        return
+
+    plt.figure(figsize=(4.8, 4.8))
     if len(selected) == 2:
-        if venn2 is None:
-            return
-        venn2(sets, set_labels=selected)
+        v = venn2(sets, set_labels=display_labels[:2])
     else:
-        if venn3 is None:
-            return
-        venn3(sets, set_labels=selected)
-    plt.title(f"Venn overlap for label: {label}")
+        v = venn3(sets, set_labels=display_labels[:3])
+    if v is not None:
+        for t in (v.set_labels or []):
+            if t:
+                t.set_fontsize(8)
+        for t in (v.subset_labels or []):
+            if t:
+                t.set_fontsize(8)
+    if sum(len(s) for s in sets) == 0:
+        plt.text(0.5, 0.5, "No records for this label", ha="center", va="center")
+    plt.title(f"Venn overlap for label: {label}", fontsize=10)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close()
@@ -362,27 +465,41 @@ def main(
                 ratio = round(agree / total, 3) if total else 0.0
                 typer.echo(f"  {m1} vs {m2}: {agree}/{total} ({ratio})")
 
-    plt, venn2, venn3 = _try_import_plotting()
-    if plt is None:
-        typer.echo("WARNING: matplotlib not available; skipping plots.")
-    else:
-        plots_dir.mkdir(parents=True, exist_ok=True)
-        _plot_agreement_status(agreement_counts, plots_dir / f"{plots_prefix}.agreement.png", plt)
-        _plot_pairwise_heatmap(records, models, plots_dir / f"{plots_prefix}.pairwise.png", plt)
-        _plot_label_distribution(records, models, plots_dir / f"{plots_prefix}.labels.png", plt)
-        if len(models) >= 2:
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    _plot_agreement_status(agreement_counts, plots_dir / f"{plots_prefix}.agreement.png", plt)
+    _plot_pairwise_heatmap(records, models, plots_dir / f"{plots_prefix}.pairwise.png", plt)
+    _plot_label_distribution(records, models, plots_dir / f"{plots_prefix}.labels.png", plt)
+    if len(models) >= 2:
+        groups, unmatched, invalid = _build_venn_groups(models, venn_models)
+        if unmatched:
+            typer.echo(f"WARNING: Venn models not matched and ignored: {', '.join(unmatched)}")
+        if invalid:
+            typer.echo("WARNING: Venn plot skipped (need at least 2 matched models).")
+        elif len(groups) == 1:
+            group = groups[0]
             _plot_venn(
                 records,
                 models,
                 venn_label,
-                venn_models,
+                group,
+                [_short_model_label(m) for m in group],
                 plots_dir / f"{plots_prefix}.venn_{venn_label}.png",
                 plt,
-                venn2,
-                venn3,
             )
-        if (venn2 is None or venn3 is None) and len(models) >= 2:
-            typer.echo("WARNING: matplotlib-venn not available; skipped Venn plot.")
+        else:
+            typer.echo(
+                f"Generating Venn plots for all 3-way combinations: {len(groups)} plots."
+            )
+            for idx, group in enumerate(groups, start=1):
+                _plot_venn(
+                    records,
+                    models,
+                    venn_label,
+                    group,
+                    [_short_model_label(m) for m in group],
+                    plots_dir / f"{plots_prefix}.venn_{venn_label}.{idx}.png",
+                    plt,
+                )
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
