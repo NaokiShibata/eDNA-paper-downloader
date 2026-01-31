@@ -626,6 +626,8 @@ python script/llama_flagger.py \
 pip install matplotlib
 # Venn図も使う場合
 pip install matplotlib-venn
+# UpSetプロットも使う場合
+pip install upsetplot
 ```
 
 ### 基本例
@@ -658,3 +660,5 @@ python script/llama_flagger_overlap.py \
 - `flag_overlap.pairwise.png` (ペア一致率)
 - `flag_overlap.labels.png` (モデル別ラベル分布)
 - `flag_overlap.venn_<label>.png` (ラベル別Venn)
+- `flag_overlap.upset_in_scope.png` (in_scope UpSet)
+- `flag_overlap.upset_out_of_scope.png` (out_of_scope UpSet)

@@ -10,11 +10,34 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from cycler import cycler
 import pandas as pd
 import typer
 from matplotlib_venn import venn2, venn3
+from upsetplot import UpSet, from_memberships
 
 app = typer.Typer(add_completion=False)
+
+# Black base theme
+plt.rcParams.update(
+    {
+        "axes.prop_cycle": cycler(
+            color=[
+                "#2b7bba",
+                "#4a90e2",
+                "#7fb3e6",
+                "#9ecae1",
+                "#c6dbef",
+                "#d6e9f7",
+            ]
+        ),
+        "axes.edgecolor": "#000000",
+        "axes.labelcolor": "#000000",
+        "xtick.color": "#000000",
+        "ytick.color": "#000000",
+        "text.color": "#000000",
+    }
+)
 
 
 def _clean_doi(value: str) -> str:
@@ -158,9 +181,15 @@ def _plot_label_distribution(
     x = list(range(len(models)))
     bottoms = [0] * len(models)
     plt.figure(figsize=(max(6, len(models) * 1.2), 4.5))
+    # Blue palette across labels
+    if len(ordered_labels) == 1:
+        colors = ["#2b7bba"]
+    else:
+        colors = [plt.cm.Blues(0.3 + 0.6 * i / (len(ordered_labels) - 1)) for i in range(len(ordered_labels))]
     for label in ordered_labels:
         values = [label_counts[m].get(label, 0) for m in models]
-        plt.bar(x, values, bottom=bottoms, label=label)
+        color = colors[ordered_labels.index(label)]
+        plt.bar(x, values, bottom=bottoms, label=label, color=color)
         bottoms = [bottoms[i] + values[i] for i in range(len(models))]
     plt.xticks(x, models, rotation=45, ha="right")
     plt.ylabel("Records")
@@ -241,6 +270,21 @@ def _resolve_venn_models(models: List[str], requested: Optional[List[str]]) -> t
     return selected, unmatched
 
 
+def _unique_display_labels(models: List[str]) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    seen: Dict[str, int] = {}
+    for m in models:
+        base = _short_model_label(m)
+        if base in seen:
+            seen[base] += 1
+            label = f"{base}_{seen[base]}"
+        else:
+            seen[base] = 1
+            label = base
+        mapping[m] = label
+    return mapping
+
+
 def _build_venn_groups(
     models: List[str],
     requested: Optional[List[str]],
@@ -318,6 +362,45 @@ def _plot_venn(
     plt.close()
 
 
+def _plot_upset(
+    records: Dict[str, Dict[str, str]],
+    models: List[str],
+    label: str,
+    display_map: Dict[str, str],
+    out_path: Path,
+    plt,
+) -> None:
+    memberships: List[List[str]] = []
+    for labels in records.values():
+        members = [display_map[m] for m in models if labels.get(m, "") == label]
+        if members:
+            memberships.append(members)
+
+    plt.figure(figsize=(max(6, len(models) * 0.7), 4.8))
+    if not memberships:
+        plt.text(0.5, 0.5, "No records for this label", ha="center", va="center")
+        plt.axis("off")
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=150)
+        plt.close()
+        return
+
+    data = from_memberships(memberships)
+    upset = UpSet(
+        data,
+        subset_size="count",
+        show_counts=True,
+        sort_by="degree",
+        facecolor="#2b7bba",
+        other_dots_color="#9ecae1",
+    )
+    upset.plot()
+    plt.suptitle(f"UpSet overlap for label: {label}", fontsize=10)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+
+
 @app.command()
 def main(
     inputs: List[Path] = typer.Argument(..., exists=True, dir_okay=False),
@@ -330,6 +413,18 @@ def main(
     venn_models: Optional[List[str]] = typer.Option(
         None,
         help="Model names to include in Venn (2 or 3). Defaults to first models.",
+    ),
+    upset_label: Optional[str] = typer.Option(
+        None,
+        help="Label to visualize in the UpSet plot (deprecated: use --upset-labels).",
+    ),
+    upset_labels: Optional[List[str]] = typer.Option(
+        None,
+        help="Labels to visualize in the UpSet plot (defaults to in_scope and out_of_scope).",
+    ),
+    upset_models: Optional[List[str]] = typer.Option(
+        None,
+        help="Model names to include in UpSet (defaults to all models).",
     ),
 ):
     """
@@ -477,12 +572,13 @@ def main(
             typer.echo("WARNING: Venn plot skipped (need at least 2 matched models).")
         elif len(groups) == 1:
             group = groups[0]
+            display_map = _unique_display_labels(group)
             _plot_venn(
                 records,
                 models,
                 venn_label,
                 group,
-                [_short_model_label(m) for m in group],
+                [display_map[m] for m in group],
                 plots_dir / f"{plots_prefix}.venn_{venn_label}.png",
                 plt,
             )
@@ -491,15 +587,40 @@ def main(
                 f"Generating Venn plots for all 3-way combinations: {len(groups)} plots."
             )
             for idx, group in enumerate(groups, start=1):
+                display_map = _unique_display_labels(group)
                 _plot_venn(
                     records,
                     models,
                     venn_label,
                     group,
-                    [_short_model_label(m) for m in group],
+                    [display_map[m] for m in group],
                     plots_dir / f"{plots_prefix}.venn_{venn_label}.{idx}.png",
                     plt,
                 )
+
+    # UpSet plot (supports >3 models)
+    if upset_labels is not None:
+        target_labels = [l for l in upset_labels if l and str(l).strip()]
+    elif upset_label:
+        target_labels = [upset_label]
+    else:
+        target_labels = ["in_scope", "out_of_scope"]
+    selected, unmatched = _resolve_venn_models(models, upset_models)
+    if unmatched:
+        typer.echo(f"WARNING: UpSet models not matched and ignored: {', '.join(unmatched)}")
+    if selected:
+        display_map = _unique_display_labels(selected)
+        for label in target_labels:
+            _plot_upset(
+                records,
+                selected,
+                label,
+                display_map,
+                plots_dir / f"{plots_prefix}.upset_{label}.png",
+                plt,
+            )
+    else:
+        typer.echo("WARNING: UpSet plot skipped (no matched models).")
 
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
