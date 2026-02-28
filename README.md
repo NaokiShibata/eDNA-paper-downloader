@@ -6,11 +6,11 @@
 
 eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして保存するPython CLIツールです。
 
-- **PubMed**: `script/edna_literature_fetch.py`
+- **PubMed + Crossref + OpenAlex (統合取得)**: `script/edna_literature_fetch.py`
 
-  - NCBI Entrez (E-utilities) を利用
-  - クエリ検索 + 期間指定 + ページング (全PMID回収)
-  - DOI重複が出た場合は **より新しい年/PMID** を採用
+  - デフォルトで3ソースから同時収集
+  - PubMedは Entrez で全PMIDページング取得
+  - DOI優先 + タイトル/年フォールバックで重複統合
   - RUN HEADER付きログ出力 (実行者・コマンド・パラメータなど)
 
 - **bioRxiv/medRxiv**: `script/biorxiv_search.py`
@@ -43,7 +43,7 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install -U pip
-pip install "typer[all]" pandas requests tqdm biopython
+pip install "typer[all]" pandas requests tqdm biopython pyalex
 ```
 
 ---
@@ -65,7 +65,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install "typer[all]" pandas requests tqdm biopython
+uv pip install "typer[all]" pandas requests tqdm biopython pyalex
 ```
 
 PubMed (Entrez) を含むダウンロード系スクリプトに必要な主なパッケージは以下です。
@@ -87,7 +87,7 @@ uv pip install pyyaml
 ## クイックスタート
 
 ```bash
-# PubMed (最小例)
+# マルチソース統合取得 (PubMed + Crossref + OpenAlex がデフォルト)
 python script/edna_literature_fetch.py \
   --email you@example.com \
   --out-dir results
@@ -102,7 +102,7 @@ python script/biorxiv_search.py \
 
 ---
 
-## PubMed: edna_literature_fetch.py
+## 文献統合取得: edna_literature_fetch.py
 
 ### ヘルプ
 
@@ -110,7 +110,7 @@ python script/biorxiv_search.py \
 python script/edna_literature_fetch.py --help
 ```
 
-### 基本例
+### 基本例 (デフォルトで全ソース有効)
 
 ```bash
 python script/edna_literature_fetch.py \
@@ -118,7 +118,7 @@ python script/edna_literature_fetch.py \
   --query '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])' \
   --since 2020/01/01 \
   --out-dir results \
-  --out-prefix pubmed_edna_2020plus
+  --out-prefix edna_multisource_2020plus
 ```
 
 ### 除外語
@@ -130,7 +130,26 @@ python script/edna_literature_fetch.py \
   --exclude microbiome \
   --since 2020/01/01 \
   --out-dir results \
-  --out-prefix pubmed_edna_no_microbiome
+  --out-prefix edna_multisource_no_microbiome
+```
+
+### ソース切り替え
+
+```bash
+# デフォルト: 3ソースすべて有効
+python script/edna_literature_fetch.py --email you@example.com
+
+# 例: PubMedのみ
+python script/edna_literature_fetch.py \
+  --email you@example.com \
+  --no-source-crossref \
+  --no-source-openalex
+
+# 例: Crossref/OpenAlex件数上限を指定
+python script/edna_literature_fetch.py \
+  --email you@example.com \
+  --crossref-max-items 2000 \
+  --openalex-max-items 2000
 ```
 
 ### 要旨を含める
@@ -141,7 +160,7 @@ python script/edna_literature_fetch.py \
   --since 2020/01/01 \
   --abstract \
   --out-dir results \
-  --out-prefix pubmed_edna_with_abstract
+  --out-prefix edna_multisource_with_abstract
 ```
 
 ### CrossrefでDOI補完 (任意)
@@ -153,7 +172,7 @@ python script/edna_literature_fetch.py \
   --crossref \
   --user-agent "edna-literature-fetch/1.0 (mailto:you@example.com)" \
   --out-dir results \
-  --out-prefix pubmed_edna_crossref
+  --out-prefix edna_multisource_crossref_fill
 ```
 
 ### 色々総まとめ
@@ -163,8 +182,8 @@ python3 script/edna_literature_fetch.py \
 --email you@example.com \
 --since 2008/01/01 \
 --out-dir results \
---out-prefix pubme_edna_$(date +%Y%m%d) \
---log-file logs/pubmed_edna_$(date +%Y%m%d).log \
+--out-prefix edna_multisource_$(date +%Y%m%d) \
+--log-file logs/edna_multisource_$(date +%Y%m%d).log \
 --crossref \
 --abstract \
 --exclude 'metagenome OR probiotic OR "skin microbiome" OR "oral microbiome"  OR "rumen microbiome" OR dysbiosis OR probiotic OR "gut microbiome" OR metagenome OR "shotgun metagenomics" OR microbiome OR resistome OR "antimicrobial resistance" OR AMR OR virome OR "viral metagenome" OR "ITS community profiling" OR "wastewater epidemiology" OR mycobiome' \
@@ -173,9 +192,11 @@ python3 script/edna_literature_fetch.py \
 
 ### 出力列
 
-PubMed出力には以下の列が入ります。
+統合出力には以下の列が入ります。
 
 - `pmid`, `title`, `journal`, `year`, `authors`, `doi`, `abstract`, `pubmed_url`
+
+`pubmed_url` 列には、PubMed以外のソースでは各ソース側URL（Crossref/OpenAlex URL）が入る場合があります。
 
 ### ログ出力 (RUN HEADER)
 
@@ -184,8 +205,8 @@ python script/edna_literature_fetch.py \
   --email you@example.com \
   --since 2020/01/01 \
   --out-dir results \
-  --out-prefix pubmed_edna \
-  --log-file logs/pubmed_edna.log \
+  --out-prefix edna_multisource \
+  --log-file logs/edna_multisource.log \
   --log-level INFO
 ```
 

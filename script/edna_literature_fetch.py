@@ -192,6 +192,7 @@ def fetch(
                 max_items=openalex_max_items,
                 from_date=since,
                 until_date=until,
+                email=email,
                 include_abstract=abstract,
                 excludes=exclude_terms,
                 sleep=sleep,
@@ -207,6 +208,12 @@ def fetch(
     if crossref:
         papers = crossref_fill_missing_doi(papers, user_agent=user_agent, logger=logger)
     papers = keep_latest_per_doi_pubmed(papers, logger=logger)
+
+    if abstract:
+        before_filter = len(papers)
+        papers = [p for p in papers if p.abstract and p.abstract.strip()]
+        if len(papers) != before_filter:
+            logger.info(f"Filtered records without abstract: {before_filter} -> {len(papers)}")
 
     df = pd.DataFrame([asdict(p) for p in papers])
 

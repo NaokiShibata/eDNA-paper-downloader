@@ -31,7 +31,16 @@ def _safe_get(dct, *keys, default=None):
 def _clean_text(text: str) -> str:
     s = html.unescape(text or "")
     s = re.sub(r"<[^>]+>", "", s)
-    return s.strip()
+    s = re.sub(r"\s+", " ", s).strip()
+    while len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1].strip()
+    return s
+
+
+def _clean_abstract_text(text: str) -> str:
+    s = _clean_text(text)
+    s = re.sub(r"^\s*abstract\s*[:\-]?\s*", "", s, flags=re.IGNORECASE).strip()
+    return s
 
 
 def _norm_title(title: str) -> str:
@@ -104,10 +113,9 @@ def _extract_abstract(article: dict) -> str | None:
     if isinstance(ab, list):
         parts = [str(x).strip() for x in ab if str(x).strip()]
         joined = " ".join(parts).strip()
-        normalized = re.sub(r"\s+", " ", joined).strip()
+        normalized = _clean_abstract_text(joined)
         return normalized if normalized else None
-    s = str(ab).strip()
-    normalized = re.sub(r"\s+", " ", s).strip()
+    normalized = _clean_abstract_text(str(ab))
     return normalized if normalized else None
 
 
@@ -417,8 +425,30 @@ def _to_dash_date(value: str | None) -> str | None:
     return normalized.replace("/", "-") if normalized else None
 
 
+def _clean_term(term: str) -> str:
+    t = term.strip()
+    while t.startswith("(") and t.endswith(")") and len(t) > 2:
+        t = t[1:-1].strip()
+    if (t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'")):
+        t = t[1:-1].strip()
+    return t
+
+
+def _expand_exclude_terms(excludes: Sequence[str]) -> list[str]:
+    terms: list[str] = []
+    for raw in excludes:
+        if not raw or not raw.strip():
+            continue
+        parts = re.split(r"\s+OR\s+", raw, flags=re.IGNORECASE)
+        for part in parts:
+            term = _clean_term(part).strip().lower()
+            if term:
+                terms.append(term)
+    return terms
+
+
 def _paper_matches_excludes(paper: Paper, excludes: Sequence[str]) -> bool:
-    terms = [t.strip().lower() for t in excludes if t and t.strip()]
+    terms = _expand_exclude_terms(excludes)
     if not terms:
         return True
     hay = " ".join(
@@ -446,6 +476,7 @@ def crossref_search_papers(
     sess = requests.Session()
     headers = {"User-Agent": user_agent}
     out: list[Paper] = []
+    preprint_skipped = 0
 
     params: dict[str, object] = {
         "query": _to_query_text(query),
@@ -482,6 +513,11 @@ def crossref_search_papers(
             break
 
         for item in items:
+            work_type = str(item.get("type") or "").strip().lower()
+            if work_type == "posted-content":
+                preprint_skipped += 1
+                continue
+
             title_list = item.get("title") or []
             title = _clean_text(str(title_list[0] if title_list else ""))
             doi = clean_doi(item.get("DOI"))
@@ -510,7 +546,7 @@ def crossref_search_papers(
             if container:
                 journal = _clean_text(str(container[0]))
 
-            abstract = _clean_text(str(item.get("abstract") or "")) if include_abstract else None
+            abstract = _clean_abstract_text(str(item.get("abstract") or "")) if include_abstract else None
             url = str(item.get("URL") or "")
             paper = Paper(
                 pmid="",
@@ -534,6 +570,7 @@ def crossref_search_papers(
             time.sleep(sleep)
 
     if logger:
+        logger.info(f"Crossref preprint skipped (type=posted-content): {preprint_skipped}")
         logger.info(f"Crossref collected: {len(out)}")
     return out
 
@@ -557,88 +594,92 @@ def openalex_search_papers(
     max_items: int = 1000,
     from_date: str | None = None,
     until_date: str | None = None,
+    email: str | None = None,
     include_abstract: bool = False,
     excludes: Sequence[str] = (),
     sleep: float = 0.2,
     logger: logging.Logger | None = None,
 ) -> list[Paper]:
-    sess = requests.Session()
+    try:
+        import pyalex
+        from pyalex import Works
+    except ImportError as exc:
+        raise RuntimeError("pyalex is required for OpenAlex retrieval. Install it with: pip install pyalex") from exc
+
+    if email:
+        pyalex.config.email = email
+
     out: list[Paper] = []
     per_page = 200
-    page = 1
+    preprint_skipped = 0
 
-    filters: list[str] = []
+    works = Works().search(_to_query_text(query)).filter(type="!preprint")
     from_dash = _to_dash_date(from_date)
     until_dash = _to_dash_date(until_date)
     if from_dash:
-        filters.append(f"from_publication_date:{from_dash}")
+        works = works.filter(from_publication_date=from_dash)
     if until_dash:
-        filters.append(f"to_publication_date:{until_dash}")
+        works = works.filter(to_publication_date=until_dash)
 
-    while len(out) < max_items:
-        params: dict[str, object] = {
-            "search": _to_query_text(query),
-            "per-page": per_page,
-            "page": page,
-        }
-        if filters:
-            params["filter"] = ",".join(filters)
-        try:
-            r = sess.get("https://api.openalex.org/works", params=params, timeout=30)
-            r.raise_for_status()
-        except requests.RequestException as exc:
-            if logger:
-                logger.warning(f"OpenAlex fetch failed (page={page}): {exc}")
-            break
+    try:
+        pager = works.paginate(per_page=per_page, n_max=max_items)
+        for items in pager:
+            if not items:
+                break
 
-        js = r.json()
-        items = js.get("results", []) or []
-        if not items:
-            break
+            for item in items:
+                work_type = str(item.get("type") or "").strip().lower()
+                if work_type == "preprint":
+                    preprint_skipped += 1
+                    continue
 
-        for item in items:
-            doi = clean_doi(item.get("doi"))
-            title = _clean_text(str(item.get("display_name") or ""))
-            year = item.get("publication_year")
-            try:
-                year = int(year) if year is not None else None
-            except Exception:
-                year = None
+                doi = clean_doi(item.get("doi"))
+                title = _clean_text(str(item.get("display_name") or ""))
+                year = item.get("publication_year")
+                try:
+                    year = int(year) if year is not None else None
+                except Exception:
+                    year = None
 
-            source = _safe_get(item, "primary_location", "source", "display_name", default="")
-            source_name = _clean_text(str(source or ""))
+                source = _safe_get(item, "primary_location", "source", "display_name", default="")
+                source_name = _clean_text(str(source or ""))
 
-            authors = []
-            for auth in item.get("authorships", []) or []:
-                name = _safe_get(auth, "author", "display_name", default="")
-                name = str(name).strip()
-                if name:
-                    authors.append(name)
+                authors = []
+                for auth in item.get("authorships", []) or []:
+                    name = _safe_get(auth, "author", "display_name", default="")
+                    name = str(name).strip()
+                    if name:
+                        authors.append(name)
 
-            abstract = _openalex_abstract(item.get("abstract_inverted_index")) if include_abstract else None
-            url = str(item.get("id") or "")
-            paper = Paper(
-                pmid="",
-                title=title,
-                journal=source_name,
-                year=year,
-                authors=", ".join(authors),
-                doi=doi or None,
-                abstract=abstract,
-                pubmed_url=url,
-            )
-            if _paper_matches_excludes(paper, excludes):
-                out.append(paper)
+                abstract = _openalex_abstract(item.get("abstract_inverted_index")) if include_abstract else None
+                if abstract:
+                    abstract = _clean_abstract_text(abstract)
+                url = str(item.get("id") or "")
+                paper = Paper(
+                    pmid="",
+                    title=title,
+                    journal=source_name,
+                    year=year,
+                    authors=", ".join(authors),
+                    doi=doi or None,
+                    abstract=abstract,
+                    pubmed_url=url,
+                )
+                if _paper_matches_excludes(paper, excludes):
+                    out.append(paper)
+                if len(out) >= max_items:
+                    break
             if len(out) >= max_items:
                 break
 
-        if len(items) < per_page:
-            break
-        page += 1
-        if sleep > 0:
-            time.sleep(sleep)
+            if sleep > 0:
+                time.sleep(sleep)
+    except Exception as exc:
+        if logger:
+            logger.warning(f"OpenAlex fetch failed (pyalex): {exc}")
 
     if logger:
+        logger.info(f"OpenAlex preprint skipped (type=preprint): {preprint_skipped}")
         logger.info(f"OpenAlex collected: {len(out)}")
     return out
 
