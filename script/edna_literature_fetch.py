@@ -1,541 +1,45 @@
 from __future__ import annotations
 
-import html
-import io
 import json
-import logging
-import platform
-import re
-import socket
-import sys
-import time
-from dataclasses import asdict, dataclass
-from datetime import datetime
+from dataclasses import asdict
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
 
 import pandas as pd
-import requests
 import typer
-from Bio import Entrez
-from tqdm import tqdm
+
+from libs.cli_logging import log_run_header, setup_logger
+from libs.edna_pubmed import (
+    _date_range_clause,
+    _normalize_date_str,
+    build_query_with_excludes,
+    crossref_fill_missing_doi,
+    keep_latest_per_doi_pubmed,
+    pubmed_fetch_details,
+    pubmed_search_all_pmids,
+)
 
 app = typer.Typer(add_completion=False)
 
 
-# -------------------------
-# Logging utilities
-# -------------------------
-def setup_logger(log_level: str = "INFO", log_file: Optional[Path] = None) -> logging.Logger:
-    logger = logging.getLogger("edna_literature_fetch")
-    logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
-    logger.propagate = False
-
-    if logger.handlers:
-        logger.handlers.clear()
-
-    fmt = logging.Formatter(
-        fmt="%(asctime)s\t%(levelname)s\t%(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    sh.setLevel(logger.level)
-    logger.addHandler(sh)
-
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setFormatter(fmt)
-        fh.setLevel(logger.level)
-        logger.addHandler(fh)
-
-    return logger
-
-
-def log_run_header(logger: logging.Logger, params: dict, log_file: Optional[Path] = None) -> None:
-    try:
-        import getpass
-
-        user = getpass.getuser()
-    except Exception:
-        user = "unknown"
-
-    header_lines = [
-        "=" * 80,
-        "RUN HEADER",
-        f"timestamp   : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"user        : {user}",
-        f"hostname    : {socket.gethostname()}",
-        f"platform    : {platform.platform()}",
-        f"python      : {sys.version.split()[0]}",
-        f"cwd         : {Path.cwd()}",
-        f"command     : {' '.join(sys.argv)}",
-        f"log_file    : {str(log_file) if log_file else '(console only)'}",
-        "-" * 80,
-        "PARAMETERS",
-    ]
-    for k in sorted(params.keys()):
-        header_lines.append(f"{k:16s}: {params[k]}")
-    header_lines += [
-        "-" * 80,
-        "VERSIONS",
-        f"typer       : {getattr(typer, '__version__', 'unknown')}",
-        f"pandas      : {getattr(pd, '__version__', 'unknown')}",
-        f"requests    : {getattr(requests, '__version__', 'unknown')}",
-        f"biopython   : {getattr(sys.modules.get('Bio'), '__version__', 'unknown')}",
-        f"tqdm        : {getattr(tqdm, '__version__', 'unknown')}",
-        "=" * 80,
-    ]
-    for line in header_lines:
-        logger.info(line)
-
-
-# -------------------------
-# Data model
-# -------------------------
-@dataclass
-class Paper:
-    pmid: str
-    title: str
-    journal: str
-    year: Optional[int]
-    authors: str
-    doi: Optional[str]
-    abstract: Optional[str]
-    pubmed_url: str
-
-
-# -------------------------
-# Helpers
-# -------------------------
-def _safe_get(dct, *keys, default=None):
-    cur = dct
-    for k in keys:
-        if cur is None:
-            return default
-        if isinstance(cur, dict):
-            cur = cur.get(k)
-        else:
-            return default
-    return cur if cur is not None else default
-
-
-def _norm_title(title: str) -> str:
-    t = title.lower().strip()
-    t = re.sub(r"\s+", " ", t)
-    t = re.sub(r"[^a-z0-9 ]+", "", t)
-    return t
-
-
-def _clean_text(text: str) -> str:
-    s = html.unescape(text or "")
-    s = re.sub(r"<[^>]+>", "", s)
-    return s.strip()
-
-
-def _extract_doi(article: dict) -> Optional[str]:
-    eloc = _safe_get(article, "MedlineCitation", "Article", "ELocationID", default=None)
-    if isinstance(eloc, list):
-        for e in eloc:
-            if getattr(e, "attributes", {}).get("EIdType") == "doi":
-                return str(e)
-    elif eloc is not None:
-        if getattr(eloc, "attributes", {}).get("EIdType") == "doi":
-            return str(eloc)
-
-    aid_list = _safe_get(article, "PubmedData", "ArticleIdList", default=None)
-    if isinstance(aid_list, list):
-        for aid in aid_list:
-            if getattr(aid, "attributes", {}).get("IdType") == "doi":
-                return str(aid)
-
-    return None
-
-
-def _extract_year(article: dict) -> Optional[int]:
-    ad = _safe_get(article, "MedlineCitation", "Article", "ArticleDate", default=None)
-    if isinstance(ad, list) and ad:
-        y = _safe_get(ad[0], "Year", default=None)
-        try:
-            return int(y)
-        except Exception:
-            pass
-
-    pub_date = _safe_get(article, "MedlineCitation", "Article", "Journal", "JournalIssue", "PubDate", default=None)
-    for key in ("Year", "MedlineDate"):
-        v = _safe_get(pub_date, key, default=None)
-        if not v:
-            continue
-        m = re.search(r"(19|20)\d{2}", str(v))
-        if m:
-            return int(m.group(0))
-    return None
-
-
-def _extract_authors(article: dict) -> str:
-    al = _safe_get(article, "MedlineCitation", "Article", "AuthorList", default=[])
-    authors = []
-    if isinstance(al, list):
-        for a in al:
-            last = _safe_get(a, "LastName", default="")
-            fore = _safe_get(a, "ForeName", default="")
-            coll = _safe_get(a, "CollectiveName", default="")
-            if coll:
-                authors.append(str(coll))
-            else:
-                name = " ".join([str(fore).strip(), str(last).strip()]).strip()
-                if name:
-                    authors.append(name)
-    return ", ".join(authors)
-
-
-def _extract_abstract(article: dict) -> Optional[str]:
-    ab = _safe_get(article, "MedlineCitation", "Article", "Abstract", "AbstractText", default=None)
-    if ab is None:
-        return None
-    if isinstance(ab, list):
-        parts = [str(x).strip() for x in ab if str(x).strip()]
-        joined = " ".join(parts).strip()
-        normalized = re.sub(r"\s+", " ", joined).strip()
-        return normalized if normalized else None
-    s = str(ab).strip()
-    normalized = re.sub(r"\s+", " ", s).strip()
-    return normalized if normalized else None
-
-
-
-
-def build_query_with_excludes(base_query: str, excludes: Sequence[str]) -> str:
-    ex = [e.strip() for e in excludes if e and e.strip()]
-    if not ex:
-        return base_query.strip()
-    ex_clause = " OR ".join(ex)
-    return f"({base_query.strip()}) NOT ({ex_clause})"
-
-
-def _normalize_date_str(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    s = value.strip()
-    if not s:
-        return None
-    return s.replace("-", "/")
-
-
-def _date_range_clause(since: Optional[str], until: Optional[str], datetype: str) -> Optional[str]:
-    since_norm = _normalize_date_str(since)
-    until_norm = _normalize_date_str(until)
-    if not since_norm and not until_norm:
-        return None
-    field = datetype.upper()
-    if field not in ("PDAT", "EDAT"):
-        field = field.upper()
-    start = since_norm or "0001/01/01"
-    end = until_norm or "3000/12/31"
-    return f'("{start}"[{field}] : "{end}"[{field}])'
-
-
-def _entrez_read_handle(handle, logger: Optional[logging.Logger], context: str):
-    raw = b""
-    try:
-        raw = handle.read()
-    finally:
-        handle.close()
-    if isinstance(raw, str):
-        raw_bytes = raw.encode("utf-8", errors="replace")
-    elif isinstance(raw, (bytes, bytearray, memoryview)):
-        raw_bytes = bytes(raw)
-    else:
-        raw_bytes = str(raw).encode("utf-8", errors="replace")
-    try:
-        return Entrez.read(io.BytesIO(raw_bytes))
-    except Exception as exc:
-        if logger:
-            logger.warning(f"Entrez parse failed ({context}): {exc}")
-            if logger.isEnabledFor(logging.DEBUG):
-                snippet = raw_bytes[:500].decode("utf-8", errors="replace").replace("\n", "\\n")
-                logger.debug(f"Entrez raw head ({context}): {snippet}")
-        raise
-
-
-def _entrez_request(read_fn, logger: Optional[logging.Logger], context: str, retries: int = 3):
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, retries + 1):
-        handle = read_fn()
-        try:
-            return _entrez_read_handle(handle, logger, context)
-        except Exception as exc:
-            last_exc = exc
-            if logger and attempt < retries:
-                logger.warning(f"Retrying Entrez request ({context}) attempt {attempt}/{retries}")
-            if attempt < retries:
-                time.sleep(0.5 * attempt)
-                continue
-            raise
-    if last_exc:
-        raise last_exc
-
-
-def _pmid_key(pmid: str) -> int:
-    try:
-        return int(pmid)
-    except Exception:
-        return 0
-
-
-def keep_latest_per_doi_pubmed(papers: list[Paper], logger: Optional[logging.Logger] = None) -> list[Paper]:
-    """
-    PubMedは“バージョン”概念が薄いので、同一DOIが複数件ある場合だけ
-    (year, PMID) が新しい方を採用する。
-    DOIが無いものは PMID 単位で残す。
-    """
-    best: dict[str, Paper] = {}
-    no_doi: list[Paper] = []
-
-    for p in papers:
-        doi = (p.doi or "").strip().lower()
-        if not doi:
-            no_doi.append(p)
-            continue
-
-        cur = best.get(doi)
-        if cur is None:
-            best[doi] = p
-            continue
-
-        p_key = (p.year or 0, _pmid_key(p.pmid))
-        c_key = (cur.year or 0, _pmid_key(cur.pmid))
-        if p_key > c_key:
-            best[doi] = p
-
-    out = list(best.values()) + no_doi
-    # 並べ替え：年・PMIDの新しい順
-    out.sort(
-        key=lambda x: (x.year or 0, _pmid_key(x.pmid)),
-        reverse=True,
-    )
-    if logger:
-        logger.info(f"DOI latest-select (PubMed): {len(papers)} -> {len(out)}")
-    return out
-
-
-# -------------------------
-# PubMed retrieval
-# -------------------------
-def pubmed_search_all_pmids(
-    query: str,
-    email: str,
-    api_key: Optional[str] = None,
-    mindate: Optional[str] = None,
-    maxdate: Optional[str] = None,
-    datetype: str = "pdat",
-    sort: str = "most+recent",
-    batch: int = 10000,
-    sleep: float = 0.34,
-    logger: Optional[logging.Logger] = None,
-) -> list[str]:
-    """
-    Get PMIDs for query by using Entrez history (usehistory=y) and retstart pagination.
-    """
-    Entrez.email = email
-    if api_key:
-        Entrez.api_key = api_key
-
-    kwargs = {
-        "db": "pubmed",
-        "term": query,
-        "usehistory": "y",
-        "retmode": "xml",
-        "retmax": 0,
-        "sort": sort,
-    }
-    if mindate or maxdate:
-        kwargs.update({"datetype": datetype})
-        if mindate:
-            kwargs["mindate"] = mindate
-        if maxdate:
-            kwargs["maxdate"] = maxdate
-
-    if logger:
-        logger.info(f"Entrez.esearch initial (retmax=0) sort={sort} datetype={datetype}")
-
-    res = _entrez_request(lambda: Entrez.esearch(**kwargs), logger, "esearch initial")
-
-    count = int(res.get("Count", "0"))
-    if logger:
-        logger.info(f"PubMed hit count: {count}")
-
-    if count == 0:
-        return []
-
-    webenv = res["WebEnv"]
-    query_key = res["QueryKey"]
-
-    pmids: list[str] = []
-    for retstart in tqdm(range(0, count, batch), desc=f"Collecting PMIDs (total={count})"):
-        if logger and logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Paging PMIDs retstart={retstart} retmax={min(batch, count - retstart)}")
-
-        kwargs_page = {}
-        if mindate or maxdate:
-            kwargs_page.update({"datetype": datetype})
-            if mindate:
-                kwargs_page["mindate"] = mindate
-            if maxdate:
-                kwargs_page["maxdate"] = maxdate
-
-        res2 = _entrez_request(
-            lambda: Entrez.esearch(
-                db="pubmed",
-                term=query,
-                retmode="xml",
-                retstart=retstart,
-                retmax=min(batch, count - retstart),
-                webenv=webenv,
-                query_key=query_key,
-                sort=sort,
-                **kwargs_page,
-            ),
-            logger,
-            f"esearch page retstart={retstart}",
-        )
-        pmids.extend(list(res2.get("IdList", [])))
-
-        if sleep > 0:
-            time.sleep(sleep)
-
-    # de-dup preserve order
-    seen = set()
-    uniq = []
-    for p in pmids:
-        if p in seen:
-            continue
-        seen.add(p)
-        uniq.append(p)
-
-    if logger:
-        logger.info(f"PMIDs collected: {len(uniq)} (deduplicated)")
-    return uniq
-
-
-def pubmed_fetch_details(
-    pmids: Iterable[str],
-    email: str,
-    api_key: Optional[str] = None,
-    include_abstract: bool = False,
-    sleep: float = 0.34,
-    logger: Optional[logging.Logger] = None,
-) -> list[Paper]:
-    Entrez.email = email
-    if api_key:
-        Entrez.api_key = api_key
-
-    pmids = list(pmids)
-    papers: list[Paper] = []
-    chunk_size = 100
-
-    if logger:
-        logger.info(f"Entrez.efetch details for {len(pmids)} PMIDs (chunk_size={chunk_size})")
-
-    for i in tqdm(range(0, len(pmids), chunk_size), desc="Fetching PubMed details"):
-        chunk = pmids[i : i + chunk_size]
-        records = _entrez_request(
-            lambda: Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml"),
-            logger,
-            f"efetch chunk start={i}",
-        )
-
-        for art in records.get("PubmedArticle", []):
-            pmid = str(_safe_get(art, "MedlineCitation", "PMID", default="")).strip()
-            title = _clean_text(str(_safe_get(art, "MedlineCitation", "Article", "ArticleTitle", default="")))
-            journal = str(_safe_get(art, "MedlineCitation", "Article", "Journal", "Title", default="")).strip()
-            year = _extract_year(art)
-            authors = _extract_authors(art)
-            doi = _extract_doi(art)
-            abstract = _extract_abstract(art) if include_abstract else None
-            url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else ""
-
-            papers.append(
-                Paper(
-                    pmid=pmid,
-                    title=title,
-                    journal=journal,
-                    year=year,
-                    authors=authors,
-                    doi=doi,
-                    abstract=abstract,
-                    pubmed_url=url,
-                )
-            )
-
-        if sleep > 0:
-            time.sleep(sleep)
-
-    if logger:
-        logger.info(f"Records fetched: {len(papers)}")
-    return papers
-
-
-def crossref_fill_missing_doi(
-    papers: list[Paper],
-    user_agent: str,
-    sleep: float = 0.2,
-    logger: Optional[logging.Logger] = None,
-) -> list[Paper]:
-    sess = requests.Session()
-    headers = {"User-Agent": user_agent}
-    out: list[Paper] = []
-
-    if logger:
-        logger.info("Crossref DOI fill enabled (heuristic)")
-
-    for p in tqdm(papers, desc="Crossref DOI fill"):
-        if p.doi or not p.title:
-            out.append(p)
-            continue
-        params = {"query.title": p.title, "rows": 1}
-        try:
-            r = sess.get("https://api.crossref.org/works", params=params, headers=headers, timeout=20)
-            r.raise_for_status()
-            js = r.json()
-            items = js.get("message", {}).get("items", [])
-            doi = items[0].get("DOI") if items else None
-            out.append(Paper(**{**asdict(p), "doi": doi}))
-        except Exception as e:
-            if logger and logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Crossref lookup failed for title={p.title!r}: {e}")
-            out.append(p)
-
-        if sleep > 0:
-            time.sleep(sleep)
-
-    return out
-
-
-# -------------------------
-# Typer command
-# -------------------------
 @app.command()
 def fetch(
     email: str = typer.Option(..., help="Your email for NCBI Entrez."),
-    api_key: Optional[str] = typer.Option(None, help="NCBI API key (optional)."),
+    api_key: str | None = typer.Option(None, help="NCBI API key (optional)."),
     query: str = typer.Option(
         '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])',
         help="Base PubMed query string.",
     ),
-    exclude: Optional[list[str]] = typer.Option(
+    exclude: list[str] | None = typer.Option(
         None,
         "--exclude",
         help="Exclude term(s). Can be repeated. Example: --exclude review --exclude '\"meta-analysis\"'",
     ),
-    since: Optional[str] = typer.Option(
+    since: str | None = typer.Option(
         None,
         "--since",
         help="Start date (YYYY/MM/DD) for date filter.",
     ),
-    until: Optional[str] = typer.Option(
+    until: str | None = typer.Option(
         None,
         "--until",
         help="End date (YYYY/MM/DD) for date filter (optional).",
@@ -564,14 +68,14 @@ def fetch(
     out_prefix: str = typer.Option("edna_papers", help="Output prefix (CSV/JSON)."),
     out_dir: Path = typer.Option(Path("."), help="Output directory."),
     log_level: str = typer.Option("INFO", help="Log level: DEBUG, INFO, WARNING, ERROR"),
-    log_file: Optional[Path] = typer.Option(None, help="Write logs to this file as well."),
+    log_file: Path | None = typer.Option(None, help="Write logs to this file as well."),
 ):
     """
     Fetch paper metadata from PubMed and export CSV/JSON.
     If DOI duplicates occur, keeps the record with newest (year, PMID).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger(log_level=log_level, log_file=log_file)
+    logger = setup_logger("edna_literature_fetch", log_level=log_level, log_file=log_file)
 
     exclude_terms = exclude or []
     final_query = build_query_with_excludes(query, exclude_terms)
@@ -599,7 +103,17 @@ def fetch(
         "out_dir": str(out_dir),
         "log_level": log_level,
     }
-    log_run_header(logger, params=params, log_file=log_file)
+    log_run_header(
+        logger,
+        params=params,
+        log_file=log_file,
+        param_width=16,
+        versions={
+            "pandas": getattr(pd, "__version__", "unknown"),
+            "typer": getattr(typer, "__version__", "unknown"),
+        },
+        fallback_command="python script/edna_literature_fetch.py",
+    )
 
     since_norm = _normalize_date_str(since)
     until_norm = _normalize_date_str(until)
@@ -635,7 +149,6 @@ def fetch(
     if crossref:
         papers = crossref_fill_missing_doi(papers, user_agent=user_agent, logger=logger)
 
-    # DOI duplicates -> keep newest record
     papers = keep_latest_per_doi_pubmed(papers, logger=logger)
 
     df = pd.DataFrame([asdict(p) for p in papers])

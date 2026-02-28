@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any
 
 import pandas as pd
 import requests
@@ -21,15 +22,15 @@ DEFAULT_CONTEXT_COLS = ["title", "journal", "year", "authors", "doi"]
 class RagRecord:
     doc_id: str
     text: str
-    meta: Dict[str, str]
-    embedding: List[float]
+    meta: dict[str, str]
+    embedding: list[float]
 
 
 def _normalize_url(url: str) -> str:
     return url.rstrip("/")
 
 
-def _split_cols(value: str) -> List[str]:
+def _split_cols(value: str) -> list[str]:
     cols = [c.strip() for c in value.split(",")]
     return [c for c in cols if c]
 
@@ -38,8 +39,8 @@ def _label(col: str) -> str:
     return col.replace("_", " ").title()
 
 
-def _row_to_meta(row: pd.Series) -> Dict[str, str]:
-    meta: Dict[str, str] = {}
+def _row_to_meta(row: pd.Series) -> dict[str, str]:
+    meta: dict[str, str] = {}
     for col in row.index:
         val = row[col]
         if pd.isna(val):
@@ -48,8 +49,8 @@ def _row_to_meta(row: pd.Series) -> Dict[str, str]:
     return meta
 
 
-def _build_text(meta: Dict[str, str], cols: Sequence[str]) -> str:
-    parts: List[str] = []
+def _build_text(meta: dict[str, str], cols: Sequence[str]) -> str:
+    parts: list[str] = []
     for col in cols:
         val = meta.get(col)
         if not val:
@@ -77,11 +78,11 @@ def _cosine_sim(a: Sequence[float], b: Sequence[float]) -> float:
 def _embed_openai(
     base_url: str,
     texts: Sequence[str],
-    model: Optional[str],
+    model: str | None,
     timeout: float,
-) -> List[List[float]]:
+) -> list[list[float]]:
     url = f"{_normalize_url(base_url)}/v1/embeddings"
-    payload: Dict[str, Any] = {"input": list(texts)}
+    payload: dict[str, Any] = {"input": list(texts)}
     if model:
         payload["model"] = model
     resp = requests.post(url, json=payload, timeout=timeout)
@@ -95,9 +96,9 @@ def _embed_legacy(
     base_url: str,
     texts: Sequence[str],
     timeout: float,
-) -> List[List[float]]:
+) -> list[list[float]]:
     url = f"{_normalize_url(base_url)}/embedding"
-    embeddings: List[List[float]] = []
+    embeddings: list[list[float]] = []
     for text in texts:
         payload = {"content": text, "input": text}
         resp = requests.post(url, json=payload, timeout=timeout)
@@ -116,9 +117,9 @@ def _embed_texts(
     base_url: str,
     texts: Sequence[str],
     api: str,
-    model: Optional[str],
+    model: str | None,
     timeout: float,
-) -> List[List[float]]:
+) -> list[list[float]]:
     if api == "openai":
         return _embed_openai(base_url, texts, model, timeout)
     if api == "legacy":
@@ -129,13 +130,13 @@ def _embed_texts(
 def _completion_openai(
     base_url: str,
     prompt: str,
-    model: Optional[str],
+    model: str | None,
     max_tokens: int,
     temperature: float,
     timeout: float,
 ) -> str:
     url = f"{_normalize_url(base_url)}/v1/completions"
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "prompt": prompt,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -152,13 +153,13 @@ def _completion_openai_chat(
     base_url: str,
     system_prompt: str,
     user_prompt: str,
-    model: Optional[str],
+    model: str | None,
     max_tokens: int,
     temperature: float,
     timeout: float,
 ) -> str:
     url = f"{_normalize_url(base_url)}/v1/chat/completions"
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -197,11 +198,11 @@ def _completion_legacy(
     return ""
 
 
-def _format_context(records: Sequence[Dict[str, Any]], cols: Sequence[str]) -> str:
-    lines: List[str] = []
+def _format_context(records: Sequence[dict[str, Any]], cols: Sequence[str]) -> str:
+    lines: list[str] = []
     for idx, rec in enumerate(records, start=1):
         meta = rec.get("meta", {})
-        parts: List[str] = []
+        parts: list[str] = []
         for col in cols:
             val = meta.get(col)
             if not val:
@@ -220,9 +221,9 @@ def index(
     text_cols: str = typer.Option(",".join(DEFAULT_TEXT_COLS), "--text-cols"),
     embed_url: str = typer.Option("http://localhost:8080", "--embed-url"),
     embed_api: str = typer.Option("openai", "--embed-api", case_sensitive=False),
-    embed_model: Optional[str] = typer.Option(None, "--embed-model"),
+    embed_model: str | None = typer.Option(None, "--embed-model"),
     batch_size: int = typer.Option(8, "--batch-size"),
-    limit: Optional[int] = typer.Option(None, "--limit"),
+    limit: int | None = typer.Option(None, "--limit"),
     timeout: float = typer.Option(60.0, "--timeout"),
 ) -> None:
     """Build an embedding index from a CSV file."""
@@ -234,7 +235,7 @@ def index(
     out_index.parent.mkdir(parents=True, exist_ok=True)
     embed_api = embed_api.lower()
 
-    records: List[RagRecord] = []
+    records: list[RagRecord] = []
     for idx, (_, row) in tqdm(enumerate(df.iterrows()), total=len(df), desc="prepare"):
         meta = _row_to_meta(row)
         text = _build_text(meta, cols)
@@ -267,10 +268,10 @@ def ask(
     query: str = typer.Argument(...),
     embed_url: str = typer.Option("http://localhost:8080", "--embed-url"),
     embed_api: str = typer.Option("openai", "--embed-api", case_sensitive=False),
-    embed_model: Optional[str] = typer.Option(None, "--embed-model"),
+    embed_model: str | None = typer.Option(None, "--embed-model"),
     llm_url: str = typer.Option("http://localhost:8080", "--llm-url"),
     llm_api: str = typer.Option("openai-chat", "--llm-api", case_sensitive=False),
-    llm_model: Optional[str] = typer.Option(None, "--llm-model"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
     top_k: int = typer.Option(5, "--top-k"),
     context_cols: str = typer.Option(",".join(DEFAULT_CONTEXT_COLS), "--context-cols"),
     max_tokens: int = typer.Option(512, "--max-tokens"),
@@ -283,7 +284,7 @@ def ask(
     llm_api = llm_api.lower()
     context_cols_list = _split_cols(context_cols)
 
-    records: List[Dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     with index_path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -297,7 +298,7 @@ def ask(
     query_emb = _embed_texts(embed_url, [query], embed_api, embed_model, timeout)[0]
     query_norm = math.sqrt(sum(x * x for x in query_emb)) if query_emb else 0.0
 
-    scored: List[Dict[str, Any]] = []
+    scored: list[dict[str, Any]] = []
     for rec in records:
         emb = rec.get("embedding") or []
         if not emb or rec["_norm"] == 0.0 or query_norm == 0.0:

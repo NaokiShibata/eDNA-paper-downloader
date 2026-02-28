@@ -3,121 +3,23 @@ from __future__ import annotations
 import html
 import json
 import logging
-import platform
 import re
-import socket
-import sys
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
 
 import pandas as pd
 import requests
 import typer
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+from libs.cli_logging import log_run_header, setup_logger
+from libs.http_retry import make_retry_session
 
 app = typer.Typer(add_completion=False)
 
 API_BASE = "https://api.biorxiv.org/details"
-
-
-# -------------------------
-# Logging utilities
-# -------------------------
-def setup_logger(log_level: str = "INFO", log_file: Optional[Path] = None) -> logging.Logger:
-    logger = logging.getLogger("biorxiv_search")
-    logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
-    logger.propagate = False
-
-    if logger.handlers:
-        logger.handlers.clear()
-
-    fmt = logging.Formatter(
-        fmt="%(asctime)s\t%(levelname)s\t%(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    sh.setLevel(logger.level)
-    logger.addHandler(sh)
-
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setFormatter(fmt)
-        fh.setLevel(logger.level)
-        logger.addHandler(fh)
-
-    return logger
-
-
-def log_run_header(logger: logging.Logger, params: dict, log_file: Optional[Path] = None) -> None:
-    try:
-        import getpass
-
-        user = getpass.getuser()
-    except Exception:
-        user = "unknown"
-
-    header_lines = [
-        "=" * 80,
-        "RUN HEADER",
-        f"timestamp   : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"user        : {user}",
-        f"hostname    : {socket.gethostname()}",
-        f"platform    : {platform.platform()}",
-        f"python      : {sys.version.split()[0]}",
-        f"cwd         : {Path.cwd()}",
-        f"command     : {' '.join(sys.argv)}",
-        f"log_file    : {str(log_file) if log_file else '(console only)'}",
-        "-" * 80,
-        "PARAMETERS",
-    ]
-    for k in sorted(params.keys()):
-        header_lines.append(f"{k:18s}: {params[k]}")
-    header_lines += [
-        "-" * 80,
-        "VERSIONS",
-        f"typer       : {getattr(typer, '__version__', 'unknown')}",
-        f"pandas      : {getattr(pd, '__version__', 'unknown')}",
-        f"requests    : {getattr(requests, '__version__', 'unknown')}",
-        "=" * 80,
-    ]
-    for line in header_lines:
-        logger.info(line)
-
-
-# -------------------------
-# Robust requests session
-# -------------------------
-def make_retry_session(
-    retries: int = 6,
-    backoff_factor: float = 1.0,
-    status_forcelist: tuple[int, ...] = (429, 500, 502, 503, 504),
-) -> requests.Session:
-    """
-    Retry-friendly session to reduce RemoteDisconnected/connection resets.
-    """
-    sess = requests.Session()
-    retry = Retry(
-        total=retries,
-        connect=retries,
-        read=retries,
-        status=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=status_forcelist,
-        allowed_methods=frozenset(["GET", "HEAD"]),
-        raise_on_status=False,
-        respect_retry_after_header=True,
-    )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
-    sess.mount("http://", adapter)
-    sess.mount("https://", adapter)
-    return sess
 
 
 # -------------------------
@@ -131,12 +33,12 @@ class Preprint:
     authors: str
     date: str  # API "date" (posted date)
     category: str
-    abstract: Optional[str]
-    version: Optional[str]
+    abstract: str | None
+    version: str | None
     biorxiv_url: str
 
-    posted_date: Optional[str] = None
-    retrieved_at: Optional[str] = None
+    posted_date: str | None = None
+    retrieved_at: str | None = None
 
 
 # -------------------------
@@ -239,7 +141,7 @@ def item_to_preprint(server: str, it: dict, retrieved_at: str) -> Preprint:
     )
 
 
-def _to_int_version(v: Optional[object]) -> int:
+def _to_int_version(v: object | None) -> int:
     if v is None:
         return -1
     if hasattr(pd, "isna") and pd.isna(v):
@@ -260,7 +162,7 @@ def _to_int_version(v: Optional[object]) -> int:
     return -1
 
 
-def _date_key(d: Optional[str]) -> str:
+def _date_key(d: str | None) -> str:
     return d or "0000-00-00"
 
 
@@ -471,8 +373,8 @@ def search(
         "",
         help="Local keyword filter over title/abstract/authors/category. Spaces=AND; use OR for OR.",
     ),
-    exclude: Optional[list[str]] = typer.Option(None, "--exclude", help="Exclude term(s). Can be repeated."),
-    category: Optional[str] = typer.Option(None, help="Filter by category (exact match, e.g., 'ecology')."),
+    exclude: list[str] | None = typer.Option(None, "--exclude", help="Exclude term(s). Can be repeated."),
+    category: str | None = typer.Option(None, help="Filter by category (exact match, e.g., 'ecology')."),
     sleep: float = typer.Option(0.5, min=0.0, help="Sleep seconds between API pages (recommended >=0.3)."),
     out_prefix: str = typer.Option("biorxiv_results", help="Output prefix"),
     out_dir: Path = typer.Option(Path("."), help="Output directory"),
@@ -493,7 +395,7 @@ def search(
     ),
     # logging
     log_level: str = typer.Option("INFO", help="Log level: DEBUG, INFO, WARNING, ERROR"),
-    log_file: Optional[Path] = typer.Option(None, help="Write logs to this file as well."),
+    log_file: Path | None = typer.Option(None, help="Write logs to this file as well."),
 ):
     """
     Download bioRxiv/medRxiv metadata by date range (official API) and optionally filter locally.
@@ -506,7 +408,7 @@ def search(
     out_dir.mkdir(parents=True, exist_ok=True)
     exclude_terms = exclude or []
 
-    logger = setup_logger(log_level=log_level, log_file=log_file)
+    logger = setup_logger("biorxiv_search", log_level=log_level, log_file=log_file)
 
     start = _parse_date(from_date)
     end = _parse_date(to_date)
@@ -533,7 +435,18 @@ def search(
         "write_delta": write_delta,
         "log_level": log_level,
     }
-    log_run_header(logger, params=params, log_file=log_file)
+    log_run_header(
+        logger,
+        params=params,
+        log_file=log_file,
+        param_width=18,
+        versions={
+            "pandas": getattr(pd, "__version__", "unknown"),
+            "requests": getattr(requests, "__version__", "unknown"),
+            "typer": getattr(typer, "__version__", "unknown"),
+        },
+        fallback_command="python script/biorxiv_search.py",
+    )
 
     csv_path = out_dir / f"{out_prefix}.csv"
     json_path = out_dir / f"{out_prefix}.json"

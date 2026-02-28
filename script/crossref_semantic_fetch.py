@@ -3,21 +3,19 @@ from __future__ import annotations
 import html
 import json
 import logging
-import platform
 import re
-import socket
-import sys
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
 
 import pandas as pd
 import requests
 import typer
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+from libs.cli_logging import log_run_header, setup_logger
+from libs.http_retry import make_retry_session
+from libs.text_normalize import clean_doi
 
 app = typer.Typer(add_completion=False)
 
@@ -26,117 +24,24 @@ SEMANTIC_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 
 
 # -------------------------
-# Logging utilities
-# -------------------------
-def setup_logger(log_level: str = "INFO", log_file: Optional[Path] = None) -> logging.Logger:
-    logger = logging.getLogger("crossref_semantic_fetch")
-    logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
-    logger.propagate = False
-
-    if logger.handlers:
-        logger.handlers.clear()
-
-    fmt = logging.Formatter(
-        fmt="%(asctime)s\t%(levelname)s\t%(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    sh.setLevel(logger.level)
-    logger.addHandler(sh)
-
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setFormatter(fmt)
-        fh.setLevel(logger.level)
-        logger.addHandler(fh)
-
-    return logger
-
-
-def log_run_header(logger: logging.Logger, params: dict, log_file: Optional[Path] = None) -> None:
-    try:
-        import getpass
-
-        user = getpass.getuser()
-    except Exception:
-        user = "unknown"
-
-    header_lines = [
-        "=" * 80,
-        "RUN HEADER",
-        f"timestamp   : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"user        : {user}",
-        f"hostname    : {socket.gethostname()}",
-        f"platform    : {platform.platform()}",
-        f"python      : {sys.version.split()[0]}",
-        f"cwd         : {Path.cwd()}",
-        f"command     : {' '.join(sys.argv)}",
-        f"log_file    : {str(log_file) if log_file else '(console only)'}",
-        "-" * 80,
-        "PARAMETERS",
-    ]
-    for k in sorted(params.keys()):
-        header_lines.append(f"{k:18s}: {params[k]}")
-    header_lines += [
-        "-" * 80,
-        "VERSIONS",
-        f"typer       : {getattr(typer, '__version__', 'unknown')}",
-        f"pandas      : {getattr(pd, '__version__', 'unknown')}",
-        f"requests    : {getattr(requests, '__version__', 'unknown')}",
-        "=" * 80,
-    ]
-    for line in header_lines:
-        logger.info(line)
-
-
-# -------------------------
-# Robust requests session
-# -------------------------
-def make_retry_session(
-    retries: int = 6,
-    backoff_factor: float = 1.0,
-    status_forcelist: tuple[int, ...] = (429, 500, 502, 503, 504),
-) -> requests.Session:
-    sess = requests.Session()
-    retry = Retry(
-        total=retries,
-        connect=retries,
-        read=retries,
-        status=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=status_forcelist,
-        allowed_methods=frozenset(["GET", "HEAD"]),
-        raise_on_status=False,
-        respect_retry_after_header=True,
-    )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
-    sess.mount("http://", adapter)
-    sess.mount("https://", adapter)
-    return sess
-
-
-# -------------------------
 # Data model
 # -------------------------
 @dataclass
 class PaperInfo:
     source: str
-    doi: Optional[str]
+    doi: str | None
     title: str
     authors: str
-    year: Optional[int]
-    venue: Optional[str]
-    abstract: Optional[str]
-    url: Optional[str]
-    published_date: Optional[str]
-    crossref_type: Optional[str] = None
-    s2_paper_id: Optional[str] = None
-    citation_count: Optional[int] = None
-    reference_count: Optional[int] = None
-    fields_of_study: Optional[str] = None
+    year: int | None
+    venue: str | None
+    abstract: str | None
+    url: str | None
+    published_date: str | None
+    crossref_type: str | None = None
+    s2_paper_id: str | None = None
+    citation_count: int | None = None
+    reference_count: int | None = None
+    fields_of_study: str | None = None
 
 
 # -------------------------
@@ -155,14 +60,7 @@ def _clean_text(text: str) -> str:
     return s.strip()
 
 
-def _clean_doi(doi: Optional[str]) -> str:
-    v = (doi or "").strip().lower()
-    v = re.sub(r"^https?://(dx\.)?doi\.org/", "", v)
-    v = re.sub(r"^doi:\s*", "", v)
-    return v
-
-
-def _date_from_parts(parts: Iterable[int]) -> Optional[str]:
+def _date_from_parts(parts: Iterable[int]) -> str | None:
     parts = list(parts)
     if not parts:
         return None
@@ -236,7 +134,7 @@ def _merge_sources(existing: PaperInfo, incoming: PaperInfo) -> PaperInfo:
 def dedupe_and_merge(papers: list[PaperInfo]) -> list[PaperInfo]:
     merged: dict[str, PaperInfo] = {}
     for p in papers:
-        doi = _clean_doi(p.doi)
+        doi = clean_doi(p.doi)
         key = doi if doi else f"{_norm_title(p.title)}::{p.year or ''}"
         if key in merged:
             merged[key] = _merge_sources(merged[key], p)
@@ -254,7 +152,7 @@ def load_pubmed_index(csv_path: Path, logger: logging.Logger) -> tuple[set[str],
 
     if "doi" in df.columns:
         for val in df["doi"].dropna().astype(str):
-            doi = _clean_doi(val)
+            doi = clean_doi(val)
             if doi:
                 doi_set.add(doi)
 
@@ -280,8 +178,8 @@ def crossref_fetch(
     query: str,
     user_agent: str,
     max_items: int,
-    from_date: Optional[str],
-    until_date: Optional[str],
+    from_date: str | None,
+    until_date: str | None,
     sleep: float,
     logger: logging.Logger,
     sess: requests.Session,
@@ -361,7 +259,7 @@ def crossref_fetch(
 # -------------------------
 def semantic_fetch(
     query: str,
-    api_key: Optional[str],
+    api_key: str | None,
     max_items: int,
     sleep: float,
     logger: logging.Logger,
@@ -449,12 +347,12 @@ def fetch(
     max_items: int = typer.Option(1000, min=1, help="Maximum items per source."),
     crossref: bool = typer.Option(True, "--crossref/--no-crossref", help="Enable Crossref search."),
     semantic: bool = typer.Option(True, "--semantic/--no-semantic", help="Enable Semantic Scholar search."),
-    crossref_from: Optional[str] = typer.Option(None, help="Crossref from-pub-date (YYYY-MM-DD)."),
-    crossref_until: Optional[str] = typer.Option(None, help="Crossref until-pub-date (YYYY-MM-DD)."),
-    exclude_pubmed_csv: Optional[Path] = typer.Option(
+    crossref_from: str | None = typer.Option(None, help="Crossref from-pub-date (YYYY-MM-DD)."),
+    crossref_until: str | None = typer.Option(None, help="Crossref until-pub-date (YYYY-MM-DD)."),
+    exclude_pubmed_csv: Path | None = typer.Option(
         None, help="Exclude records already present in a PubMed CSV (by DOI or title+year)."
     ),
-    semantic_api_key: Optional[str] = typer.Option(None, help="Semantic Scholar API key (optional)."),
+    semantic_api_key: str | None = typer.Option(None, help="Semantic Scholar API key (optional)."),
     include_abstract: bool = typer.Option(False, help="Include abstracts where available."),
     user_agent: str = typer.Option(
         "edna-literature-fetch/1.0 (mailto:your_email@example.com)",
@@ -464,14 +362,14 @@ def fetch(
     out_prefix: str = typer.Option("crossref_semantic_results", help="Output prefix (CSV/JSON)."),
     out_dir: Path = typer.Option(Path("."), help="Output directory."),
     log_level: str = typer.Option("INFO", help="Log level: DEBUG, INFO, WARNING, ERROR"),
-    log_file: Optional[Path] = typer.Option(None, help="Write logs to this file as well."),
+    log_file: Path | None = typer.Option(None, help="Write logs to this file as well."),
 ):
     """
     Collect paper metadata from Crossref REST API and Semantic Scholar API.
     Outputs CSV/JSON with a merged view (DOI/title-year de-dup).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger(log_level=log_level, log_file=log_file)
+    logger = setup_logger("crossref_semantic_fetch", log_level=log_level, log_file=log_file)
 
     params = {
         "query": query,
@@ -489,7 +387,18 @@ def fetch(
         "out_dir": str(out_dir),
         "log_level": log_level,
     }
-    log_run_header(logger, params=params, log_file=log_file)
+    log_run_header(
+        logger,
+        params=params,
+        log_file=log_file,
+        param_width=18,
+        versions={
+            "pandas": getattr(pd, "__version__", "unknown"),
+            "requests": getattr(requests, "__version__", "unknown"),
+            "typer": getattr(typer, "__version__", "unknown"),
+        },
+        fallback_command="python script/crossref_semantic_fetch.py",
+    )
 
     sess = make_retry_session(retries=6, backoff_factor=1.0)
     results: list[PaperInfo] = []
@@ -533,7 +442,7 @@ def fetch(
         before = len(merged)
         filtered: list[PaperInfo] = []
         for p in merged:
-            doi = _clean_doi(p.doi)
+            doi = clean_doi(p.doi)
             key = f"{_norm_title(p.title)}::{p.year or ''}"
             if doi and doi in doi_set:
                 continue

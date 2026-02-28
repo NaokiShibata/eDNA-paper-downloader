@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import fcntl
 import json
-import logging
 import os
 import pty
 import re
@@ -11,17 +10,20 @@ import select
 import shlex
 import shutil
 import subprocess
-import sys
 import termios
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any
+from collections.abc import Sequence
 
 import pandas as pd
 import typer
 from tqdm import tqdm
+
+from libs.cli_logging import setup_logger
+from libs.text_normalize import clean_doi
 
 app = typer.Typer(add_completion=False)
 
@@ -31,36 +33,8 @@ IDLE_DONE_SECONDS = 0.5
 DEFAULT_SAMPLING_TEMPERATURE = 0.1
 
 
-def setup_logger(log_level: str = "INFO", log_file: Optional[Path] = None) -> logging.Logger:
-    logger = logging.getLogger("llama_flagger")
-    logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
-    logger.propagate = False
-
-    if logger.handlers:
-        logger.handlers.clear()
-
-    fmt = logging.Formatter(
-        fmt="%(asctime)s\t%(levelname)s\t%(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    sh = logging.StreamHandler(sys.stderr)
-    sh.setFormatter(fmt)
-    sh.setLevel(logger.level)
-    logger.addHandler(sh)
-
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setFormatter(fmt)
-        fh.setLevel(logger.level)
-        logger.addHandler(fh)
-
-    return logger
-
-
 def _strip_jsonc(text: str) -> str:
-    out: List[str] = []
+    out: list[str] = []
     in_str = False
     escape = False
     in_line_comment = False
@@ -117,7 +91,7 @@ def _strip_jsonc(text: str) -> str:
 
 
 def _remove_trailing_commas(text: str) -> str:
-    out: List[str] = []
+    out: list[str] = []
     in_str = False
     escape = False
     for i, ch in enumerate(text):
@@ -144,7 +118,7 @@ def _remove_trailing_commas(text: str) -> str:
     return "".join(out)
 
 
-def _load_config(path: Optional[Path]) -> Dict[str, Any]:
+def _load_config(path: Path | None) -> dict[str, Any]:
     if not path:
         return {}
     if not path.exists():
@@ -163,7 +137,7 @@ def _load_config(path: Optional[Path]) -> Dict[str, Any]:
     raise ValueError(f"unsupported config format: {ext}")
 
 
-def _coalesce(val: Any, cfg: Dict[str, Any], key: str, default: Any) -> Any:
+def _coalesce(val: Any, cfg: dict[str, Any], key: str, default: Any) -> Any:
     if val is not None:
         return val
     if key in cfg:
@@ -171,7 +145,7 @@ def _coalesce(val: Any, cfg: Dict[str, Any], key: str, default: Any) -> Any:
     return default
 
 
-def _normalize_hint(value: Any) -> Optional[str]:
+def _normalize_hint(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, (list, tuple)):
@@ -185,18 +159,11 @@ def _normalize_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
 
 
-def _clean_doi(value: str) -> str:
-    v = (value or "").strip().lower()
-    v = re.sub(r"^https?://(dx\.)?doi\.org/", "", v)
-    v = re.sub(r"^doi:\s*", "", v)
-    return v.strip()
-
-
 def _abstract_excerpt(
-    value: Optional[str],
+    value: str | None,
     max_chars: int = 1200,
     head_ratio: float = 0.7,
-) -> Optional[str]:
+) -> str | None:
     if not value:
         return None
     text = re.sub(r"\s+", " ", str(value)).strip()
@@ -215,13 +182,13 @@ def _abstract_excerpt(
     return f"{head} ... {tail}"
 
 
-def _tokenize(value: str, min_len: int) -> List[str]:
+def _tokenize(value: str, min_len: int) -> list[str]:
     tokens = re.split(r"[^a-z0-9]+", (value or "").lower())
     return [t for t in tokens if len(t) >= min_len]
 
 
-def _row_to_meta(row: pd.Series) -> Dict[str, str]:
-    meta: Dict[str, str] = {}
+def _row_to_meta(row: pd.Series) -> dict[str, str]:
+    meta: dict[str, str] = {}
     for col in row.index:
         val = row[col]
         if pd.isna(val):
@@ -230,8 +197,8 @@ def _row_to_meta(row: pd.Series) -> Dict[str, str]:
     return meta
 
 
-def _record_id(meta: Dict[str, str]) -> str:
-    doi = _clean_doi(meta.get("doi") or "")
+def _record_id(meta: dict[str, str]) -> str:
+    doi = clean_doi(meta.get("doi") or "")
     if doi:
         return f"doi:{doi}"
     title = (meta.get("title") or "").strip().lower()
@@ -253,10 +220,10 @@ def _resolve_llama_bin(llama_bin: str) -> Path:
 
 def _build_prompt(
     scope: str,
-    include_hint: Optional[str],
-    exclude_hint: Optional[str],
-    meta: Dict[str, str],
-    prompt_template: Optional[str],
+    include_hint: str | None,
+    exclude_hint: str | None,
+    meta: dict[str, str],
+    prompt_template: str | None,
 ) -> str:
     abstract_excerpt = _abstract_excerpt(meta.get("abstract"))
     if prompt_template:
@@ -313,9 +280,9 @@ def _run_llama_cli(
     prompt: str,
     max_tokens: int,
     sampling_temperature: float,
-    ctx_size: Optional[int],
-    threads: Optional[int],
-    extra_args: Optional[str],
+    ctx_size: int | None,
+    threads: int | None,
+    extra_args: str | None,
     timeout: float,
 ) -> str:
     cmd = [
@@ -354,11 +321,11 @@ def _run_llama_cli_safe(
     prompt: str,
     max_tokens: int,
     sampling_temperature: float,
-    ctx_size: Optional[int],
-    threads: Optional[int],
-    extra_args: Optional[str],
+    ctx_size: int | None,
+    threads: int | None,
+    extra_args: str | None,
     timeout: float,
-) -> Tuple[str, Optional[str]]:
+) -> tuple[str, str | None]:
     try:
         return (
             _run_llama_cli(
@@ -380,11 +347,11 @@ def _run_llama_cli_safe(
         return "", f"llama-cli failed: {exc}"
 
 
-def _parse_json(text: str) -> Optional[Dict[str, Any]]:
+def _parse_json(text: str) -> dict[str, Any] | None:
     cleaned = _sanitize_output(text)
     decoder = json.JSONDecoder()
     idx = 0
-    found: Optional[Dict[str, Any]] = None
+    found: dict[str, Any] | None = None
     while idx < len(cleaned):
         if cleaned[idx] != "{":
             next_idx = cleaned.find("{", idx + 1)
@@ -407,7 +374,7 @@ def _sanitize_output(text: str) -> str:
     # Remove ANSI escape sequences.
     cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
     # Remove backspaces and their effects.
-    out: List[str] = []
+    out: list[str] = []
     for ch in cleaned:
         if ch == "\b":
             if out:
@@ -422,7 +389,7 @@ def _sanitize_output(text: str) -> str:
     return cleaned
 
 
-def _normalize_label(value: str) -> Optional[str]:
+def _normalize_label(value: str) -> str | None:
     if not value:
         return None
     cleaned = re.sub(r"[^a-z]+", " ", value.lower()).strip()
@@ -441,7 +408,7 @@ def _normalize_label(value: str) -> Optional[str]:
     return None
 
 
-def _infer_label_from_text(text: str) -> Optional[str]:
+def _infer_label_from_text(text: str) -> str | None:
     if not text:
         return None
     lowered = text.lower()
@@ -502,7 +469,7 @@ def _normalize_confidence(value: Any) -> str:
     return str(num)
 
 
-def _parse_fallback(text: str) -> Optional[Dict[str, Any]]:
+def _parse_fallback(text: str) -> dict[str, Any] | None:
     cleaned = _sanitize_output(text)
     label = ""
     confidence: Any = ""
@@ -575,7 +542,7 @@ def _strip_prompt_echo(text: str, prompt: str) -> str:
     return cleaned.strip()
 
 
-def _expand_path(value: Optional[Union[str, Path]]) -> Optional[Path]:
+def _expand_path(value: str | Path | None) -> Path | None:
     if value is None:
         return None
     expanded = os.path.expandvars(str(value))
@@ -615,7 +582,7 @@ def _has_flag(args: Sequence[str], flags: Sequence[str]) -> bool:
     return False
 
 
-def _append_if_missing(args: List[str], flag: str, value: Optional[str] = None) -> None:
+def _append_if_missing(args: list[str], flag: str, value: str | None = None) -> None:
     if flag in args:
         return
     args.append(flag)
@@ -626,19 +593,19 @@ def _append_if_missing(args: List[str], flag: str, value: Optional[str] = None) 
 @dataclass
 class GenerationResult:
     text: str
-    error: Optional[str] = None
+    error: str | None = None
     timed_out: bool = False
 
 
 @dataclass
 class LlamaReuseProcess:
-    cmd: List[str]
+    cmd: list[str]
     timeout: float
     master_fd: int
     proc: subprocess.Popen
 
     @classmethod
-    def start(cls, cmd: List[str], timeout: float) -> "LlamaReuseProcess":
+    def start(cls, cmd: list[str], timeout: float) -> "LlamaReuseProcess":
         master_fd, slave_fd = pty.openpty()
         attrs = termios.tcgetattr(slave_fd)
         attrs[3] = attrs[3] & ~termios.ECHO
@@ -707,7 +674,7 @@ class LlamaReuseProcess:
                 raise RuntimeError("llama-cli exited unexpectedly")
             buf += data.decode(errors="ignore")
 
-    def _read_until_done(self, timeout: float) -> Tuple[str, bool]:
+    def _read_until_done(self, timeout: float) -> tuple[str, bool]:
         buf = ""
         start = time.time()
         last_data = time.time()
@@ -755,33 +722,33 @@ class LlamaReuseProcess:
 @app.command()
 def flag(
     csv_path: Path = typer.Argument(..., exists=True, dir_okay=False),
-    out_csv: Optional[Path] = typer.Option(None, "--out-csv"),
-    config: Optional[Path] = typer.Option(None, "--config"),
-    log_file: Optional[Path] = typer.Option(None, "--log-file"),
-    log_level: Optional[str] = typer.Option(None, "--log-level"),
-    model_path: Optional[Path] = typer.Option(None, "--model"),
-    llama_bin: Optional[str] = typer.Option(None, "--llama-bin"),
-    llama_args: Optional[str] = typer.Option(None, "--llama-args"),
-    ctx_size: Optional[int] = typer.Option(None, "--ctx-size"),
-    threads: Optional[int] = typer.Option(None, "--threads"),
-    scope: Optional[str] = typer.Option(None, "--scope"),
-    include_hint: Optional[str] = typer.Option(None, "--include-hint"),
-    exclude_hint: Optional[str] = typer.Option(None, "--exclude-hint"),
-    max_tokens: Optional[int] = typer.Option(None, "--max-tokens"),
-    sampling_temperature: Optional[float] = typer.Option(None, "--sampling-temperature"),
-    timeout: Optional[float] = typer.Option(None, "--timeout"),
-    reuse_process: Optional[bool] = typer.Option(None, "--reuse-process/--no-reuse-process"),
-    batch_size: Optional[int] = typer.Option(None, "--batch-size"),
-    batch_index: Optional[int] = typer.Option(None, "--batch-index"),
-    resume: Optional[bool] = typer.Option(
+    out_csv: Path | None = typer.Option(None, "--out-csv"),
+    config: Path | None = typer.Option(None, "--config"),
+    log_file: Path | None = typer.Option(None, "--log-file"),
+    log_level: str | None = typer.Option(None, "--log-level"),
+    model_path: Path | None = typer.Option(None, "--model"),
+    llama_bin: str | None = typer.Option(None, "--llama-bin"),
+    llama_args: str | None = typer.Option(None, "--llama-args"),
+    ctx_size: int | None = typer.Option(None, "--ctx-size"),
+    threads: int | None = typer.Option(None, "--threads"),
+    scope: str | None = typer.Option(None, "--scope"),
+    include_hint: str | None = typer.Option(None, "--include-hint"),
+    exclude_hint: str | None = typer.Option(None, "--exclude-hint"),
+    max_tokens: int | None = typer.Option(None, "--max-tokens"),
+    sampling_temperature: float | None = typer.Option(None, "--sampling-temperature"),
+    timeout: float | None = typer.Option(None, "--timeout"),
+    reuse_process: bool | None = typer.Option(None, "--reuse-process/--no-reuse-process"),
+    batch_size: int | None = typer.Option(None, "--batch-size"),
+    batch_index: int | None = typer.Option(None, "--batch-index"),
+    resume: bool | None = typer.Option(
         None,
         "--resume/--no-resume",
         help=(
             "Skip rows already flagged in the input CSV or present in the output CSV. Use --no-resume to reprocess everything."
         ),
     ),
-    limit: Optional[int] = typer.Option(None, "--limit"),
-    dry_run: Optional[bool] = typer.Option(None, "--dry-run"),
+    limit: int | None = typer.Option(None, "--limit"),
+    dry_run: bool | None = typer.Option(None, "--dry-run"),
 ) -> None:
     """Flag out-of-scope papers from metadata with llama.cpp CLI."""
     cfg = _load_config(config)
@@ -825,7 +792,7 @@ def flag(
     llama_bin = str(_expand_path(llama_bin) or llama_bin)
     llama_path = _resolve_llama_bin(llama_bin)
     log_file_path = _expand_path(log_file) if log_file else None
-    logger = setup_logger(str(log_level), log_file_path)
+    logger = setup_logger("llama_flagger", str(log_level), log_file_path, stream="stderr")
     logger.info("Starting flagger: csv=%s out=%s model=%s", csv_path, out_csv, model_path)
     logger.info(
         "Options: ctx=%s threads=%s temp=%s max_tokens=%s reuse=%s",
@@ -890,7 +857,7 @@ def flag(
     if out_csv.exists() and not resume:
         out_csv.unlink()
 
-    runner: Optional[LlamaReuseProcess] = None
+    runner: LlamaReuseProcess | None = None
     if reuse_process and not dry_run:
         cmd = [
             str(llama_path),
@@ -936,7 +903,7 @@ def flag(
                     return
 
                 raw = ""
-                error: Optional[str] = None
+                error: str | None = None
                 if runner:
                     runner.reset()
                     result = runner.generate(prompt)

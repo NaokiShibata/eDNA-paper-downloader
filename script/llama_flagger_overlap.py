@@ -4,7 +4,6 @@ import re
 from itertools import combinations
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import matplotlib
 
@@ -15,6 +14,8 @@ import pandas as pd
 import typer
 from matplotlib_venn import venn2, venn3
 from upsetplot import UpSet, from_memberships
+
+from libs.text_normalize import clean_doi
 
 app = typer.Typer(add_completion=False)
 
@@ -40,13 +41,6 @@ plt.rcParams.update(
 )
 
 
-def _clean_doi(value: str) -> str:
-    v = (value or "").strip().lower()
-    v = re.sub(r"^https?://(dx\.)?doi\.org/", "", v)
-    v = re.sub(r"^doi:\s*", "", v)
-    return v.strip()
-
-
 def _get_str(value: object) -> str:
     if value is None:
         return ""
@@ -58,8 +52,8 @@ def _get_str(value: object) -> str:
     return str(value).strip()
 
 
-def _record_id_from_row(row: pd.Series) -> Optional[str]:
-    doi = _clean_doi(_get_str(row.get("doi", "")))
+def _record_id_from_row(row: pd.Series) -> str | None:
+    doi = clean_doi(_get_str(row.get("doi", "")))
     if doi:
         return f"doi:{doi}"
     title = _get_str(row.get("title", "")).lower()
@@ -108,8 +102,8 @@ def _plot_agreement_status(
 
 
 def _plot_pairwise_heatmap(
-    records: Dict[str, Dict[str, str]],
-    models: List[str],
+    records: dict[str, dict[str, str]],
+    models: list[str],
     out_path: Path,
     plt,
 ) -> None:
@@ -156,14 +150,14 @@ def _plot_pairwise_heatmap(
 
 
 def _plot_label_distribution(
-    records: Dict[str, Dict[str, str]],
-    models: List[str],
+    records: dict[str, dict[str, str]],
+    models: list[str],
     out_path: Path,
     plt,
 ) -> None:
     if not models:
         return
-    label_counts: Dict[str, Counter[str]] = {m: Counter() for m in models}
+    label_counts: dict[str, Counter[str]] = {m: Counter() for m in models}
     all_labels: set[str] = set()
     for labels in records.values():
         for m in models:
@@ -215,7 +209,7 @@ def _short_model_label(value: str, max_len: int = 24) -> str:
     return label
 
 
-def _model_aliases(value: str) -> List[str]:
+def _model_aliases(value: str) -> list[str]:
     raw = str(value)
     try:
         name = Path(raw).name
@@ -245,12 +239,12 @@ def _model_aliases(value: str) -> List[str]:
     return out
 
 
-def _resolve_venn_models(models: List[str], requested: Optional[List[str]]) -> tuple[List[str], List[str]]:
+def _resolve_venn_models(models: list[str], requested: list[str] | None) -> tuple[list[str], list[str]]:
     if not requested:
         return models[:], []
     alias_map = {m: set(_model_aliases(m)) for m in models}
-    selected: List[str] = []
-    unmatched: List[str] = []
+    selected: list[str] = []
+    unmatched: list[str] = []
     for req in requested:
         req_key = str(req).strip()
         if not req_key:
@@ -270,9 +264,9 @@ def _resolve_venn_models(models: List[str], requested: Optional[List[str]]) -> t
     return selected, unmatched
 
 
-def _unique_display_labels(models: List[str]) -> Dict[str, str]:
-    mapping: Dict[str, str] = {}
-    seen: Dict[str, int] = {}
+def _unique_display_labels(models: list[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    seen: dict[str, int] = {}
     for m in models:
         base = _short_model_label(m)
         if base in seen:
@@ -286,9 +280,9 @@ def _unique_display_labels(models: List[str]) -> Dict[str, str]:
 
 
 def _build_venn_groups(
-    models: List[str],
-    requested: Optional[List[str]],
-) -> tuple[List[List[str]], List[str], bool]:
+    models: list[str],
+    requested: list[str] | None,
+) -> tuple[list[list[str]], list[str], bool]:
     selected, unmatched = _resolve_venn_models(models, requested)
     if len(selected) < 2:
         return [], unmatched, True
@@ -300,11 +294,11 @@ def _build_venn_groups(
 
 
 def _plot_venn(
-    records: Dict[str, Dict[str, str]],
-    models: List[str],
+    records: dict[str, dict[str, str]],
+    models: list[str],
     label: str,
-    venn_models: List[str],
-    display_labels: List[str],
+    venn_models: list[str],
+    display_labels: list[str],
     out_path: Path,
     plt,
 ) -> None:
@@ -363,14 +357,14 @@ def _plot_venn(
 
 
 def _plot_upset(
-    records: Dict[str, Dict[str, str]],
-    models: List[str],
+    records: dict[str, dict[str, str]],
+    models: list[str],
     label: str,
-    display_map: Dict[str, str],
+    display_map: dict[str, str],
     out_path: Path,
     plt,
 ) -> None:
-    memberships: List[List[str]] = []
+    memberships: list[list[str]] = []
     for labels in records.values():
         members = [display_map[m] for m in models if labels.get(m, "") == label]
         if members:
@@ -403,26 +397,26 @@ def _plot_upset(
 
 @app.command()
 def main(
-    inputs: List[Path] = typer.Argument(..., exists=True, dir_okay=False),
-    out: Optional[Path] = typer.Option(None, help="Write per-record overlap CSV."),
+    inputs: list[Path] = typer.Argument(..., exists=True, dir_okay=False),
+    out: Path | None = typer.Option(None, help="Write per-record overlap CSV."),
     id_column: str = typer.Option("flag_record_id", help="Column used as record id."),
     label_column: str = typer.Option("flag_label", help="Column used as label."),
     plots_dir: Path = typer.Option(Path("."), help="Write plots to this directory."),
     plots_prefix: str = typer.Option("flag_overlap", help="Prefix for plot filenames."),
     venn_label: str = typer.Option("in_scope", help="Label to visualize in the Venn diagram."),
-    venn_models: Optional[List[str]] = typer.Option(
+    venn_models: list[str] | None = typer.Option(
         None,
         help="Model names to include in Venn (2 or 3). Defaults to first models.",
     ),
-    upset_label: Optional[str] = typer.Option(
+    upset_label: str | None = typer.Option(
         None,
         help="Label to visualize in the UpSet plot (deprecated: use --upset-labels).",
     ),
-    upset_labels: Optional[List[str]] = typer.Option(
+    upset_labels: list[str] | None = typer.Option(
         None,
         help="Labels to visualize in the UpSet plot (defaults to in_scope and out_of_scope).",
     ),
-    upset_models: Optional[List[str]] = typer.Option(
+    upset_models: list[str] | None = typer.Option(
         None,
         help="Model names to include in UpSet (defaults to all models).",
     ),
@@ -430,10 +424,10 @@ def main(
     """
     Summarize label overlap across multiple llama_flagger CSV outputs.
     """
-    records: Dict[str, Dict[str, str]] = {}
-    meta: Dict[str, Dict[str, str]] = {}
-    models: List[str] = []
-    col_names: Dict[str, str] = {}
+    records: dict[str, dict[str, str]] = {}
+    meta: dict[str, dict[str, str]] = {}
+    models: list[str] = []
+    col_names: dict[str, str] = {}
 
     for path in inputs:
         try:
@@ -477,15 +471,15 @@ def main(
         typer.echo("No records found in inputs.")
         raise typer.Exit(code=1)
 
-    out_rows: List[Dict[str, object]] = []
+    out_rows: list[dict[str, object]] = []
     coverage_counts: Counter[int] = Counter()
     agreement_counts: Counter[str] = Counter()
 
     for rid, labels in records.items():
-        row: Dict[str, object] = {"record_id": rid}
+        row: dict[str, object] = {"record_id": rid}
         row.update(meta.get(rid, {}))
 
-        label_values: List[str] = []
+        label_values: list[str] = []
         for model_name in models:
             label = labels.get(model_name, "")
             row[col_names[model_name]] = label
