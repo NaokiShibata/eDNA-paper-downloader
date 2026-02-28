@@ -595,6 +595,7 @@ def openalex_search_papers(
     from_date: str | None = None,
     until_date: str | None = None,
     email: str | None = None,
+    api_key: str | None = None,
     include_abstract: bool = False,
     excludes: Sequence[str] = (),
     sleep: float = 0.2,
@@ -608,6 +609,8 @@ def openalex_search_papers(
 
     if email:
         pyalex.config.email = email
+    if api_key:
+        pyalex.config.api_key = api_key
 
     out: list[Paper] = []
     per_page = 200

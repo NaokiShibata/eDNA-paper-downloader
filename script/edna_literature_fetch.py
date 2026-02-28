@@ -1,8 +1,35 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from dataclasses import asdict
 from pathlib import Path
+
+
+def _ensure_runtime(modules: tuple[str, ...]) -> None:
+    missing = None
+    for name in modules:
+        try:
+            __import__(name)
+        except ModuleNotFoundError:
+            missing = name
+            break
+    if missing is None:
+        return
+
+    venv_python = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python"
+    current = Path(sys.executable).resolve()
+    if venv_python.exists() and current != venv_python.resolve():
+        os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
+
+    raise ModuleNotFoundError(
+        f"Missing dependency '{missing}'. Install requirements or run with .venv/bin/python."
+    )
+
+
+_ensure_runtime(("pandas", "typer"))
 
 import pandas as pd
 import typer
@@ -22,6 +49,45 @@ from libs.edna_pubmed import (
 )
 
 app = typer.Typer(add_completion=False)
+
+
+def _run_biorxiv_search(
+    *,
+    server: str,
+    from_date: str,
+    to_date: str,
+    query: str,
+    out_dir: Path,
+    out_prefix: str,
+    sleep: float,
+    log_level: str,
+    log_file: Path | None,
+) -> None:
+    script_path = Path(__file__).resolve().parent / "biorxiv_search.py"
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--server",
+        server,
+        "--from-date",
+        from_date,
+        "--to-date",
+        to_date,
+        "--query",
+        query,
+        "--out-dir",
+        str(out_dir),
+        "--out-prefix",
+        out_prefix,
+        "--sleep",
+        str(sleep),
+        "--log-level",
+        log_level,
+    ]
+    if log_file is not None:
+        cmd.extend(["--log-file", str(log_file)])
+
+    subprocess.run(cmd, check=True)
 
 
 @app.command()
@@ -74,6 +140,17 @@ def fetch(
     ),
     crossref_max_items: int = typer.Option(1000, min=1, help="Max items to collect from Crossref."),
     openalex_max_items: int = typer.Option(1000, min=1, help="Max items to collect from OpenAlex."),
+    openalex_api_key: str | None = typer.Option(None, help="OpenAlex API key (recommended/required by policy)."),
+    run_biorxiv: bool = typer.Option(
+        False,
+        "--run-biorxiv/--no-run-biorxiv",
+        help="Run script/biorxiv_search.py after literature fetch.",
+    ),
+    biorxiv_server: str = typer.Option("biorxiv", help='bioRxiv target server: "biorxiv" or "medrxiv".'),
+    biorxiv_from_date: str | None = typer.Option(None, help="bioRxiv start date YYYY/MM/DD."),
+    biorxiv_to_date: str | None = typer.Option(None, help="bioRxiv end date YYYY/MM/DD."),
+    biorxiv_query: str = typer.Option("eDNA", help="Query string for bioRxiv local filtering."),
+    biorxiv_out_prefix: str | None = typer.Option(None, help="Output prefix for bioRxiv results."),
     abstract: bool = typer.Option(False, help="Include abstracts."),
     crossref: bool = typer.Option(False, help="Try filling missing DOI via Crossref (heuristic)."),
     user_agent: str = typer.Option(
@@ -116,6 +193,13 @@ def fetch(
         "source_openalex": source_openalex,
         "crossref_max_items": crossref_max_items,
         "openalex_max_items": openalex_max_items,
+        "openalex_api_key": "***" if openalex_api_key else None,
+        "run_biorxiv": run_biorxiv,
+        "biorxiv_server": biorxiv_server,
+        "biorxiv_from_date": biorxiv_from_date,
+        "biorxiv_to_date": biorxiv_to_date,
+        "biorxiv_query": biorxiv_query,
+        "biorxiv_out_prefix": biorxiv_out_prefix,
         "abstract": abstract,
         "crossref": crossref,
         "user_agent": user_agent,
@@ -193,6 +277,7 @@ def fetch(
                 from_date=since,
                 until_date=until,
                 email=email,
+                api_key=openalex_api_key,
                 include_abstract=abstract,
                 excludes=exclude_terms,
                 sleep=sleep,
@@ -225,6 +310,26 @@ def fetch(
 
     logger.info(f"Writing JSON: {json_path}")
     json_path.write_text(json.dumps(df.to_dict(orient="records"), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if run_biorxiv:
+        if not biorxiv_from_date or not biorxiv_to_date:
+            raise typer.BadParameter("--biorxiv-from-date and --biorxiv-to-date are required with --run-biorxiv")
+        bio_prefix = biorxiv_out_prefix or f"{out_prefix}_biorxiv"
+        bio_log_file = None
+        if log_file is not None:
+            bio_log_file = log_file.with_name(f"{log_file.stem}.biorxiv{log_file.suffix}")
+        logger.info("Running bioRxiv fetch via script/biorxiv_search.py")
+        _run_biorxiv_search(
+            server=biorxiv_server,
+            from_date=biorxiv_from_date,
+            to_date=biorxiv_to_date,
+            query=biorxiv_query,
+            out_dir=out_dir,
+            out_prefix=bio_prefix,
+            sleep=sleep,
+            log_level=log_level,
+            log_file=bio_log_file,
+        )
 
     logger.info(f"Done. Count: {len(df)}")
 
