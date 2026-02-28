@@ -13,6 +13,7 @@ from Bio import Entrez
 from tqdm import tqdm
 
 from .edna_models import Paper
+from .text_normalize import clean_doi
 
 
 def _safe_get(dct, *keys, default=None):
@@ -30,7 +31,23 @@ def _safe_get(dct, *keys, default=None):
 def _clean_text(text: str) -> str:
     s = html.unescape(text or "")
     s = re.sub(r"<[^>]+>", "", s)
-    return s.strip()
+    s = re.sub(r"\s+", " ", s).strip()
+    while len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1].strip()
+    return s
+
+
+def _clean_abstract_text(text: str) -> str:
+    s = _clean_text(text)
+    s = re.sub(r"^\s*abstract\s*[:\-]?\s*", "", s, flags=re.IGNORECASE).strip()
+    return s
+
+
+def _norm_title(title: str) -> str:
+    t = title.lower().strip()
+    t = re.sub(r"\s+", " ", t)
+    t = re.sub(r"[^a-z0-9 ]+", "", t)
+    return t
 
 
 def _extract_doi(article: dict) -> str | None:
@@ -96,10 +113,9 @@ def _extract_abstract(article: dict) -> str | None:
     if isinstance(ab, list):
         parts = [str(x).strip() for x in ab if str(x).strip()]
         joined = " ".join(parts).strip()
-        normalized = re.sub(r"\s+", " ", joined).strip()
+        normalized = _clean_abstract_text(joined)
         return normalized if normalized else None
-    s = str(ab).strip()
-    normalized = re.sub(r"\s+", " ", s).strip()
+    normalized = _clean_abstract_text(str(ab))
     return normalized if normalized else None
 
 
@@ -394,4 +410,325 @@ def crossref_fill_missing_doi(
         if sleep > 0:
             time.sleep(sleep)
 
+    return out
+
+
+def _to_query_text(value: str) -> str:
+    text = re.sub(r"\[[^\]]+\]", " ", value)
+    text = text.replace('"', " ")
+    text = re.sub(r"[()]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _to_dash_date(value: str | None) -> str | None:
+    normalized = _normalize_date_str(value)
+    return normalized.replace("/", "-") if normalized else None
+
+
+def _clean_term(term: str) -> str:
+    t = term.strip()
+    while t.startswith("(") and t.endswith(")") and len(t) > 2:
+        t = t[1:-1].strip()
+    if (t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'")):
+        t = t[1:-1].strip()
+    return t
+
+
+def _expand_exclude_terms(excludes: Sequence[str]) -> list[str]:
+    terms: list[str] = []
+    for raw in excludes:
+        if not raw or not raw.strip():
+            continue
+        parts = re.split(r"\s+OR\s+", raw, flags=re.IGNORECASE)
+        for part in parts:
+            term = _clean_term(part).strip().lower()
+            if term:
+                terms.append(term)
+    return terms
+
+
+def _paper_matches_excludes(paper: Paper, excludes: Sequence[str]) -> bool:
+    terms = _expand_exclude_terms(excludes)
+    if not terms:
+        return True
+    hay = " ".join(
+        [
+            paper.title or "",
+            paper.abstract or "",
+            paper.journal or "",
+            paper.authors or "",
+        ]
+    ).lower()
+    return not any(term in hay for term in terms)
+
+
+def crossref_search_papers(
+    query: str,
+    user_agent: str,
+    max_items: int = 1000,
+    from_date: str | None = None,
+    until_date: str | None = None,
+    include_abstract: bool = False,
+    excludes: Sequence[str] = (),
+    sleep: float = 0.2,
+    logger: logging.Logger | None = None,
+) -> list[Paper]:
+    sess = requests.Session()
+    headers = {"User-Agent": user_agent}
+    out: list[Paper] = []
+    preprint_skipped = 0
+
+    params: dict[str, object] = {
+        "query": _to_query_text(query),
+        "rows": 200,
+        "offset": 0,
+    }
+    filters: list[str] = []
+    from_dash = _to_dash_date(from_date)
+    until_dash = _to_dash_date(until_date)
+    if from_dash:
+        filters.append(f"from-pub-date:{from_dash}")
+    if until_dash:
+        filters.append(f"until-pub-date:{until_dash}")
+    if filters:
+        params["filter"] = ",".join(filters)
+
+    while len(out) < max_items:
+        try:
+            r = sess.get(
+                "https://api.crossref.org/works",
+                params=params,
+                headers=headers,
+                timeout=30,
+            )
+            r.raise_for_status()
+        except requests.RequestException as exc:
+            if logger:
+                logger.warning(f"Crossref fetch failed (offset={params['offset']}): {exc}")
+            break
+
+        msg = r.json().get("message", {})
+        items = msg.get("items", []) or []
+        if not items:
+            break
+
+        for item in items:
+            work_type = str(item.get("type") or "").strip().lower()
+            if work_type == "posted-content":
+                preprint_skipped += 1
+                continue
+
+            title_list = item.get("title") or []
+            title = _clean_text(str(title_list[0] if title_list else ""))
+            doi = clean_doi(item.get("DOI"))
+            year_parts = (
+                _safe_get(item, "published-print", "date-parts", default=[])
+                or _safe_get(item, "published-online", "date-parts", default=[])
+                or _safe_get(item, "issued", "date-parts", default=[])
+            )
+            year = None
+            if isinstance(year_parts, list) and year_parts and isinstance(year_parts[0], list) and year_parts[0]:
+                try:
+                    year = int(year_parts[0][0])
+                except Exception:
+                    year = None
+
+            authors = []
+            for a in item.get("author", []) or []:
+                given = str(a.get("given") or "").strip()
+                family = str(a.get("family") or "").strip()
+                name = " ".join([given, family]).strip()
+                if name:
+                    authors.append(name)
+
+            journal = ""
+            container = item.get("container-title") or []
+            if container:
+                journal = _clean_text(str(container[0]))
+
+            abstract = _clean_abstract_text(str(item.get("abstract") or "")) if include_abstract else None
+            url = str(item.get("URL") or "")
+            paper = Paper(
+                pmid="",
+                title=title,
+                journal=journal,
+                year=year,
+                authors=", ".join(authors),
+                doi=doi or None,
+                abstract=abstract or None,
+                pubmed_url=url,
+            )
+            if _paper_matches_excludes(paper, excludes):
+                out.append(paper)
+            if len(out) >= max_items:
+                break
+
+        if len(items) < int(params["rows"]):
+            break
+        params["offset"] = int(params["offset"]) + int(params["rows"])
+        if sleep > 0:
+            time.sleep(sleep)
+
+    if logger:
+        logger.info(f"Crossref preprint skipped (type=posted-content): {preprint_skipped}")
+        logger.info(f"Crossref collected: {len(out)}")
+    return out
+
+
+def _openalex_abstract(inv: dict[str, list[int]] | None) -> str | None:
+    if not inv:
+        return None
+    pos_to_word: dict[int, str] = {}
+    for word, positions in inv.items():
+        for pos in positions:
+            pos_to_word[pos] = word
+    if not pos_to_word:
+        return None
+    text = " ".join(pos_to_word[i] for i in sorted(pos_to_word.keys()))
+    normalized = re.sub(r"\s+", " ", text).strip()
+    return normalized or None
+
+
+def openalex_search_papers(
+    query: str,
+    max_items: int = 1000,
+    from_date: str | None = None,
+    until_date: str | None = None,
+    email: str | None = None,
+    api_key: str | None = None,
+    include_abstract: bool = False,
+    excludes: Sequence[str] = (),
+    sleep: float = 0.2,
+    logger: logging.Logger | None = None,
+) -> list[Paper]:
+    try:
+        import pyalex
+        from pyalex import Works
+    except ImportError as exc:
+        raise RuntimeError("pyalex is required for OpenAlex retrieval. Install it with: pip install pyalex") from exc
+
+    if email:
+        pyalex.config.email = email
+    if api_key:
+        pyalex.config.api_key = api_key
+
+    out: list[Paper] = []
+    per_page = 200
+    preprint_skipped = 0
+
+    works = Works().search(_to_query_text(query)).filter(type="!preprint")
+    from_dash = _to_dash_date(from_date)
+    until_dash = _to_dash_date(until_date)
+    if from_dash:
+        works = works.filter(from_publication_date=from_dash)
+    if until_dash:
+        works = works.filter(to_publication_date=until_dash)
+
+    try:
+        pager = works.paginate(per_page=per_page, n_max=max_items)
+        for items in pager:
+            if not items:
+                break
+
+            for item in items:
+                work_type = str(item.get("type") or "").strip().lower()
+                if work_type == "preprint":
+                    preprint_skipped += 1
+                    continue
+
+                doi = clean_doi(item.get("doi"))
+                title = _clean_text(str(item.get("display_name") or ""))
+                year = item.get("publication_year")
+                try:
+                    year = int(year) if year is not None else None
+                except Exception:
+                    year = None
+
+                source = _safe_get(item, "primary_location", "source", "display_name", default="")
+                source_name = _clean_text(str(source or ""))
+
+                authors = []
+                for auth in item.get("authorships", []) or []:
+                    name = _safe_get(auth, "author", "display_name", default="")
+                    name = str(name).strip()
+                    if name:
+                        authors.append(name)
+
+                abstract = _openalex_abstract(item.get("abstract_inverted_index")) if include_abstract else None
+                if abstract:
+                    abstract = _clean_abstract_text(abstract)
+                url = str(item.get("id") or "")
+                paper = Paper(
+                    pmid="",
+                    title=title,
+                    journal=source_name,
+                    year=year,
+                    authors=", ".join(authors),
+                    doi=doi or None,
+                    abstract=abstract,
+                    pubmed_url=url,
+                )
+                if _paper_matches_excludes(paper, excludes):
+                    out.append(paper)
+                if len(out) >= max_items:
+                    break
+            if len(out) >= max_items:
+                break
+
+            if sleep > 0:
+                time.sleep(sleep)
+    except Exception as exc:
+        if logger:
+            logger.warning(f"OpenAlex fetch failed (pyalex): {exc}")
+
+    if logger:
+        logger.info(f"OpenAlex preprint skipped (type=preprint): {preprint_skipped}")
+        logger.info(f"OpenAlex collected: {len(out)}")
+    return out
+
+
+def merge_papers_by_doi_title(
+    papers: Sequence[Paper],
+    logger: logging.Logger | None = None,
+) -> list[Paper]:
+    def key_of(p: Paper) -> str:
+        doi = clean_doi(p.doi)
+        if doi:
+            return f"doi:{doi}"
+        return f"title:{_norm_title(p.title)}::{p.year or ''}"
+
+    def score_of(p: Paper) -> tuple[int, int, int, int, int]:
+        return (
+            1 if p.pmid else 0,
+            1 if p.abstract else 0,
+            1 if p.authors else 0,
+            1 if p.journal else 0,
+            p.year or 0,
+        )
+
+    merged: dict[str, Paper] = {}
+    for p in papers:
+        k = key_of(p)
+        cur = merged.get(k)
+        if cur is None:
+            merged[k] = p
+            continue
+
+        best = p if score_of(p) > score_of(cur) else cur
+        other = cur if best is p else p
+        merged[k] = Paper(
+            pmid=best.pmid or other.pmid,
+            title=best.title or other.title,
+            journal=best.journal or other.journal,
+            year=best.year or other.year,
+            authors=best.authors or other.authors,
+            doi=clean_doi(best.doi) or clean_doi(other.doi) or None,
+            abstract=best.abstract or other.abstract,
+            pubmed_url=best.pubmed_url or other.pubmed_url,
+        )
+
+    out = list(merged.values())
+    out.sort(key=lambda x: (x.year or 0, _pmid_key(x.pmid)), reverse=True)
+    if logger:
+        logger.info(f"Merged papers (doi/title): {len(papers)} -> {len(out)}")
     return out
