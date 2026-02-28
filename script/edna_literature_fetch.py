@@ -12,8 +12,11 @@ from libs.edna_pubmed import (
     _date_range_clause,
     _normalize_date_str,
     build_query_with_excludes,
+    crossref_search_papers,
     crossref_fill_missing_doi,
     keep_latest_per_doi_pubmed,
+    merge_papers_by_doi_title,
+    openalex_search_papers,
     pubmed_fetch_details,
     pubmed_search_all_pmids,
 )
@@ -58,6 +61,19 @@ def fetch(
         max=100000,
         help="Batch size for PMID paging in esearch.",
     ),
+    source_pubmed: bool = typer.Option(True, "--source-pubmed/--no-source-pubmed", help="Use PubMed source."),
+    source_crossref: bool = typer.Option(
+        True,
+        "--source-crossref/--no-source-crossref",
+        help="Use Crossref source (DOI-rich).",
+    ),
+    source_openalex: bool = typer.Option(
+        True,
+        "--source-openalex/--no-source-openalex",
+        help="Use OpenAlex source (DOI-rich).",
+    ),
+    crossref_max_items: int = typer.Option(1000, min=1, help="Max items to collect from Crossref."),
+    openalex_max_items: int = typer.Option(1000, min=1, help="Max items to collect from OpenAlex."),
     abstract: bool = typer.Option(False, help="Include abstracts."),
     crossref: bool = typer.Option(False, help="Try filling missing DOI via Crossref (heuristic)."),
     user_agent: str = typer.Option(
@@ -95,6 +111,11 @@ def fetch(
         "datetype": datetype,
         "sort": sort,
         "pmid_batch": pmid_batch,
+        "source_pubmed": source_pubmed,
+        "source_crossref": source_crossref,
+        "source_openalex": source_openalex,
+        "crossref_max_items": crossref_max_items,
+        "openalex_max_items": openalex_max_items,
         "abstract": abstract,
         "crossref": crossref,
         "user_agent": user_agent,
@@ -120,35 +141,71 @@ def fetch(
     if date_clause:
         logger.info(f"Date clause applied: {date_clause}")
 
-    pmids = pubmed_search_all_pmids(
-        query=final_query,
-        email=email,
-        api_key=api_key,
-        mindate=since_norm,
-        maxdate=until_norm,
-        datetype=datetype,
-        sort=sort,
-        batch=pmid_batch,
-        sleep=sleep,
-        logger=logger,
-    )
+    all_papers = []
 
-    if not pmids:
-        logger.warning("No results.")
+    if source_pubmed:
+        pmids = pubmed_search_all_pmids(
+            query=final_query,
+            email=email,
+            api_key=api_key,
+            mindate=since_norm,
+            maxdate=until_norm,
+            datetype=datetype,
+            sort=sort,
+            batch=pmid_batch,
+            sleep=sleep,
+            logger=logger,
+        )
+
+        if pmids:
+            pubmed_papers = pubmed_fetch_details(
+                pmids=pmids,
+                email=email,
+                api_key=api_key,
+                include_abstract=abstract,
+                sleep=sleep,
+                logger=logger,
+            )
+            all_papers.extend(pubmed_papers)
+        else:
+            logger.warning("No PubMed results.")
+
+    if source_crossref:
+        all_papers.extend(
+            crossref_search_papers(
+                query=query,
+                user_agent=user_agent,
+                max_items=crossref_max_items,
+                from_date=since,
+                until_date=until,
+                include_abstract=abstract,
+                excludes=exclude_terms,
+                sleep=sleep,
+                logger=logger,
+            )
+        )
+
+    if source_openalex:
+        all_papers.extend(
+            openalex_search_papers(
+                query=query,
+                max_items=openalex_max_items,
+                from_date=since,
+                until_date=until,
+                include_abstract=abstract,
+                excludes=exclude_terms,
+                sleep=sleep,
+                logger=logger,
+            )
+        )
+
+    if not all_papers:
+        logger.warning("No results from selected sources.")
         raise typer.Exit(code=0)
 
-    papers = pubmed_fetch_details(
-        pmids=pmids,
-        email=email,
-        api_key=api_key,
-        include_abstract=abstract,
-        sleep=sleep,
-        logger=logger,
-    )
-
+    papers = merge_papers_by_doi_title(all_papers, logger=logger)
     if crossref:
         papers = crossref_fill_missing_doi(papers, user_agent=user_agent, logger=logger)
-
     papers = keep_latest_per_doi_pubmed(papers, logger=logger)
 
     df = pd.DataFrame([asdict(p) for p in papers])
