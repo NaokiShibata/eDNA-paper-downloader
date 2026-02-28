@@ -6,26 +6,21 @@
 
 eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして保存するPython CLIツールです。
 
-- **PubMed + Crossref + OpenAlex (統合取得)**: `script/edna_literature_fetch.py`
+主なスクリプト:
 
-  - デフォルトで3ソースから同時収集
-  - PubMedは Entrez で全PMIDページング取得
-  - DOI優先 + タイトル/年フォールバックで重複統合
-  - RUN HEADER付きログ出力 (実行者・コマンド・パラメータなど)
-
-- **bioRxiv/medRxiv**: `script/biorxiv_search.py`
-
-  - 公式APIで期間指定取得
-  - ローカルでキーワード/除外語フィルタ
-  - DOIごとに **最新版のみ (version最大)** を採用 (デフォルト)
-  - 逐次上書き出力 (途中で落ちても最新CSV/JSONが残る)
-  - 既存出力から **差分 (delta)** を検出し `*.delta.csv/json` を保存 (デフォルト)
-  - DEBUGログでヒット内容 (doi/title/date/versionなど) を出力可能
-
-- **Crossref + Semantic Scholar**: `script/crossref_semantic_fetch.py`
-  - PubMed外の論文を拾う用途に便利
-  - DOI/タイトル+年で重複排除し、両ソースをマージ
-  - PubMed CSVを渡すと既存論文を除外可能
+- `script/edna_literature_fetch.py`
+  - デフォルトで `PubMed + Crossref + OpenAlex` から統合取得
+  - DOI優先、タイトル+年フォールバックで重複統合
+  - `Crossref/OpenAlex` は `type` による preprint 除外を実施
+  - `--abstract` 有効時は abstract 空レコードを最終出力から除外
+  - `--run-biorxiv` で `script/biorxiv_search.py` を連続実行可能
+- `script/biorxiv_search.py`
+  - bioRxiv/medRxiv APIで期間取得 (`YYYY/MM/DD`)
+  - DOIごとに最新版のみ採用（デフォルト）
+  - 差分出力 (`*.delta.csv/json`) 対応
+- `script/crossref_semantic_fetch.py`
+  - Crossref + Semantic Scholar を収集し DOI/タイトル+年で重複統合
+  - PubMed CSVを除外リストとして利用可能
 
 ---
 
@@ -33,6 +28,7 @@ eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして�
 
 - Python 3.10+ (推奨: 3.11/3.12)
 - OS: Linux/macOS/Windows (WSL可)
+- 推奨: プロジェクト内 `.venv` を使用
 
 ---
 
@@ -43,7 +39,7 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install -U pip
-pip install "typer[all]" pandas requests tqdm biopython pyalex
+pip install "typer[all]" pandas requests tqdm biopython pyalex rich
 ```
 
 ---
@@ -65,16 +61,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install "typer[all]" pandas requests tqdm biopython pyalex
+uv pip install "typer[all]" pandas requests tqdm biopython pyalex rich
 ```
-
-PubMed (Entrez) を含むダウンロード系スクリプトに必要な主なパッケージは以下です。
-
-- `biopython` (Entrez)
-- `requests`
-- `pandas`
-- `tqdm`
-- `typer[all]`
 
 YAML設定ファイルを使う場合は `pyyaml` も追加してください。
 
@@ -87,17 +75,20 @@ uv pip install pyyaml
 ## クイックスタート
 
 ```bash
-# マルチソース統合取得 (PubMed + Crossref + OpenAlex がデフォルト)
-python script/edna_literature_fetch.py \
+# 1) 文献統合取得 (PubMed + Crossref + OpenAlex)
+python3 script/edna_literature_fetch.py \
   --email you@example.com \
-  --out-dir results
+  --since 2020/01/01 \
+  --out-dir results \
+  --out-prefix edna_multisource_2020plus
 
-# bioRxiv (最小例)
-python script/biorxiv_search.py \
-  --from-date 2024-01-01 \
-  --to-date 2024-12-31 \
+# 2) bioRxiv 単体取得
+python3 script/biorxiv_search.py \
+  --from-date 2024/01/01 \
+  --to-date 2024/12/31 \
   --query "eDNA" \
-  --out-dir results
+  --out-dir results \
+  --out-prefix biorxiv_edna_2024
 ```
 
 ---
@@ -107,13 +98,13 @@ python script/biorxiv_search.py \
 ### ヘルプ
 
 ```bash
-python script/edna_literature_fetch.py --help
+python3 script/edna_literature_fetch.py --help
 ```
 
 ### 基本例 (デフォルトで全ソース有効)
 
 ```bash
-python script/edna_literature_fetch.py \
+python3 script/edna_literature_fetch.py \
   --email you@example.com \
   --query '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])' \
   --since 2020/01/01 \
@@ -124,38 +115,52 @@ python script/edna_literature_fetch.py \
 ### 除外語
 
 ```bash
-python script/edna_literature_fetch.py \
+python3 script/edna_literature_fetch.py \
   --email you@example.com \
   --query '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])' \
-  --exclude microbiome \
+  --exclude 'metagenome OR probiotic OR microbiome' \
   --since 2020/01/01 \
   --out-dir results \
   --out-prefix edna_multisource_no_microbiome
 ```
 
+`--exclude` は複数指定でき、各値内の `OR` も解釈されます。
+
 ### ソース切り替え
 
 ```bash
 # デフォルト: 3ソースすべて有効
-python script/edna_literature_fetch.py --email you@example.com
+python3 script/edna_literature_fetch.py --email you@example.com
 
 # 例: PubMedのみ
-python script/edna_literature_fetch.py \
+python3 script/edna_literature_fetch.py \
   --email you@example.com \
   --no-source-crossref \
   --no-source-openalex
 
 # 例: Crossref/OpenAlex件数上限を指定
-python script/edna_literature_fetch.py \
+python3 script/edna_literature_fetch.py \
   --email you@example.com \
   --crossref-max-items 2000 \
   --openalex-max-items 2000
 ```
 
-### 要旨を含める
+### `biorxiv_search.py` を連続実行
 
 ```bash
-python script/edna_literature_fetch.py \
+python3 script/edna_literature_fetch.py \
+  --email you@example.com \
+  --since 2020/01/01 \
+  --run-biorxiv \
+  --biorxiv-from-date 2024/01/01 \
+  --biorxiv-to-date 2024/12/31 \
+  --biorxiv-query "eDNA"
+```
+
+### 要旨を含める (`--abstract`)
+
+```bash
+python3 script/edna_literature_fetch.py \
   --email you@example.com \
   --since 2020/01/01 \
   --abstract \
@@ -166,7 +171,7 @@ python script/edna_literature_fetch.py \
 ### CrossrefでDOI補完 (任意)
 
 ```bash
-python script/edna_literature_fetch.py \
+python3 script/edna_literature_fetch.py \
   --email you@example.com \
   --since 2020/01/01 \
   --crossref \
@@ -179,15 +184,21 @@ python script/edna_literature_fetch.py \
 
 ```bash
 python3 script/edna_literature_fetch.py \
---email you@example.com \
---since 2008/01/01 \
---out-dir results \
---out-prefix edna_multisource_$(date +%Y%m%d) \
---log-file logs/edna_multisource_$(date +%Y%m%d).log \
---crossref \
---abstract \
---exclude 'metagenome OR probiotic OR "skin microbiome" OR "oral microbiome"  OR "rumen microbiome" OR dysbiosis OR probiotic OR "gut microbiome" OR metagenome OR "shotgun metagenomics" OR microbiome OR resistome OR "antimicrobial resistance" OR AMR OR virome OR "viral metagenome" OR "ITS community profiling" OR "wastewater epidemiology" OR mycobiome' \
---query '("environmental DNA"[Title/Abstract] OR eDNA[Title] OR "environmental RNA[Title/Abstract]" OR eRNA[Title])'
+  --email you@example.com \
+  --query '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])' \
+  --exclude 'metagenome OR probiotic OR microbiome' \
+  --since 2008/01/01 \
+  --until 2025/12/31 \
+  --abstract \
+  --crossref \
+  --crossref-max-items 2000 \
+  --openalex-max-items 2000 \
+  --run-biorxiv \
+  --biorxiv-from-date 2024/01/01 \
+  --biorxiv-to-date 2024/12/31 \
+  --out-dir results \
+  --out-prefix edna_multisource_$(date +%Y%m%d) \
+  --log-file logs/edna_multisource_$(date +%Y%m%d).log
 ```
 
 ### 出力列
@@ -196,12 +207,31 @@ python3 script/edna_literature_fetch.py \
 
 - `pmid`, `title`, `journal`, `year`, `authors`, `doi`, `abstract`, `pubmed_url`
 
-`pubmed_url` 列には、PubMed以外のソースでは各ソース側URL（Crossref/OpenAlex URL）が入る場合があります。
+`pubmed_url` 列には、PubMed以外のソースでは Crossref/OpenAlex 側のURLが入る場合があります。
+
+### 実装上の挙動
+
+- OpenAlex取得は `pyalex` を使用します（要 `pip install pyalex`）。
+- OpenAlex取得は `Works().search(...).filter(...).paginate(...)` で実行しています。
+  - `per_page=200`
+  - `n_max` は `--openalex-max-items` に対応
+- `pyalex.config.email` は `--email` の値を設定しています（OpenAlexの polite pool 利用を意図）。
+- OpenAlex APIキーは `--openalex-api-key` で設定できます（ログにはマスク表示）。
+- `Crossref/OpenAlex` では `type` ベースで preprint を除外します。
+- `--abstract` が有効な場合のみ、abstract 空レコードを最終出力から除外します。
+- ログは `rich` を使って標準出力に表示されます（RUN HEADER含む）。
+
+### OpenAlex APIメモ (pyalex)
+
+- `pyalex` ではページングは `paginate()` が推奨です（cursor paging がデフォルト）。
+- OpenAlexのレスポンス安定化には polite pool が有効です（`pyalex.config.email` 設定）。
+- `pyalex` READMEでは、OpenAlex APIは **2026年2月13日** から APIキー必須と案内されています。運用時は `--openalex-api-key` を指定してください。
+- 必要なら `pyalex.config.max_retries` / `retry_backoff_factor` / `retry_http_codes` で再試行挙動を調整できます。
 
 ### ログ出力 (RUN HEADER)
 
 ```bash
-python script/edna_literature_fetch.py \
+python3 script/edna_literature_fetch.py \
   --email you@example.com \
   --since 2020/01/01 \
   --out-dir results \
@@ -217,7 +247,7 @@ python script/edna_literature_fetch.py \
 ### 基本例
 
 ```bash
-python script/crossref_semantic_fetch.py \
+python3 script/crossref_semantic_fetch.py \
   --query "environmental DNA eDNA" \
   --max-items 1000 \
   --out-dir results \
@@ -227,9 +257,9 @@ python script/crossref_semantic_fetch.py \
 ### PubMed結果を除外
 
 ```bash
-python script/crossref_semantic_fetch.py \
+python3 script/crossref_semantic_fetch.py \
   --query "environmental DNA eDNA" \
-  --exclude-pubmed-csv results/pubmed_edna_2020plus.csv \
+  --exclude-pubmed-csv results/edna_multisource_2020plus.csv \
   --out-dir results \
   --out-prefix crossref_semantic_edna_no_pubmed
 ```
@@ -243,17 +273,16 @@ python script/crossref_semantic_fetch.py \
 ### ヘルプ
 
 ```bash
-python script/biorxiv_search.py --help
-python script/biorxiv_search.py search --help
+python3 script/biorxiv_search.py --help
 ```
 
 ### 基本例 (bioRxiv 2024)
 
 ```bash
-python script/biorxiv_search.py \
+python3 script/biorxiv_search.py \
   --server biorxiv \
-  --from-date 2024-01-01 \
-  --to-date 2024-12-31 \
+  --from-date 2024/01/01 \
+  --to-date 2024/12/31 \
   --query "environmental DNA eDNA" \
   --out-dir results \
   --out-prefix biorxiv_edna_2024
@@ -267,14 +296,14 @@ python script/biorxiv_search.py \
 
 ```bash
 # 最新版のみ (デフォルト)
-python script/biorxiv_search.py \
-  --from-date 2024-01-01 --to-date 2024-12-31 \
+python3 script/biorxiv_search.py \
+  --from-date 2024/01/01 --to-date 2024/12/31 \
   --query "eDNA" \
   --latest-only
 
 # 全バージョンを保持
-python script/biorxiv_search.py \
-  --from-date 2024-01-01 --to-date 2024-12-31 \
+python3 script/biorxiv_search.py \
+  --from-date 2024/01/01 --to-date 2024/12/31 \
   --query "eDNA" \
   --all-versions
 ```
@@ -284,10 +313,10 @@ python script/biorxiv_search.py \
 途中で停止しても最新出力が残るようになっています。
 
 ```bash
-python script/biorxiv_search.py \
+python3 script/biorxiv_search.py \
   --server biorxiv \
-  --from-date 2024-01-01 \
-  --to-date 2024-12-31 \
+  --from-date 2024/01/01 \
+  --to-date 2024/12/31 \
   --query "environmental DNA eDNA" \
   --exclude microbiome \
   --incremental \
@@ -300,10 +329,10 @@ python script/biorxiv_search.py \
 週や月単位でのバッチ処理例です。
 
 ```bash
-python script/biorxiv_search.py \
+python3 script/biorxiv_search.py \
   --server biorxiv \
-  --from-date 2024-01-01 \
-  --to-date 2024-12-31 \
+  --from-date 2024/01/01 \
+  --to-date 2024/12/31 \
   --batch-unit monthly \
   --query "environmental DNA eDNA" \
   --out-dir results \
@@ -313,13 +342,13 @@ python script/biorxiv_search.py \
 ### 差分更新 (既存出力からの更新)
 
 既存出力からの更新処理です。
-既存の `out_prefix.csv/json` がある場合、**新規/更新DOIのみ**を`out_prefix.delta.csv/json` に出力します ()デフォルト)。
+既存の `out_prefix.csv/json` がある場合、**新規/更新DOIのみ**を `out_prefix.delta.csv/json` に出力します（デフォルト）。
 
 ```bash
-python script/biorxiv_search.py \
+python3 script/biorxiv_search.py \
   --server biorxiv \
-  --from-date 2024-01-01 \
-  --to-date 2024-12-31 \
+  --from-date 2024/01/01 \
+  --to-date 2024/12/31 \
   --query "environmental DNA eDNA" \
   --update \
   --write-delta \
@@ -329,13 +358,13 @@ python script/biorxiv_search.py \
 
 ### デバッグログ
 
-- doi/title/date/versionが記載されるDEBUGう実行モードです。
+- doi/title/date/version を詳細表示する DEBUG 実行モードです。
 
 ```bash
-python script/biorxiv_search.py \
+python3 script/biorxiv_search.py \
   --server biorxiv \
-  --from-date 2024-01-01 \
-  --to-date 2024-12-31 \
+  --from-date 2024/01/01 \
+  --to-date 2024/12/31 \
   --query "environmental DNA eDNA" \
   --log-level DEBUG \
   --debug-max-items 20 \
@@ -359,6 +388,7 @@ bioRxivの出力には以下が入ります。
 
 - `--email` は必須です
 - 大量取得時は `--sleep` を増やすと安定します (例: 0.5〜1.0)
+- `python3 script/...` で依存が足りない場合、`.venv/bin/python` が存在すれば自動で再実行します。
 
 ### bioRxiv
 
@@ -417,8 +447,8 @@ PubMed (edna_literature_fetch.py) のCSV:
 
 ```bash
 python script/llama_rag_csv.py index \
-  results/pubmed_edna_2020plus.csv \
-  --out-index results/pubmed_edna_2020plus.index.jsonl \
+  results/edna_multisource_2020plus.csv \
+  --out-index results/edna_multisource_2020plus.index.jsonl \
   --text-cols title,journal,year,authors,doi
 ```
 
@@ -435,7 +465,7 @@ python script/llama_rag_csv.py index \
 
 ```bash
 python script/llama_rag_csv.py ask \
-  results/pubmed_edna_2020plus.index.jsonl \
+  results/edna_multisource_2020plus.index.jsonl \
   "Which papers mention CRISPR-Cas and what are the DOIs?" \
   --top-k 5 \
   --show-sources
@@ -456,7 +486,7 @@ python script/llama_rag_csv.py ask \
 
 ```bash
 python script/llama_rag_csv.py ask \
-  results/pubmed_edna_2020plus.index.jsonl \
+  results/edna_multisource_2020plus.index.jsonl \
   "Summarize trends in eDNA monitoring from 2020 onward." \
   --embed-url http://localhost:8081 \
   --embed-api openai \
@@ -573,17 +603,17 @@ cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
 
 ```bash
 python script/llama_flagger.py \
-  results/pubmed_edna_2020plus.csv \
+  results/edna_multisource_2020plus.csv \
   --config config/llama_flagger.jsonc \
-  --out-csv results/pubmed_edna_2020plus.flagged.csv
+  --out-csv results/edna_multisource_2020plus.flagged.csv
 ```
 
 ### 実行例 (コマンド指定)
 
 ```bash
 python3 /path/to/eDNA-paper-downloader/script/llama_flagger.py \
-  results/pubmed_edna_20260118.csv \
-  --out-csv results/pubmed_edna_20260118plus.flagged.csv \
+  results/edna_multisource_20260118.csv \
+  --out-csv results/edna_multisource_20260118plus.flagged.csv \
   --model /path/to/model.gguf \
   --llama-bin /path/to/llama.cpp/build/bin/llama-cli \
   --scope "You are screening papers using only the title and abstract. Classify a paper as OUT-OF-SCOPE if the primary focus is: - Microbial or algal community profiling (e.g., 16S rRNA, ITS, 18S rRNA, rbcL used to characterize microbial/algal communities or microbiome composition), - Host-associated microbiomes or microbiota (gut, skin, oral, rumen, dysbiosis, probiotics), - Shotgun metagenomics or related approaches (shotgun sequencing, metagenome, MAGs, genome assembly, binning), - Functional or applied microbial themes such as resistome, antimicrobial resistance (AMR), virome, wastewater-based epidemiology, or microbial biogeochemistry. Classify a paper as IN-SCOPE when the study uses environmental DNA or RNA (eDNA/eRNA) from environmental samples (water, soil, sediment, air, etc.) to detect, monitor, or assess the presence, distribution, abundance, or biodiversity of: - Animals (vertebrates or invertebrates), - Plants or macrophytes, - Or microorganisms when the study focuses on detecting specific microbial taxa from environmental DNA (NOT microbiome/community profiling). Marker gene guidance: - Do NOT classify a paper as OUT-OF-SCOPE solely because markers such as "16S", "18S", "28S", or "COI" appear. - Treat these markers as OUT-OF-SCOPE only when they are used primarily for microbial/algal community profiling. - Treat these markers as IN-SCOPE when used to detect non-microbial organisms (e.g., vertebrates, invertebrates, macrofauna, macroflora), or to detect specific microbial taxa via eDNA rather than profiling whole communities. If the focus is ambiguous or cannot be clearly determined from the title and abstract alone, prefer OUT-OF-SCOPE to minimize false positives." \
@@ -621,11 +651,11 @@ microbiome; microbiota; gut microbiome; gut microbiota; skin microbiome; oral mi
 ```bash
 # 0番目のバッチ (0始まり) を実行
 python script/llama_flagger.py \
-  results/pubmed_edna_2020plus.csv \
+  results/edna_multisource_2020plus.csv \
   --config config/llama_flagger.jsonc \
   --batch-size 500 \
   --batch-index 0 \
-  --out-csv results/pubmed_edna_2020plus.flagged.csv
+  --out-csv results/edna_multisource_2020plus.flagged.csv
 ```
 
 ### 補足
