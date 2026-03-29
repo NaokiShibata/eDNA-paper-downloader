@@ -1,4 +1,5 @@
 test/
 *.gguf
 .vscode
-
+__pycache__/
+llama/
