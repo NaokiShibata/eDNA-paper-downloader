@@ -10,6 +10,13 @@ from pathlib import Path
 
 import typer
 
+try:
+    from rich.console import Console
+    from rich.logging import RichHandler
+except Exception:  # pragma: no cover
+    Console = None
+    RichHandler = None
+
 
 def setup_logger(
     logger_name: str,
@@ -30,8 +37,20 @@ def setup_logger(
     )
 
     output_stream = sys.stderr if stream == "stderr" else sys.stdout
-    sh = logging.StreamHandler(output_stream)
-    sh.setFormatter(fmt)
+    if RichHandler is not None and Console is not None:
+        console = Console(file=output_stream)
+        sh = RichHandler(
+            console=console,
+            show_time=True,
+            show_level=True,
+            show_path=False,
+            rich_tracebacks=True,
+            markup=False,
+        )
+        sh.setFormatter(logging.Formatter("%(message)s"))
+    else:
+        sh = logging.StreamHandler(output_stream)
+        sh.setFormatter(fmt)
     sh.setLevel(logger.level)
     logger.addHandler(sh)
 

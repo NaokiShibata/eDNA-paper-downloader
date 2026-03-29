@@ -3,12 +3,38 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
+import sys
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+
+
+def _ensure_runtime(modules: tuple[str, ...]) -> None:
+    missing = None
+    for name in modules:
+        try:
+            __import__(name)
+        except ModuleNotFoundError:
+            missing = name
+            break
+    if missing is None:
+        return
+
+    venv_python = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python"
+    current = Path(sys.executable).resolve()
+    if venv_python.exists() and current != venv_python.resolve():
+        os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
+
+    raise ModuleNotFoundError(
+        f"Missing dependency '{missing}'. Install requirements or run with .venv/bin/python."
+    )
+
+
+_ensure_runtime(("pandas", "requests", "typer"))
 
 import pandas as pd
 import requests

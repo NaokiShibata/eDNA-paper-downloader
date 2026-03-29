@@ -4,8 +4,10 @@ import re
 from itertools import combinations
 from collections import Counter
 from pathlib import Path
+from types import MethodType
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -14,6 +16,7 @@ import pandas as pd
 import typer
 from matplotlib_venn import venn2, venn3
 from upsetplot import UpSet, from_memberships
+from upsetplot import util as upsetplot_util
 
 from libs.text_normalize import clean_doi
 
@@ -370,13 +373,13 @@ def _plot_upset(
         if members:
             memberships.append(members)
 
-    plt.figure(figsize=(max(6, len(models) * 0.7), 4.8))
+    fig = plt.figure(figsize=(max(6, len(models) * 0.7), 4.8))
     if not memberships:
-        plt.text(0.5, 0.5, "No records for this label", ha="center", va="center")
-        plt.axis("off")
-        plt.tight_layout()
-        plt.savefig(out_path, dpi=150)
-        plt.close()
+        fig.text(0.5, 0.5, "No records for this label", ha="center", va="center")
+        fig.gca().axis("off")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
         return
 
     data = from_memberships(memberships)
@@ -388,11 +391,165 @@ def _plot_upset(
         facecolor="#2b7bba",
         other_dots_color="#9ecae1",
     )
-    upset.plot()
-    plt.suptitle(f"UpSet overlap for label: {label}", fontsize=10)
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150)
-    plt.close()
+    _patch_upset_plot_matrix(upset)
+    upset.plot(fig=fig)
+    fig.suptitle(f"UpSet overlap for label: {label}", fontsize=10)
+    fig.subplots_adjust(top=0.9)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _patch_upset_plot_matrix(upset: UpSet) -> None:
+    """Backport UpSet helpers that break on the current pandas/matplotlib stack."""
+
+    def _plot_matrix(self, ax) -> None:
+        ax = self._reorient(ax)
+        data = self.intersections
+        n_cats = data.index.nlevels
+
+        inclusion = data.index.to_frame().values
+        styles = [
+            [
+                self.subset_styles[i]
+                if inclusion[i, j]
+                else {
+                    "facecolor": self._other_dots_color,
+                    "edgecolor": self._other_dots_color,
+                    "linewidth": 0,
+                }
+                for j in range(n_cats)
+            ]
+            for i in range(len(data))
+        ]
+        styles = sum(styles, [])
+        style_columns = {
+            "facecolor": "facecolors",
+            "edgecolor": "edgecolors",
+            "linewidth": "linewidths",
+            "linestyle": "linestyles",
+            "hatch": "hatch",
+        }
+        styles = (
+            pd.DataFrame(styles)
+            .reindex(columns=style_columns.keys())
+            .astype(
+                {
+                    "facecolor": "O",
+                    "edgecolor": "O",
+                    "linewidth": float,
+                    "linestyle": "O",
+                    "hatch": "O",
+                }
+            )
+        )
+        styles["linewidth"] = styles["linewidth"].fillna(1)
+        styles["facecolor"] = styles["facecolor"].fillna(self._facecolor)
+        styles["edgecolor"] = styles["edgecolor"].fillna(styles["facecolor"])
+        styles["linestyle"] = styles["linestyle"].fillna("solid")
+        del styles["hatch"]
+
+        x = np.repeat(np.arange(len(data)), n_cats)
+        y = np.tile(np.arange(n_cats), len(data))
+
+        if self._element_size is not None:
+            s = (self._element_size * 0.35) ** 2
+        else:
+            s = 200
+        ax.scatter(
+            *self._swapaxes(x, y),
+            s=s,
+            zorder=10,
+            **styles.rename(columns=style_columns),
+        )
+
+        if self._with_lines:
+            idx = np.flatnonzero(inclusion)
+            line_data = (
+                pd.Series(y[idx], index=x[idx]).groupby(level=0).aggregate(["min", "max"])
+            )
+            colors = pd.Series(
+                [
+                    style.get("edgecolor", style.get("facecolor", self._facecolor))
+                    for style in self.subset_styles
+                ],
+                name="color",
+            )
+            line_data = line_data.join(colors)
+            ax.vlines(
+                line_data.index.values,
+                line_data["min"],
+                line_data["max"],
+                lw=2,
+                colors=line_data["color"],
+                zorder=5,
+            )
+
+    def _label_sizes(self, ax, rects, where) -> None:
+        if not self._show_counts and not self._show_percentages:
+            return
+        if self._show_counts is True:
+            count_fmt = "{:.0f}"
+        else:
+            count_fmt = self._show_counts
+            if "{" not in count_fmt:
+                count_fmt = upsetplot_util.to_new_pos_format(count_fmt)
+
+        pct_fmt = "{:.1%}" if self._show_percentages is True else self._show_percentages
+
+        if count_fmt and pct_fmt:
+            fmt = f"{count_fmt}\n({pct_fmt})" if where == "top" else f"{count_fmt} ({pct_fmt})"
+
+            def make_args(val):
+                return val, val / self.total
+        elif count_fmt:
+            fmt = count_fmt
+
+            def make_args(val):
+                return (val,)
+        else:
+            fmt = pct_fmt
+
+            def make_args(val):
+                return (val / self.total,)
+
+        if where == "right":
+            margin = 0.01 * abs(float(np.diff(ax.get_xlim())[0]))
+            for rect in rects:
+                width = rect.get_width() + rect.get_x()
+                ax.text(
+                    width + margin,
+                    rect.get_y() + rect.get_height() * 0.5,
+                    fmt.format(*make_args(width)),
+                    ha="left",
+                    va="center",
+                )
+        elif where == "left":
+            margin = 0.01 * abs(float(np.diff(ax.get_xlim())[0]))
+            for rect in rects:
+                width = rect.get_width() + rect.get_x()
+                ax.text(
+                    width + margin,
+                    rect.get_y() + rect.get_height() * 0.5,
+                    fmt.format(*make_args(width)),
+                    ha="right",
+                    va="center",
+                )
+        elif where == "top":
+            margin = 0.01 * abs(float(np.diff(ax.get_ylim())[0]))
+            for rect in rects:
+                height = rect.get_height() + rect.get_y()
+                ax.text(
+                    rect.get_x() + rect.get_width() * 0.5,
+                    height + margin,
+                    fmt.format(*make_args(height)),
+                    ha="center",
+                    va="bottom",
+                )
+        else:
+            raise NotImplementedError(f"unhandled where: {where!r}")
+
+    upset.plot_matrix = MethodType(_plot_matrix, upset)
+    upset._label_sizes = MethodType(_label_sizes, upset)
 
 
 @app.command()
