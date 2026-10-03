@@ -116,8 +116,9 @@ GPU: NVIDIA ...
 
 | タスク | 内容 |
 | --- | --- |
-| `pixi run cuda-check` | PyTorchからCUDA/GPUが見えるか確認 |
-| `pixi run strands-serve` | Strands DeciderをCUDAでport 8012に起動 |
+| `pixi run cuda-check` | PyTorchから見えるCUDA GPUを一覧表示 |
+| `pixi run cuda1-check` | `cuda:1` のGPU名と空きVRAMを確認 |
+| `pixi run strands-serve` | Strands Deciderを `cuda:1` でport 8012に起動 |
 | `pixi run strands-health` | 起動中のStrands Decider APIを確認 |
 | `pixi run strands-screen ...` | `script/strands_flagger.py` を実行 |
 | `pixi run lint` | Ruff |
@@ -738,13 +739,19 @@ python script/llama_flagger.py \
 
 ### 1) Strands Deciderを起動
 
-Pixi環境を構築後、Ubuntu + NVIDIA GPUでは以下でCUDAサーバを起動します。
+Pixi環境を構築後、まずGPU 1を確認します。
+
+```bash
+pixi run cuda1-check
+```
+
+現在の構成ではRTX 5060 Tiを想定して `cuda:1` を使用します。GPU名と空きVRAMを確認後、以下でサーバを起動します。
 
 ```bash
 pixi run strands-serve
 ```
 
-現在の `strands-serve` タスクは、複数質問時のCUDA互換性を優先して `--no-prefix-cache` を付けています。
+`strands-serve` タスクは `--device cuda:1` を指定し、複数質問時のCUDA互換性を優先して `--no-prefix-cache` も付けています。
 prefix cacheを無効にしても判定内容は同じで、主な違いは複数質問時の速度です。
 
 別ターミナルからhealth checkします。
@@ -753,7 +760,7 @@ prefix cacheを無効にしても判定内容は同じで、主な違いは複�
 pixi run strands-health
 ```
 
-`"status":"ok"`、`"device":"cuda"`、`"prefix_cache":false` が返れば実行可能です。
+`"status":"ok"`、`"device":"cuda:1"`、`"prefix_cache":false` が返れば実行可能です。
 
 `causal_conv1d` や `flash-linear-attention` が未導入というwarningが出る場合でも、
 最適化カーネルを使わないPyTorch実装へフォールバックします。まず判定精度の検証を優先してください。
