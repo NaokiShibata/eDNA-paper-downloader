@@ -15,7 +15,7 @@ from libs.text_normalize import clean_doi
 
 app = typer.Typer(add_completion=False)
 
-PROMPT_VERSION = "strands-v1"
+PROMPT_VERSION = "strands-v2"
 DEFAULT_BASE_URL = "http://127.0.0.1:8012"
 
 QUESTIONS: dict[str, dict[str, Any]] = {
@@ -298,6 +298,56 @@ def _post_with_retry(
                 time.sleep(min(8.0, 2.0**attempt))
     raise RuntimeError(f"Strands Decider request failed: {last_error}")
 
+def _evaluate_questions_sequentially(
+    session: requests.Session,
+    url: str,
+    state: str,
+    questions: dict[str, dict[str, Any]],
+    timeout: float,
+    retries: int,
+) -> dict[str, Any]:
+    """Evaluate one question per HTTP request to minimize peak CUDA memory.
+
+    This is intentionally compatible with older Strands Decider releases that do not
+    expose the newer server-side --max-batch option. It also avoids the multi-question
+    shared-prefix/batched path entirely.
+    """
+    merged_answers: dict[str, Any] = {}
+    model = ""
+    input_tokens = 0
+    output_tokens = 0
+    latency_ms = 0.0
+
+    for name, question in questions.items():
+        data = _post_with_retry(
+            session=session,
+            url=url,
+            payload={"state": state, "questions": {name: question}},
+            timeout=timeout,
+            retries=retries,
+        )
+        answers = data.get("answers")
+        if not isinstance(answers, dict) or name not in answers:
+            raise RuntimeError(f"response for question {name!r} is missing its answer")
+        merged_answers[name] = answers[name]
+        if not model:
+            model = str(data.get("model", "strands-decider"))
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        input_tokens += int(usage.get("input_tokens", 0) or 0)
+        output_tokens += int(usage.get("output_tokens", 0) or 0)
+        latency_ms += float(data.get("latency_ms", 0.0) or 0.0)
+
+    return {
+        "model": model or "strands-decider",
+        "answers": merged_answers,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        },
+        "latency_ms": round(latency_ms, 2),
+    }
+
+
 
 def _decide_label(
     p_in_scope: float,
@@ -521,10 +571,11 @@ def flag(
                     typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
                     return
                 try:
-                    data = _post_with_retry(
+                    data = _evaluate_questions_sequentially(
                         session=session,
                         url=f"{base_url}/v1/systemone",
-                        payload=payload,
+                        state=abstract,
+                        questions=QUESTIONS,
                         timeout=timeout,
                         retries=retries,
                     )
