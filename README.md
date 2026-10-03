@@ -30,49 +30,88 @@ eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして�
 
 ## 動作環境
 
-- Python 3.10+ (推奨: 3.11/3.12)
-- OS: Linux/macOS/Windows (WSL可)
-- 推奨: プロジェクト内 `.venv` を使用
+- Python 3.12
+- 文献取得・CSV処理: Linux
+- Strands Decider: Ubuntu/Linux + NVIDIA GPU + CUDA
+- 環境管理: Pixi
+- Pixi環境はリポジトリ直下の `.pixi/` に作成
+
+現在の `pixi.toml` は、Strands DeciderをCUDAで動かす用途に合わせて `linux-64` を対象にしています。
 
 ---
 
-## インストール
+## Pixiでの環境構築
+
+依存関係は `pixi.toml` で管理します。Python環境を手動で `venv` / `uv` から作成する必要はありません。
+
+### 1) Pixiをプロジェクト配下にインストール
+
+システム全体にPixiを入れず、このリポジトリ配下の `tools/pixi` に配置する例です。
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+export PIXI_VERSION="latest"
 
-pip install -U pip
-pip install "typer[all]" pandas requests tqdm biopython pyalex rich
+export PIXI_HOME="${PWD}/tools/pixi"
+export PIXI_BIN_DIR="${PIXI_HOME}/bin"
+export PIXI_CACHE_DIR="${PWD}/.cache/pixi"
+export PIXI_NO_PATH_UPDATE=1
+export TMPDIR="${PWD}/tmp"
+
+mkdir -p "${PIXI_HOME}" "${PIXI_BIN_DIR}" "${PIXI_CACHE_DIR}" "${TMPDIR}"
+
+curl -fsSL https://pixi.sh/install.sh | sh
+
+export PATH="${PIXI_BIN_DIR}:${PATH}"
+
+pixi --version
 ```
 
----
-
-## uvでの環境構築
-
-uvの導入から環境作成までの手順です。
-
-### 1) uvをインストール
+新しいシェルを開く場合は、再度以下を設定してください。
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+export PIXI_HOME="${PWD}/tools/pixi"
+export PIXI_BIN_DIR="${PIXI_HOME}/bin"
+export PIXI_CACHE_DIR="${PWD}/.cache/pixi"
+export PIXI_NO_PATH_UPDATE=1
+export PATH="${PIXI_BIN_DIR}:${PATH}"
 ```
 
-インストール後、シェルを再起動するか `~/.profile` 等を読み直してください。
-
-### 2) 仮想環境の作成と依存導入
+### 2) 環境を構築
 
 ```bash
-uv venv .venv
-source .venv/bin/activate
-uv pip install "typer[all]" pandas requests tqdm biopython pyalex rich
+pixi install
 ```
 
-YAML設定ファイルを使う場合は `pyyaml` も追加してください。
+`.pixi/` に環境が作成され、初回solve時に `pixi.lock` が生成されます。
+`pixi.lock` は再現性のためGit管理対象としてください。
+
+### 3) CUDAを確認
 
 ```bash
-uv pip install pyyaml
+pixi run cuda-check
 ```
+
+例えば以下のように表示され、`CUDA available: True` になればStrands DeciderをGPUで実行できます。
+
+```text
+torch: ...
+CUDA available: True
+CUDA runtime: ...
+GPU: NVIDIA ...
+```
+
+### Pixiタスク
+
+`pixi.toml` には以下のタスクを定義しています。
+
+| タスク | 内容 |
+| --- | --- |
+| `pixi run cuda-check` | PyTorchからCUDA/GPUが見えるか確認 |
+| `pixi run strands-serve` | Strands DeciderをCUDAでport 8012に起動 |
+| `pixi run strands-health` | 起動中のStrands Decider APIを確認 |
+| `pixi run strands-screen ...` | `script/strands_flagger.py` を実行 |
+| `pixi run lint` | Ruff |
+| `pixi run typecheck` | mypy |
 
 ---
 
@@ -737,7 +776,7 @@ cp config/strands_flagger.example.jsonc config/strands_flagger.jsonc
 ### 3) 少数件でテスト
 
 \`\`\`bash
-python script/strands_flagger.py \
+pixi run strands-screen \
   results/edna_multisource_2020plus.csv \
   --config config/strands_flagger.jsonc \
   --out-csv results/edna_multisource_2020plus.strands.csv \
@@ -747,7 +786,7 @@ python script/strands_flagger.py \
 ### 4) 全件実行
 
 \`\`\`bash
-python script/strands_flagger.py \
+pixi run strands-screen \
   results/edna_multisource_2020plus.csv \
   --config config/strands_flagger.jsonc \
   --out-csv results/edna_multisource_2020plus.strands.csv
