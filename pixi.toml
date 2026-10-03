@@ -2,7 +2,7 @@
 name = "edna-paper-downloader"
 channels = ["conda-forge", "bioconda"]
 platforms = [
-  { platform = "linux-64", cuda = "12.0" },
+  { platform = "linux-64", cuda = "12.8" },
 ]
 
 [dependencies]
@@ -27,9 +27,10 @@ strands-decider = "*"
 
 [tasks]
 cuda-check = """python -c "import torch; print('torch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA runtime:', torch.version.cuda); print('GPU count:', torch.cuda.device_count()); [print(f'GPU {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]" """
-cuda1-check = """python -c "import torch; i=1; print('selected:', f'cuda:{i}'); print('name:', torch.cuda.get_device_name(i)); free,total=torch.cuda.mem_get_info(i); print('free GiB:', round(free/1024**3,2)); print('total GiB:', round(total/1024**3,2))" """
-strands-serve = "CUDA_VISIBLE_DEVICES=1 strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cuda --host 127.0.0.1 --port 8012"
+cuda1-check = """python -c "import torch; print('torch:', torch.__version__); print('torch CUDA:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available()); print('visible GPUs:', torch.cuda.device_count()); [print(f'GPU {i}: {torch.cuda.get_device_name(i)}, capability={torch.cuda.get_device_capability(i)}') for i in range(torch.cuda.device_count())]" """
+strands-serve = "CUDA_VISIBLE_DEVICES=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cuda --host 127.0.0.1 --port 8012"
 strands-health = """python -c "import requests; print(requests.get('http://127.0.0.1:8012/health', timeout=10).json())" """
 strands-screen = "python script/strands_flagger.py"
 lint = "ruff check script"
 typecheck = "mypy script"
+triton-check = """python -c "import os, sys, torch, triton; print('python:', sys.version.split()[0]); print('torch:', torch.__version__); print('torch CUDA:', torch.version.cuda); print('triton:', triton.__version__); print('Python.h:', os.path.exists(os.path.join(sys.prefix, 'include', 'python3.12', 'Python.h'))); print('capability:', torch.cuda.get_device_capability(1) if torch.cuda.device_count() > 1 else torch.cuda.get_device_capability(0))" """
