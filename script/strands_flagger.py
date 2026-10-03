@@ -261,7 +261,12 @@ def _existing_processed_ids(out_csv: Path) -> set[str]:
         return set()
     if "flag_record_id" not in existing.columns or "flag_label" not in existing.columns:
         return set()
-    mask = existing["flag_record_id"].str.strip().ne("") & existing["flag_label"].str.strip().ne("")
+    labels = existing["flag_label"].str.strip()
+    mask = (
+        existing["flag_record_id"].str.strip().ne("")
+        & labels.ne("")
+        & labels.ne("process_error")
+    )
     return set(existing.loc[mask, "flag_record_id"].tolist())
 
 
@@ -276,7 +281,13 @@ def _post_with_retry(
     for attempt in range(max(1, retries)):
         try:
             response = session.post(url, json=payload, timeout=timeout)
-            response.raise_for_status()
+            if not response.ok:
+                body = response.text.strip()
+                if len(body) > 1000:
+                    body = body[:1000] + "..."
+                raise RuntimeError(
+                    f"HTTP {response.status_code} from {url}: {body or response.reason}"
+                )
             data = response.json()
             if not isinstance(data, dict):
                 raise RuntimeError("Strands Decider returned a non-object response")
