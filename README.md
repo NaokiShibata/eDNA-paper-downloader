@@ -85,7 +85,17 @@ pixi install
 `.pixi/` に環境が作成され、初回solve時に `pixi.lock` が生成されます。
 `pixi.lock` は再現性のためGit管理対象としてください。
 
-### 3) CUDAを確認
+### 3) Pixi環境を有効化（任意）
+
+既存のREADMEにある `python3 script/...` 形式のコマンドをそのまま使う場合は、先にPixi環境へ入ります。
+
+```bash
+pixi shell
+```
+
+以降は通常の `python` / `python3` コマンドが `.pixi` 環境を使用します。シェルに入らず実行する場合は `pixi run python ...` でも構いません。
+
+### 4) CUDAを確認
 
 ```bash
 pixi run cuda-check
