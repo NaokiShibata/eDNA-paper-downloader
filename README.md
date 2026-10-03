@@ -727,7 +727,7 @@ python script/llama_flagger.py \
 生成LLM版の `llama_flagger.py` と同じ `flag_record_id` / `flag_label` / `flag_confidence` などを出力するため、
 既存の `llama_flagger_overlap.py` でgpt-oss等と直接比較できます。
 
-判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を同時に評価します。
+判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を評価します。RTX 5060 TiなどVRAMが限られるGPUでも安定させるため、現在は4質問を1 HTTP requestにまとめず、1質問ずつ順番に送信します。
 
 - `scope`: `in_scope` / `out_of_scope` / `unsure`
 - `actual_use`: 環境試料由来DNA/RNAをMethods/Resultsで実際に扱っているか
@@ -745,13 +745,13 @@ Pixi環境を構築後、まずGPU 1を確認します。
 pixi run cuda1-check
 ```
 
-現在の構成ではRTX 5060 Tiを想定して `cuda:1` を使用します。GPU名と空きVRAMを確認後、以下でサーバを起動します。
+現在の構成では物理GPU 1のRTX 5060 Tiを使用します。Pixiタスクは `CUDA_VISIBLE_DEVICES=1` を設定してからStrands Deciderを起動するため、Strandsプロセス内ではRTX 5060 Tiが論理 `cuda:0` として見えます。
 
 ```bash
 pixi run strands-serve
 ```
 
-`strands-serve` タスクは `--device cuda:1` を指定し、複数質問時のCUDA互換性を優先して `--no-prefix-cache` も付けています。
+`strands-serve` タスクは `CUDA_VISIBLE_DEVICES=1` と `--device cuda` を使用します。古いStrands Decider CLIとの互換性を保つため、`--max-batch` など新しいサーバオプションには依存しません。
 prefix cacheを無効にしても判定内容は同じで、主な違いは複数質問時の速度です。
 
 別ターミナルからhealth checkします。
@@ -760,7 +760,7 @@ prefix cacheを無効にしても判定内容は同じで、主な違いは複�
 pixi run strands-health
 ```
 
-`"status":"ok"`、`"device":"cuda:1"`、`"prefix_cache":false` が返れば実行可能です。
+`"status":"ok"` と `"device":"cuda"` が返れば実行可能です。物理GPUの選択は `CUDA_VISIBLE_DEVICES=1` で行っているため、health responseだけでは物理GPU番号は表示されません。
 
 `causal_conv1d` や `flash-linear-attention` が未導入というwarningが出る場合でも、
 最適化カーネルを使わないPyTorch実装へフォールバックします。まず判定精度の検証を優先してください。
@@ -830,8 +830,8 @@ Strands固有の診断列:
 - `strands_p_actual_use`
 - `strands_p_microbial_only`
 - `strands_p_method_relevance`
-- `strands_latency_ms`
-- `strands_input_tokens`
+- `strands_latency_ms`（4質問の合計）
+- `strands_input_tokens`（4質問の合計）
 
 `flag_confidence` は `P(in_scope)` そのものではありません。採否の検証や閾値調整では
 `strands_p_in_scope` などの確率列も確認してください。
