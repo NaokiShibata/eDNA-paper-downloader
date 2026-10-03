@@ -21,6 +21,10 @@ eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして�
 - `script/crossref_semantic_fetch.py`
   - Crossref + Semantic Scholar を収集し DOI/タイトル+年で重複統合
   - PubMed CSVを除外リストとして利用可能
+- `script/strands_flagger.py`
+  - Strands Deciderを使って `abstract` 全文からeDNA/eRNA関連性を高速判定
+  - 既存の `flag_*` 列と互換で、`llama_flagger_overlap.py` にそのまま入力可能
+  - 曖昧な論文は `unsure` に残すRecall重視のスクリーニング
 
 ---
 
@@ -664,6 +668,135 @@ python script/llama_flagger.py \
 - `--reuse-process` 使用時は `llama_args` に `--single-turn` を渡さないでください。
 - `llama-cli` が対話待ちになる場合は `--reuse-process` を維持し、`--llama-args "--no-conversation"` を追加してください。
 - `--resume` は入力CSVで `flag_*` が埋まっている行と、出力CSVで `flag_*` が埋まっている行をスキップします。`flag_record_id` だけがある行は再処理されます。再実行する場合は `--no-resume` を使ってください。
+
+---
+
+## Strands DeciderでのAbstract判定 (strands_flagger.py)
+
+\`script/strands_flagger.py\` は、Strands DeciderのHTTP APIを使ってCSVの \`abstract\` 列を判定します。
+生成LLM版の \`llama_flagger.py\` と同じ \`flag_record_id\` / \`flag_label\` / \`flag_confidence\` などを出力するため、
+既存の \`llama_flagger_overlap.py\` でgpt-oss等と直接比較できます。
+
+判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を同時に評価します。
+
+- \`scope\`: \`in_scope\` / \`out_of_scope\` / \`unsure\`
+- \`actual_use\`: 環境試料由来DNA/RNAをMethods/Resultsで実際に扱っているか
+- \`microbial_only\`: 一般的な微生物群集・microbiome・metagenomics解析に留まるか
+- \`method_relevance\`: eDNA/eRNAの採取・保存・抽出・検出・定量・解析・モデリング等にMethodとして有用か
+
+タイトルやAbstract中に \`eDNA\` / \`eRNA\` の語がなくても、研究内容そのものから判定するようにしています。
+また、取りこぼしを減らすため、判断が曖昧な場合は \`out_of_scope\` に落とさず \`unsure\` に残します。
+
+### 1) Strands Deciderを導入
+
+既存の仮想環境内でインストールします。
+
+\`\`\`bash
+uv pip install strands-decider
+\`\`\`
+
+Ubuntu + NVIDIA GPUではCUDAを使用します。
+
+\`\`\`bash
+uv run strands-decider serve \
+  StrandsAgents/strands-decider-2B-hobson-v19 \
+  --device cuda \
+  --host 127.0.0.1 \
+  --port 8012
+\`\`\`
+
+別ターミナルからhealth checkできます。
+
+\`\`\`bash
+curl -s http://127.0.0.1:8012/health
+\`\`\`
+
+\`"status":"ok"\` と \`"device":"cuda"\` が返れば実行可能です。
+
+### 2) 設定ファイルを準備
+
+\`\`\`bash
+cp config/strands_flagger.example.jsonc config/strands_flagger.jsonc
+\`\`\`
+
+デフォルトではCSVの \`abstract\` 列を使用します。
+\`max_abstract_chars=null\` の場合はAbstract全文を渡します。長い入力を意図的に切り詰めたい場合だけ文字数を指定してください。
+
+主な閾値:
+
+| 設定キー | デフォルト | 意味 |
+| --- | ---: | --- |
+| \`include_threshold\` | \`0.70\` | \`P(in_scope)\` の自動採用閾値 |
+| \`actual_use_threshold\` | \`0.60\` | 自動採用時に必要な \`actual_use\` |
+| \`exclude_threshold\` | \`0.90\` | \`P(out_of_scope)\` の自動除外閾値 |
+| \`exclude_actual_use_max\` | \`0.15\` | 自動除外で許容する \`actual_use\` の上限 |
+| \`exclude_method_relevance_max\` | \`0.30\` | 自動除外で許容するMethod関連性の上限 |
+
+初期値はPrecisionよりRecallを重視しています。まず手動判定済みデータでFalse Negativeを確認してから調整してください。
+
+### 3) 少数件でテスト
+
+\`\`\`bash
+python script/strands_flagger.py \
+  results/edna_multisource_2020plus.csv \
+  --config config/strands_flagger.jsonc \
+  --out-csv results/edna_multisource_2020plus.strands.csv \
+  --limit 20
+\`\`\`
+
+### 4) 全件実行
+
+\`\`\`bash
+python script/strands_flagger.py \
+  results/edna_multisource_2020plus.csv \
+  --config config/strands_flagger.jsonc \
+  --out-csv results/edna_multisource_2020plus.strands.csv
+\`\`\`
+
+\`resume=true\` がデフォルトなので、途中で停止しても既に判定済みの \`flag_record_id\` はスキップされます。
+
+### 出力
+
+既存のllama.cpp版と互換の列:
+
+| 列名 | 説明 |
+| --- | --- |
+| \`flag_record_id\` | DOI優先、無ければタイトル+年による識別子 |
+| \`flag_label\` | \`in_scope\` / \`out_of_scope\` / \`unsure\` / \`process_error\` |
+| \`flag_confidence\` | \`scope\` Choiceの分布から計算されるStrands Deciderのconfidence |
+| \`flag_reason\` | 各確率をまとめた機械可読な判定根拠 |
+| \`flag_model_path\` | Strands Deciderサーバが返したモデル名 |
+| \`flag_prompt_version\` | 判定ルールのバージョン |
+
+Strands固有の診断列:
+
+- \`strands_scope_choice\`
+- \`strands_p_in_scope\`
+- \`strands_p_out_of_scope\`
+- \`strands_p_unsure\`
+- \`strands_p_actual_use\`
+- \`strands_p_microbial_only\`
+- \`strands_p_method_relevance\`
+- \`strands_latency_ms\`
+- \`strands_input_tokens\`
+
+\`flag_confidence\` は \`P(in_scope)\` そのものではありません。採否の検証や閾値調整では \`strands_p_in_scope\` などの確率列も確認してください。
+
+### gpt-oss等との比較
+
+Strands出力は \`llama_flagger_overlap.py\` にそのまま入力できます。
+
+\`\`\`bash
+python script/llama_flagger_overlap.py \
+  results/papers.flagged.gpt-oss-20b.csv \
+  results/papers.strands.csv \
+  --out results/gptoss_strands_overlap.csv \
+  --plots-dir results \
+  --plots-prefix gptoss_strands
+\`\`\`
+
+特に \`in_scope\` のFalse Negative、\`unsure\` 率、1 Abstractあたりの処理時間を比較すると、
+生成LLMとStrands Deciderの役割分担を判断しやすくなります。
 
 ---
 
