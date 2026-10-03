@@ -27,7 +27,7 @@ strands-decider = "*"
 
 [tasks]
 cuda-check = """python -c "import torch; print('torch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA runtime:', torch.version.cuda); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')" """
-strands-serve = "strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cuda --host 127.0.0.1 --port 8012"
+strands-serve = "strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cuda --no-prefix-cache --host 127.0.0.1 --port 8012"
 strands-health = """python -c "import requests; print(requests.get('http://127.0.0.1:8012/health', timeout=10).json())" """
 strands-screen = "python script/strands_flagger.py"
 lint = "ruff check script"
