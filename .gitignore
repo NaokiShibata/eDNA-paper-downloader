@@ -3,3 +3,7 @@ test/
 .vscode
 __pycache__/
 llama/
+.pixi/
+.cache/pixi/
+tools/pixi/
+tmp/
