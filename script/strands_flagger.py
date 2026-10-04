@@ -471,10 +471,10 @@ def flag(
     retries = int(_coalesce(retries, cfg, "retries", 3))
     include_threshold = float(_coalesce(include_threshold, cfg, "include_threshold", 0.70))
     actual_use_threshold = float(_coalesce(actual_use_threshold, cfg, "actual_use_threshold", 0.60))
-    exclude_threshold = float(_coalesce(exclude_threshold, cfg, "exclude_threshold", 0.90))
-    exclude_actual_use_max = float(_coalesce(exclude_actual_use_max, cfg, "exclude_actual_use_max", 0.15))
+    exclude_threshold = float(_coalesce(exclude_threshold, cfg, "exclude_threshold", 0.50))
+    exclude_actual_use_max = float(_coalesce(exclude_actual_use_max, cfg, "exclude_actual_use_max", 0.50))
     exclude_method_relevance_max = float(
-        _coalesce(exclude_method_relevance_max, cfg, "exclude_method_relevance_max", 0.30)
+        _coalesce(exclude_method_relevance_max, cfg, "exclude_method_relevance_max", 0.60)
     )
     max_abstract_chars = _coalesce(max_abstract_chars, cfg, "max_abstract_chars", None)
     max_abstract_chars = int(max_abstract_chars) if max_abstract_chars is not None else None
