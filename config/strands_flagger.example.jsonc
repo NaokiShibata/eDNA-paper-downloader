@@ -1,0 +1,35 @@
+{
+  // Strands Decider server started with:
+  // strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cuda --port 8012
+  "base_url": "http://127.0.0.1:8012",
+
+  // Input CSV column containing the abstract. Full abstract is used by default.
+  "abstract_column": "abstract",
+  "max_abstract_chars": null,
+
+  // Output / logging
+  "out_csv": "results/strands_flagged.csv",
+  "log_file": "logs/strands_flagger.log",
+  "log_level": "INFO",
+
+  // Request handling
+  "timeout": 120.0,
+  "retries": 3,
+
+  // Recall-oriented thresholds validated on the synthetic benchmark.
+  // A paper is auto-included only when both the scope probability and actual-use
+  // probability pass their thresholds. Auto-exclusion remains guarded by actual-use
+  // and method-relevance probabilities; ambiguous cases become "unsure" for manual review.
+  "include_threshold": 0.70,
+  "actual_use_threshold": 0.60,
+  "exclude_threshold": 0.50,
+  "exclude_actual_use_max": 0.50,
+  "exclude_method_relevance_max": 0.60,
+
+  // Batching / resume
+  "batch_size": null,
+  "batch_index": 0,
+  "limit": null,
+  "resume": true,
+  "dry_run": false
+}

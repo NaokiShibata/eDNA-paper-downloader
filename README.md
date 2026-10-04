@@ -21,54 +21,116 @@ eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして�
 - `script/crossref_semantic_fetch.py`
   - Crossref + Semantic Scholar を収集し DOI/タイトル+年で重複統合
   - PubMed CSVを除外リストとして利用可能
+- `script/strands_serve_auto.py`
+  - GPU 1 → GPU 0 → CPUの順で計算デバイスを自動選択
+  - CPU fallback時は低速になることを明示してから起動
+- `script/strands_flagger.py`
+  - Strands Deciderを使って `abstract` 全文からeDNA/eRNA関連性を高速判定
+  - `in_scope` / `out_of_scope` / `unsure` の3段階でスクリーニング
+  - 曖昧な論文は `unsure` に残すRecall重視の運用
 
 ---
 
 ## 動作環境
 
-- Python 3.10+ (推奨: 3.11/3.12)
-- OS: Linux/macOS/Windows (WSL可)
-- 推奨: プロジェクト内 `.venv` を使用
+- Python 3.12
+- 文献取得・CSV処理: Linux
+- Strands Decider: Ubuntu/Linux。NVIDIA CUDA GPUがあればGPUを使用し、利用できない場合はCPUへ明示的にフォールバック
+- 環境管理: Pixi
+- Pixi環境はリポジトリ直下の `.pixi/` に作成
+
+現在の `pixi.toml` は、Strands DeciderをCUDAで動かす用途に合わせて `linux-64` を対象にしています。
 
 ---
 
-## インストール
+## Pixiでの環境構築
+
+依存関係は `pixi.toml` で管理します。Python環境を手動で `venv` / `uv` から作成する必要はありません。
+
+### 1) Pixiをプロジェクト配下にインストール
+
+システム全体にPixiを入れず、このリポジトリ配下の `tools/pixi` に配置する例です。
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+export PIXI_VERSION="latest"
 
-pip install -U pip
-pip install "typer[all]" pandas requests tqdm biopython pyalex rich
+export PIXI_HOME="${PWD}/tools/pixi"
+export PIXI_BIN_DIR="${PIXI_HOME}/bin"
+export PIXI_CACHE_DIR="${PWD}/.cache/pixi"
+export PIXI_NO_PATH_UPDATE=1
+export TMPDIR="${PWD}/tmp"
+
+mkdir -p "${PIXI_HOME}" "${PIXI_BIN_DIR}" "${PIXI_CACHE_DIR}" "${TMPDIR}"
+
+curl -fsSL https://pixi.sh/install.sh | sh
+
+export PATH="${PIXI_BIN_DIR}:${PATH}"
+
+pixi --version
 ```
 
----
-
-## uvでの環境構築
-
-uvの導入から環境作成までの手順です。
-
-### 1) uvをインストール
+新しいシェルを開く場合は、再度以下を設定してください。
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+export PIXI_HOME="${PWD}/tools/pixi"
+export PIXI_BIN_DIR="${PIXI_HOME}/bin"
+export PIXI_CACHE_DIR="${PWD}/.cache/pixi"
+export PIXI_NO_PATH_UPDATE=1
+export PATH="${PIXI_BIN_DIR}:${PATH}"
 ```
 
-インストール後、シェルを再起動するか `~/.profile` 等を読み直してください。
-
-### 2) 仮想環境の作成と依存導入
+### 2) 環境を構築
 
 ```bash
-uv venv .venv
-source .venv/bin/activate
-uv pip install "typer[all]" pandas requests tqdm biopython pyalex rich
+pixi install
 ```
 
-YAML設定ファイルを使う場合は `pyyaml` も追加してください。
+`.pixi/` に環境が作成され、初回solve時に `pixi.lock` が生成されます。
+`pixi.lock` は再現性のためGit管理対象としてください。
+
+### 3) Pixi環境を有効化（任意）
+
+既存のREADMEにある `python3 script/...` 形式のコマンドをそのまま使う場合は、先にPixi環境へ入ります。
 
 ```bash
-uv pip install pyyaml
+pixi shell
 ```
+
+以降は通常の `python` / `python3` コマンドが `.pixi` 環境を使用します。シェルに入らず実行する場合は `pixi run python ...` でも構いません。
+
+### 4) 計算デバイスを確認
+
+```bash
+pixi run strands-device-check
+```
+
+CUDA GPUが利用可能な環境ではGPUを選択し、利用できない環境ではCPU fallbackを明示します。
+
+CUDA利用時の詳細診断が必要な場合だけ、以下を実行してください。
+
+```bash
+pixi run cuda-check
+pixi run cuda-header-check
+pixi run triton-driver-check
+```
+
+TritonはCUDA利用時にDriver API用の小さなC拡張をJITコンパイルするため、`cuda.h` も必要です。
+conda-forgeではこのヘッダを `cuda-cudart-dev` から `targets/x86_64-linux/include/` に配置します。
+
+### Pixiタスク
+
+`pixi.toml` には以下のタスクを定義しています。
+
+| タスク | 内容 |
+| --- | --- |
+| `pixi run cuda-check` | PyTorchから見えるCUDA GPUを一覧表示 |
+| `pixi run strands-device-check` | Strands Deciderが選択するGPU/CPUを表示 |
+| `pixi run strands-serve` | GPU 1 → GPU 0 → CPUの順で自動選択し、port 8012にStrands Deciderを起動 |
+| `pixi run strands-health` | 起動中のStrands Decider APIを確認 |
+| `pixi run strands-screen ...` | `script/strands_flagger.py` を実行 |
+| `pixi run e2e-latest14 ...` | 最新14日の文献取得→Strands判定→簡易検証を通し実行 |
+| `pixi run lint` | Ruff |
+| `pixi run typecheck` | mypy |
 
 ---
 
@@ -397,319 +459,206 @@ bioRxivの出力には以下が入ります。
 
 ---
 
-## llama.cppの導入とビルド
+## Strands DeciderでのAbstract判定 (strands_flagger.py)
 
-llama.cppをローカルで使うための最小手順です。
+`script/strands_flagger.py` は、Strands DeciderのHTTP APIを使ってCSVの `abstract` 列を判定します。
+現在の論文スクリーニング実装はStrands Deciderに統一しています。
 
-### CPUビルド (最小)
+判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を評価します。RTX 5060 TiなどVRAMが限られるGPUでも安定させるため、現在は4質問を1 HTTP requestにまとめず、1質問ずつ順番に送信します。
+
+- `scope`: `in_scope` / `out_of_scope` / `unsure`
+- `actual_use`: 環境試料由来DNA/RNAをMethods/Resultsで実際に扱っているか
+- `microbial_only`: 一般的な微生物群集・microbiome・metagenomics解析に留まるか
+- `method_relevance`: eDNA/eRNAの採取・保存・抽出・検出・定量・解析・モデリング等にMethodとして有用か
+
+タイトルやAbstract中に `eDNA` / `eRNA` の語がなくても、研究内容そのものから判定します。
+取りこぼしを減らすため、判断が曖昧な場合は `out_of_scope` に落とさず `unsure` に残します。
+
+### 1) Strands Deciderを起動
+
+起動前に、どの計算デバイスが選ばれるか確認できます。
 
 ```bash
-git clone https://github.com/ggerganov/llama.cpp.git
-cd llama.cpp
-cmake -S . -B build
-cmake --build build -j
+pixi run strands-device-check
 ```
 
-### GPUビルド (CUDA例)
+自動選択の優先順位は次のとおりです。
 
-NVIDIA GPU + CUDA環境の例です。
+1. 物理GPU 1が利用可能ならGPU 1
+2. GPUが1枚だけ、またはGPU 1が利用できない場合はGPU 0
+3. CUDA GPUが利用できない場合はCPU
 
-```bash
-git clone https://github.com/ggerganov/llama.cpp.git
-cd llama.cpp
-cmake -S . -B build -DGGML_CUDA=ON
-cmake --build build -j
+GPUを選んだ場合は、選択した物理GPUだけを `CUDA_VISIBLE_DEVICES` でStrands Deciderへ公開するため、Strandsプロセス内では論理 `cuda:0` として見えます。
+
+CPUへ切り替える場合は黙ってフォールバックせず、起動前に次のようなwarningを表示します。
+
+```text
+[strands-serve] No CUDA GPU detected
+[strands-serve] WARNING: Falling back to CPU explicitly (--device cpu). Inference will be slower than CUDA.
 ```
 
-ビルド後、`build/bin/llama-cli` と `build/bin/llama-server` を利用します。
-環境によってはGPUバックエンドが異なるため、公式READMEの該当手順も参照してください。
-
----
-
-## llama.cppでの簡易RAG
-
-csvにまとめた文献メタデータを使って、llama.cppでRAG風のQAを行う簡易スクリプトです。
-以下はローカルのllama.cppサーバ (OpenAI互換API) を前提にしています。
-`edna_literature_fetch.py` のCSVはデフォルト列でそのまま使えます。
-`biorxiv_search.py` のCSVは列名が異なるため、`--text-cols`/`--context-cols` を指定してください。
-
-### 1) llama.cppサーバを起動
+起動:
 
 ```bash
-./path/to/llama-server -m /path/to/your-model.gguf --port 8080 --embedding
+pixi run strands-serve
 ```
 
-※ 別の埋め込みモデルを使う場合は、別ポートで起動し `--embed-url` を分けて指定します。
+GPU環境では `--device cuda`、GPUがない環境では `--device cpu` を明示してStrands Deciderを起動します。古いStrands Decider CLIとの互換性を保つため、`--max-batch` など新しいサーバオプションには依存しません。
 
-### 2) CSVから埋め込みインデックス作成
-
-PubMed (edna_literature_fetch.py) のCSV:
+別ターミナルからhealth checkします。
 
 ```bash
-python script/llama_rag_csv.py index \
+pixi run strands-health
+```
+
+`"status":"ok"` が返れば実行可能です。GPU利用時は `"device":"cuda"`、CPU fallback時は `"device":"cpu"` になります。GPU利用時は選択した物理GPUだけを `CUDA_VISIBLE_DEVICES` で公開するため、health responseには物理GPU番号は表示されません。
+
+`causal_conv1d` や `flash-linear-attention` が未導入というwarningが出る場合でも、
+最適化カーネルを使わないPyTorch実装へフォールバックします。まず判定精度の検証を優先してください。
+
+### 2) 設定ファイルを準備
+
+```bash
+cp config/strands_flagger.example.jsonc config/strands_flagger.jsonc
+```
+
+デフォルトではCSVの `abstract` 列を使用します。
+`max_abstract_chars=null` の場合はAbstract全文を渡します。長い入力を意図的に切り詰めたい場合だけ文字数を指定してください。
+
+主な閾値:
+
+| 設定キー | デフォルト | 意味 |
+| --- | ---: | --- |
+| `include_threshold` | `0.70` | `P(in_scope)` の自動採用閾値 |
+| `actual_use_threshold` | `0.60` | 自動採用時に必要な `actual_use` |
+| `exclude_threshold` | `0.50` | `P(out_of_scope)` の自動除外閾値 |
+| `exclude_actual_use_max` | `0.50` | 自動除外で許容する `actual_use` の上限 |
+| `exclude_method_relevance_max` | `0.60` | 自動除外で許容するMethod関連性の上限 |
+
+現在のデフォルトは、Method系をやや安全側に残す方針で合成benchmarkを用いて調整した値です。曖昧な論文は引き続き `unsure` として人手確認に回します。
+
+### 3) 少数件でテスト
+
+```bash
+pixi run strands-screen \
   results/edna_multisource_2020plus.csv \
-  --out-index results/edna_multisource_2020plus.index.jsonl \
-  --text-cols title,journal,year,authors,doi
+  --config config/strands_flagger.jsonc \
+  --out-csv results/edna_multisource_2020plus.strands.csv \
+  --limit 20
 ```
 
-bioRxiv (biorxiv_search.py) のCSV:
+### 4) 全件実行
 
 ```bash
-python script/llama_rag_csv.py index \
-  results/biorxiv_results.csv \
-  --out-index results/biorxiv_results.index.jsonl \
-  --text-cols title,authors,doi,date,category,abstract,biorxiv_url
-```
-
-### 3) 質問する
-
-```bash
-python script/llama_rag_csv.py ask \
-  results/edna_multisource_2020plus.index.jsonl \
-  "Which papers mention CRISPR-Cas and what are the DOIs?" \
-  --top-k 5 \
-  --show-sources
-```
-
-bioRxivのindexに対する質問例:
-
-```bash
-python script/llama_rag_csv.py ask \
-  results/biorxiv_results.index.jsonl \
-  "Which preprints focus on metabarcoding and what are the DOIs?" \
-  --context-cols title,authors,doi,date,category,biorxiv_url \
-  --top-k 5 \
-  --show-sources
-```
-
-### 追加例: 埋め込みとLLMを別URLで指定
-
-```bash
-python script/llama_rag_csv.py ask \
-  results/edna_multisource_2020plus.index.jsonl \
-  "Summarize trends in eDNA monitoring from 2020 onward." \
-  --embed-url http://localhost:8081 \
-  --embed-api openai \
-  --llm-url http://localhost:8080 \
-  --llm-api openai-chat \
-  --top-k 8 \
-  --show-sources
-```
-
-### 補足
-
-- `--embed-api` / `--llm-api` で `openai` (OpenAI互換) と `legacy` を切り替えできます。
-- CSVにabstractがある場合は `--text-cols` に含めると回答品質が上がります。
-
----
-
-## ダウンロード済み論文のフラグ付け (llama.cpp CLI)
-
-`edna_literature_fetch.py`で取得したcsvファイルを精査し、論文情報にフラグをつけます。`llama-cli`を使用します。
-
-検討時は下記モデルを使用しました。
-
-- gpt-oss-120b-Q4_K_M-00001-of-00002.gguf & gpt-oss-120b-Q4_K_M-00002-of-00002.gguf
-- gemma-3-4b-it-abliterated.q5_k.gguf
-- gpt-oss-20b-Q4_K_M.gguf
-
-### 1) 設定ファイルを準備 (JSONC)
-
-```bash
-cp config/llama_flagger.example.jsonc config/llama_flagger.jsonc
-```
-
-`scope` と `model_path` を設定してください。
-
-#### 設定項目 (llama_flagger.jsonc)
-
-| 設定キー | 必須 | 説明 |
-| --- | --- | --- |
-| `scope` | yes | 対象論文の範囲を1〜3文で記述 |
-| `model_path` | yes | 使用するGGUFモデルのパス |
-| `out_csv` | no | 出力CSVのパス |
-| `log_file` | no | ログファイルのパス |
-| `log_level` | no | ログレベル (`DEBUG` / `INFO` / `WARNING` / `ERROR`) |
-| `prompt_template` | no | プロンプト全体のテンプレート (指定時は内部テンプレを置換) |
-| `llama_bin` | no | `llama-cli` のパス (省略時はPATH検索) |
-| `llama_args` | no | `llama-cli` の追加引数 (例: `--no-conversation`) |
-| `reuse_process` | no | `true` でモデルを1回ロードして使い回し |
-| `batch_size` | no | バッチ件数 (例: `500`) |
-| `batch_index` | no | バッチ番号 (0始まり) |
-| `threads` | no | 使用スレッド数 |
-| `limit` | no | 読み込み件数の上限 (`batch_size` とは同時指定不可) |
-| `resume` | no | `true` で既存フラグ行をスキップ (`false` で再処理) |
-| `dry_run` | no | `true` でプロンプトのみ表示して終了 |
-| `max_tokens` | no | 生成トークン数 |
-| `sampling_temperature` | no | サンプリング温度 |
-| `ctx_size` | no | コンテキスト長 |
-| `timeout` | no | 1件あたりのタイムアウト秒 |
-| `include_hint` | no | in-scopeの補助ヒント (文字列 or 配列) |
-| `exclude_hint` | no | out-of-scopeの補助ヒント (文字列 or 配列) |
-
-※ `llama_args` の `--no-conversation` は会話テンプレートを無効化し、単純なテキスト生成として扱う指定です。
-
-設定のポイント:
-
-- `ctx_size` を `llama_args` に指定した場合は、その値が優先されます (configの `ctx_size` は無視されます)。
-- `resume=true` は入力CSVに `flag_*` が埋まっている行、または出力CSVに `flag_*` が埋まっている行をスキップします (`flag_record_id` だけの行は再処理されます)。
-- CSVに `abstract` 列がある場合は、文頭+末尾の抜粋を自動的に使います。
-- `prompt_template` を指定すると内部のプロンプト生成を上書きします (JSON出力の指示も含めて記述してください)。
-
-設定例 (gpt-oss):
-
-```jsonc
-{
-  "scope": "environmental DNA/RNA papers for ecology and monitoring",
-  "model_path": "/path/to/gpt-oss-20b-Q4_K_M.gguf",
-  "llama_bin": "/path/to/llama-cli",
-  "llama_args": "--threads 16 --no-conversation",
-  "log_file": "logs/llama_flagger.log",
-  "log_level": "INFO",
-  "prompt_template": null,
-  "ctx_size": null,
-  "sampling_temperature": null,
-  "reuse_process": true
-}
-```
-
-設定値の具体例:
-
-| 設定キー | 型 | 例 | 補足 |
-| --- | --- | --- | --- |
-| `scope` | string | `Environmental DNA/RNA papers for ecology and monitoring.` | 1〜3文推奨 |
-| `model_path` | string | `/models/gpt-oss-20b-Q4_K_M.gguf` | GGUFファイル |
-| `out_csv` | string | `results/flagged.csv` | 出力CSV |
-| `log_file` | string/null | `logs/llama_flagger.log` | ログファイル |
-| `log_level` | string | `INFO` | ログレベル |
-| `prompt_template` | string/null | `null` | プロンプトテンプレ |
-| `llama_bin` | string | `/path/to/llama-cli` | PATH上のコマンド名でも可 |
-| `llama_args` | string/null | `--threads 16 --no-conversation` | 追加CLI引数 |
-| `ctx_size` | int/null | `8192` | `llama_args` の指定が優先 |
-| `threads` | int | `16` | CPUスレッド数 |
-| `reuse_process` | bool | `true` | モデルを使い回す |
-| `batch_size` | int | `500` | |
-| `batch_index` | int | `0` | 0始まり |
-| `limit` | int/null | `100` | `batch_size` と併用不可 |
-| `resume` | bool | `true` | 既存フラグ行をスキップ |
-| `dry_run` | bool | `false` | プロンプトのみ表示 |
-| `max_tokens` | int | `256` | 生成トークン数 |
-| `sampling_temperature` | float/null | `0.05` | 低いほど安定 |
-| `timeout` | float | `300` | 秒 |
-| `include_hint` | string/array | `eDNA, eRNA, metabarcoding` | ヒント |
-| `exclude_hint` | string/array | `microbiome, metagenomics` | ヒント |
-
-### 2) 実行
-
-```bash
-python script/llama_flagger.py \
+pixi run strands-screen \
   results/edna_multisource_2020plus.csv \
-  --config config/llama_flagger.jsonc \
-  --out-csv results/edna_multisource_2020plus.flagged.csv
+  --config config/strands_flagger.jsonc \
+  --out-csv results/edna_multisource_2020plus.strands.csv
 ```
 
-### 実行例 (コマンド指定)
-
-```bash
-python3 /path/to/eDNA-paper-downloader/script/llama_flagger.py \
-  results/edna_multisource_20260118.csv \
-  --out-csv results/edna_multisource_20260118plus.flagged.csv \
-  --model /path/to/model.gguf \
-  --llama-bin /path/to/llama.cpp/build/bin/llama-cli \
-  --scope "You are screening papers using only the title and abstract. Classify a paper as OUT-OF-SCOPE if the primary focus is: - Microbial or algal community profiling (e.g., 16S rRNA, ITS, 18S rRNA, rbcL used to characterize microbial/algal communities or microbiome composition), - Host-associated microbiomes or microbiota (gut, skin, oral, rumen, dysbiosis, probiotics), - Shotgun metagenomics or related approaches (shotgun sequencing, metagenome, MAGs, genome assembly, binning), - Functional or applied microbial themes such as resistome, antimicrobial resistance (AMR), virome, wastewater-based epidemiology, or microbial biogeochemistry. Classify a paper as IN-SCOPE when the study uses environmental DNA or RNA (eDNA/eRNA) from environmental samples (water, soil, sediment, air, etc.) to detect, monitor, or assess the presence, distribution, abundance, or biodiversity of: - Animals (vertebrates or invertebrates), - Plants or macrophytes, - Or microorganisms when the study focuses on detecting specific microbial taxa from environmental DNA (NOT microbiome/community profiling). Marker gene guidance: - Do NOT classify a paper as OUT-OF-SCOPE solely because markers such as "16S", "18S", "28S", or "COI" appear. - Treat these markers as OUT-OF-SCOPE only when they are used primarily for microbial/algal community profiling. - Treat these markers as IN-SCOPE when used to detect non-microbial organisms (e.g., vertebrates, invertebrates, macrofauna, macroflora), or to detect specific microbial taxa via eDNA rather than profiling whole communities. If the focus is ambiguous or cannot be clearly determined from the title and abstract alone, prefer OUT-OF-SCOPE to minimize false positives." \
-  --exclude-hint "microbiome; microbiota; gut microbiome; gut microbiota; skin microbiome; oral microbiome; rumen microbiome; dysbiosis; probiotic; metagenomics; shotgun metagenomics; metagenome; metagenome-assembled genome; MAG; genome assembly; binning; resistome; antimicrobial resistance; AMR; virome; viral metagenomics; bacteriome; mycobiome; 16S profiling; 16S community profiling; ITS community profiling; wastewater epidemiology" \
-  --reuse-process --model-profile gemma
-```
-
-`--scope`に指定するプロンプト例
-
-```English
-You are screening papers using only the title and abstract. Classify a paper as OUT-OF-SCOPE if the primary focus is: - Microbial or algal community profiling (e.g., 16S rRNA, ITS, 18S rRNA, rbcL used to characterize microbial/algal communities or microbiome composition), - Host-associated microbiomes or microbiota (gut, skin, oral, rumen, dysbiosis, probiotics), - Shotgun metagenomics or related approaches (shotgun sequencing, metagenome, MAGs, genome assembly, binning), - Functional or applied microbial themes such as resistome, antimicrobial resistance (AMR), virome, wastewater-based epidemiology, or microbial biogeochemistry. Classify a paper as IN-SCOPE when the study uses environmental DNA or RNA (eDNA/eRNA) from environmental samples (water, soil, sediment, air, etc.) to detect, monitor, or assess the presence, distribution, abundance, or biodiversity of: - Animals (vertebrates or invertebrates), - Plants or macrophytes, - Or microorganisms when the study focuses on detecting specific microbial taxa from environmental DNA (NOT microbiome/community profiling). Marker gene guidance: - Do NOT classify a paper as OUT-OF-SCOPE solely because markers such as "16S", "18S", "28S", or "COI" appear. - Treat these markers as OUT-OF-SCOPE only when they are used primarily for microbial/algal community profiling. - Treat these markers as IN-SCOPE when used to detect non-microbial organisms (e.g., vertebrates, invertebrates, macrofauna, macroflora), or to detect specific microbial taxa via eDNA rather than profiling whole communities. If the focus is ambiguous or cannot be clearly determined from the title and abstract alone, prefer OUT-OF-SCOPE to minimize false positives.
-```
-
-`--exclude-hint`に指定するプロンプト例
-
-```English
-microbiome; microbiota; gut microbiome; gut microbiota; skin microbiome; oral microbiome; rumen microbiome; dysbiosis; probiotic; metagenomics; shotgun metagenomics; metagenome; metagenome-assembled genome; MAG; genome assembly; binning; resistome; antimicrobial resistance; AMR; virome; viral metagenomics; bacteriome; mycobiome; 16S profiling; 16S community profiling; ITS community profiling; wastewater epidemiology
-```
+`resume=true` がデフォルトです。正常に完了した `flag_record_id` はスキップし、
+`process_error` は再実行時に再試行します。
 
 ### 出力
 
-元CSVの列に加えて、以下の列が追加されます。
+主な出力列:
 
-| 列名                  | 説明                                                                               |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| `flag_record_id`      | 識別子 (DOI優先、無ければタイトル+年)                                              |
-| `flag_label`          | `in_scope` / `out_of_scope` / `unsure` / `parse_error` / `process_error`           |
-| `flag_confidence`     | モデルが返した信頼度 (0〜1)                                                        |
-| `flag_reason`         | 判定理由 (短文)                                                                    |
-| `flag_model_path`     | 使用モデルパス                                                                     |
-| `flag_prompt_version` | プロンプトのバージョン                                                             |
+| 列名 | 説明 |
+| --- | --- |
+| `flag_record_id` | DOI優先、無ければタイトル+年による識別子 |
+| `flag_label` | `in_scope` / `out_of_scope` / `unsure` / `process_error` |
+| `flag_confidence` | `scope` Choiceの分布から計算されるStrands Deciderのconfidence |
+| `flag_reason` | 各確率をまとめた機械可読な判定根拠 |
+| `flag_model_path` | Strands Deciderサーバが返したモデル名 |
+| `flag_prompt_version` | 判定ルールのバージョン |
 
-### バッチ実行例
+Strands固有の診断列:
+
+- `strands_scope_choice`
+- `strands_p_in_scope`
+- `strands_p_out_of_scope`
+- `strands_p_unsure`
+- `strands_p_actual_use`
+- `strands_p_microbial_only`
+- `strands_p_method_relevance`
+- `strands_latency_ms`（4質問の合計）
+- `strands_input_tokens`（4質問の合計）
+
+`flag_confidence` は `P(in_scope)` そのものではありません。採否の検証や閾値調整では
+`strands_p_in_scope` などの確率列も確認してください。
+
+## 最新14日のE2Eテスト
+
+`script/e2e_latest14.py` は、実行日を終点とする最新14日間について、文献取得からStrands Decider判定までを通しで確認します。
+
+Strands Deciderを別ターミナルで起動してから実行します。
 
 ```bash
-# 0番目のバッチ (0始まり) を実行
-python script/llama_flagger.py \
-  results/edna_multisource_2020plus.csv \
-  --config config/llama_flagger.jsonc \
-  --batch-size 500 \
-  --batch-index 0 \
-  --out-csv results/edna_multisource_2020plus.flagged.csv
+pixi run strands-serve
 ```
 
-### 補足
+別ターミナル:
 
-- 行ごとのモデル再ロードを避けるには `--reuse-process` (またはJSONCで `reuse_process: true`) を指定します。
-- `--reuse-process` 使用時は `llama_args` に `--single-turn` を渡さないでください。
-- `llama-cli` が対話待ちになる場合は `--reuse-process` を維持し、`--llama-args "--no-conversation"` を追加してください。
-- `--resume` は入力CSVで `flag_*` が埋まっている行と、出力CSVで `flag_*` が埋まっている行をスキップします。`flag_record_id` だけがある行は再処理されます。再実行する場合は `--no-resume` を使ってください。
+```bash
+pixi run e2e-latest14 --email you@example.com
+```
+
+`NCBI_EMAIL` を設定している場合は `--email` を省略できます。
+
+```bash
+export NCBI_EMAIL="you@example.com"
+pixi run e2e-latest14
+```
+
+デフォルトでは:
+
+- 実行日を含む直近14日
+- PubMed + Crossref + OpenAlex
+- eDNA / environmental DNA / eRNA / environmental RNA を検索
+- Abstractを持つレコードのみを出力
+- Crossref/OpenAlexは各最大300件
+- 取得後の先頭20件をStrandsで判定
+- `process_error=0`、必要な出力列、件数整合性を検証
+
+全件をStrandsで判定する場合:
+
+```bash
+pixi run e2e-latest14 \
+  --email you@example.com \
+  --screen-limit 0
+```
+
+期間を固定して再現実行する場合:
+
+```bash
+pixi run e2e-latest14 \
+  --email you@example.com \
+  --until-date 2026-10-04 \
+  --days 14
+```
+
+ローカルのStrands設定を使う場合:
+
+```bash
+pixi run e2e-latest14 \
+  --email you@example.com \
+  --config config/strands_flagger.jsonc
+```
+
+生成物はデフォルトで `test/results/` に出力されます。
+
+```text
+e2e_latest14_YYYYMMDD.csv
+e2e_latest14_YYYYMMDD.json
+e2e_latest14_YYYYMMDD_strands.csv
+e2e_latest14_YYYYMMDD_summary.json
+```
+
+正常終了時は最後に `E2E PASS` と取得件数、判定件数、ラベル分布、処理時間を表示します。
 
 ---
 
-## 複数モデルの一致度チェック (llama_flagger_overlap.py)
+## Strands Deciderベンチマーク
 
-複数モデルのフラグ結果CSVから、ラベルの一致度合いを集計・可視化します。
-
-### 依存関係
-
-```bash
-pip install matplotlib
-# Venn図も使う場合
-pip install matplotlib-venn
-# UpSetプロットも使う場合
-pip install upsetplot
-```
-
-### 基本例
-
-```bash
-python script/llama_flagger_overlap.py \
-  results/modelA.flagged.csv \
-  results/modelB.flagged.csv \
-  results/modelC.flagged.csv \
-  --out results/flag_overlap.csv \
-  --plots-dir results \
-  --plots-prefix flag_overlap
-```
-
-### Venn図の対象ラベル/モデルを指定
-
-```bash
-python script/llama_flagger_overlap.py \
-  results/modelA.flagged.csv \
-  results/modelB.flagged.csv \
-  results/modelC.flagged.csv \
-  --plots-dir results \
-  --venn-label out_of_scope \
-  --venn-models modelA.gguf modelB.gguf modelC.gguf
-```
-
-出力される図:
-
-- `flag_overlap.agreement.png` (合意ステータス)
-- `flag_overlap.pairwise.png` (ペア一致率)
-- `flag_overlap.labels.png` (モデル別ラベル分布)
-- `flag_overlap.venn_<label>.png` (ラベル別Venn)
-- `flag_overlap.upset_in_scope.png` (in_scope UpSet)
-- `flag_overlap.upset_out_of_scope.png` (out_of_scope UpSet)
+ベンチマークの作成、gold labelの基準、calibration/test分割、閾値調整、検証結果は
+[docs/strands-decider-benchmark.md](docs/strands-decider-benchmark.md) にまとめています。
