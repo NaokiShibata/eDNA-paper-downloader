@@ -19,20 +19,7 @@ def _safe_div(num: float, den: float) -> float:
 
 def _norm_label(value: Any) -> str:
     text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "include": "in_scope",
-        "included": "in_scope",
-        "relevant": "in_scope",
-        "yes": "in_scope",
-        "exclude": "out_of_scope",
-        "excluded": "out_of_scope",
-        "irrelevant": "out_of_scope",
-        "no": "out_of_scope",
-        "unclear": "unsure",
-        "uncertain": "unsure",
-        "review": "unsure",
-    }
-    return aliases.get(text, text)
+    return text
 
 
 def _binary_aux_metrics(

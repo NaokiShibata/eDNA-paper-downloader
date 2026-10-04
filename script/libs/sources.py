@@ -4,12 +4,14 @@ import io
 import logging
 import re
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import asdict
+from datetime import datetime
 from functools import partial
 from typing import Any
 
 import requests
+import typer
 from Bio import Entrez
 from tqdm import tqdm
 
@@ -324,47 +326,6 @@ def pubmed_fetch_details(
     if logger:
         logger.info(f"Records fetched: {len(papers)}")
     return papers
-
-
-def crossref_fill_missing_doi(
-    papers: list[Paper],
-    user_agent: str,
-    sleep: float = 0.2,
-    logger: logging.Logger | None = None,
-) -> list[Paper]:
-    sess = make_retry_session()
-    headers = {"User-Agent": user_agent}
-    out: list[Paper] = []
-
-    if logger:
-        logger.info("Crossref DOI fill enabled (heuristic)")
-
-    for p in tqdm(papers, desc="Crossref DOI fill"):
-        if p.doi or not p.title:
-            out.append(p)
-            continue
-        params = {"query.title": p.title, "rows": 1}
-        try:
-            r = sess.get("https://api.crossref.org/works", params=params, headers=headers, timeout=20)
-            r.raise_for_status()
-            js = r.json()
-            items = js.get("message", {}).get("items", [])
-            hit = items[0] if items else {}
-            titles = hit.get("title") or []
-            if titles and norm_title(titles[0]) == norm_title(p.title):
-                doi = clean_doi(hit.get("DOI")) or None
-                out.append(Paper(**{**asdict(p), "doi": doi}))
-            else:
-                out.append(p)
-        except Exception as e:
-            if logger and logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Crossref lookup failed for title={p.title!r}: {e}")
-            out.append(p)
-
-        if sleep > 0:
-            time.sleep(sleep)
-
-    return out
 
 
 def _parse_europepmc(js: dict[str, Any]) -> dict[str, tuple[str, str]]:
@@ -748,3 +709,156 @@ def merge_papers_by_doi_title(
     if logger:
         logger.info(f"Merged papers (doi/title): {len(papers)} -> {len(out)}")
     return out
+
+
+def _parse_date(s: str) -> datetime:
+    s_norm = s.strip()
+    if not s_norm:
+        raise ValueError("date is required (YYYY/MM/DD)")
+    return datetime.strptime(s_norm, "%Y/%m/%d")
+
+
+def _fmt_date(d: datetime) -> str:
+    return d.strftime("%Y-%m-%d")
+
+
+def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[dict]:
+    """
+    Local filter: require all tokens in query to appear in title/abstract/authors/category.
+    Exclude if any exclude-term appears.
+    """
+    q = query.strip()
+    ex = [e.strip() for e in exclude if e and e.strip()]
+
+    def hay(i: dict) -> str:
+        return " ".join(
+            [
+                clean_text(i.get("title", "")),
+                clean_text(i.get("abstract", "")),
+                clean_text(i.get("category", "")),
+                clean_text(i.get("authors", "")),
+            ]
+        ).lower()
+
+    or_terms = [t for t in re.split(r"\s+OR\s+", q, flags=re.IGNORECASE) if t.strip()]
+    if len(or_terms) > 1:
+        or_terms_clean = [clean_term(t).lower() for t in or_terms]
+        or_terms_clean = [t for t in or_terms_clean if t]
+        out = []
+        for it in items:
+            h = hay(it)
+            if any(e.lower() in h for e in ex):
+                continue
+            if or_terms_clean and not any(t in h for t in or_terms_clean):
+                continue
+            out.append(it)
+        return out
+
+    q_tokens = [clean_term(t).lower() for t in re.split(r"\s+", q) if t.strip()]
+    q_tokens = [t for t in q_tokens if t and t not in {"or", "and"}]
+
+    out = []
+    for it in items:
+        h = hay(it)
+        if any(e.lower() in h for e in ex):
+            continue
+        if q_tokens and not all(t in h for t in q_tokens):
+            continue
+        out.append(it)
+    return out
+
+
+def _to_int_version(v: object | None) -> int:
+    if v is None:
+        return -1
+    if isinstance(v, bool):
+        return -1
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v) if v.is_integer() else -1
+    s = str(v).strip()
+    if not s:
+        return -1
+    if s.isdigit():
+        return int(s)
+    if re.fullmatch(r"\d+\.0+", s):
+        return int(float(s))
+    return -1
+
+
+def fetch_range_stream(
+    server: str,
+    from_date: str,
+    to_date: str,
+    sleep: float,
+    logger: logging.Logger,
+    sess: requests.Session,
+) -> Iterator[tuple[int, list[dict[str, Any]], list[Any]]]:
+    cursor = 0
+    while True:
+        url = f"https://api.biorxiv.org/details/{server}/{from_date}/{to_date}/{cursor}"
+        logger.debug(f"GET {url}")
+        try:
+            r = sess.get(url, timeout=(10, 60))
+            r.raise_for_status()
+        except requests.RequestException as e:
+            logger.warning(f"Request failed (cursor={cursor}, range={from_date}..{to_date}): {e}. Sleep 5s then retry.")
+            time.sleep(5)
+            continue
+
+        js = r.json()
+        col = js.get("collection", []) or []
+        messages = js.get("messages", []) or []
+        yield cursor, col, messages
+
+        try:
+            total = int(messages[0]["total"])
+        except (IndexError, KeyError, TypeError, ValueError):
+            total = None
+        cursor += len(col)
+        if not col or (total is not None and cursor >= total):
+            break
+        if sleep > 0:
+            time.sleep(sleep)
+
+
+def biorxiv_search_papers(
+    server: str, from_date: str, to_date: str, query: str, excludes: list[str],
+    sleep: float, logger: logging.Logger, include_abstract: bool = False,
+) -> list[Paper]:
+    if server not in {"biorxiv", "medrxiv"}:
+        raise typer.BadParameter("server must be biorxiv or medrxiv")
+    start = _parse_date(from_date.replace("-", "/"))
+    end = _parse_date(to_date.replace("-", "/"))
+    if start > end:
+        raise typer.BadParameter("bioRxiv start date must not be after end date")
+    best: dict[str, tuple[tuple[int, str], Paper]] = {}
+    exclude_terms = [clean_term(term) for value in excludes for term in re.split(r"\s+OR\s+", value, flags=re.IGNORECASE)]
+    with make_retry_session() as sess:
+        for _, items, _ in fetch_range_stream(server, _fmt_date(start), _fmt_date(end), sleep, logger, sess):
+            for item in keyword_filter(items, query, exclude_terms):
+                doi = item.get("doi", "") or ""
+                version = item.get("version")
+                version_str = str(version) if version is not None else None
+                url = f"https://www.{server}.org/content/{doi}" if doi else ""
+                if doi and version_str:
+                    url += f"v{version_str}"
+                title = clean_text(item.get("title", ""))
+                posted = clean_text(item.get("date", ""))
+                key = doi.strip().lower() or f"__no_doi__::{url}::{title}".lower()
+                rank = (_to_int_version(version_str), posted or "0000-00-00")
+                if key in best and rank <= best[key][0]:
+                    continue
+                best[key] = (rank, Paper(
+                    pmid="", title=title, journal="bioRxiv" if server == "biorxiv" else "medRxiv",
+                    year=int(posted[:4]) if posted else None, authors=clean_text(item.get("authors", "")),
+                    doi=doi or None,
+                    abstract=(clean_text(item.get("abstract", "")) or None) if include_abstract else None,
+                    pubmed_url=url,
+                ))
+    papers = [paper for rank, paper in sorted(
+        best.values(), key=lambda row: (row[0][1], row[1].doi or ""), reverse=True,
+    )]
+    logger.info("%s collected: %d", server, len(papers))
+    return papers

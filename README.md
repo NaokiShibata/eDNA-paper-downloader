@@ -4,7 +4,7 @@
 [![Python: 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-lightgrey.svg)](#動作環境)
 
-eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして保存するPython CLIツールです。
+eDNA関連の文献・プレプリント情報を収集し、CSVとして保存するPython CLIツールです。
 
 主なスクリプト:
 
@@ -14,12 +14,8 @@ eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして�
   - `Crossref/OpenAlex` は `type` による preprint 除外を実施
   - `--abstract` 有効時は abstract 空レコードを最終出力から除外
   - `--strands-filter` で統合後のAbstractをStrands Deciderで判定し、`out_of_scope` のみ最終出力から除外
-  - 除外した論文は `*.rejected.csv/json` に保存して監査可能
-  - `--run-biorxiv` で `script/biorxiv_search.py` を連続実行可能
-- `script/biorxiv_search.py`
-  - bioRxiv/medRxiv APIで期間取得 (`YYYY/MM/DD`)
-  - DOIごとに最新版のみ採用（デフォルト）
-  - 差分出力 (`*.delta.csv/json`) 対応
+  - 除外した論文は `*.rejected.csv` に保存して監査可能
+  - `--run-biorxiv` で bioRxiv/medRxiv を統合取得可能
 - `script/strands_serve_auto.py`
   - GPU 1 → GPU 0 → CPUの順で計算デバイスを自動選択
   - CPU fallback時は低速になることを明示してから起動
@@ -105,14 +101,6 @@ pixi run strands-device-check
 
 CUDA GPUが利用可能な環境ではGPUを選択し、利用できない環境ではCPU fallbackを明示します。
 
-CUDA利用時の詳細診断が必要な場合だけ、以下を実行してください。
-
-```bash
-pixi run cuda-check
-pixi run cuda-header-check
-pixi run triton-driver-check
-```
-
 TritonはCUDA利用時にDriver API用の小さなC拡張をJITコンパイルするため、`cuda.h` も必要です。
 conda-forgeではこのヘッダを `cuda-cudart-dev` から `targets/x86_64-linux/include/` に配置します。
 
@@ -122,7 +110,6 @@ conda-forgeではこのヘッダを `cuda-cudart-dev` から `targets/x86_64-lin
 
 | タスク | 内容 |
 | --- | --- |
-| `pixi run cuda-check` | PyTorchから見えるCUDA GPUを一覧表示 |
 | `pixi run strands-device-check` | Strands Deciderが選択するGPU/CPUを表示 |
 | `pixi run strands-serve` | GPU 1 → GPU 0 → CPUの順で自動選択し、port 8012にStrands Deciderを起動 |
 | `pixi run strands-health` | 起動中のStrands Decider APIを確認 |
@@ -137,20 +124,12 @@ conda-forgeではこのヘッダを `cuda-cudart-dev` から `targets/x86_64-lin
 ## クイックスタート
 
 ```bash
-# 1) 文献統合取得 (PubMed + Crossref + OpenAlex)
+# 文献統合取得 (PubMed + Crossref + OpenAlex)
 python3 script/edna_literature_fetch.py \
   --email you@example.com \
   --since 2020/01/01 \
   --out-dir results \
   --out-prefix edna_multisource_2020plus
-
-# 2) bioRxiv 単体取得
-python3 script/biorxiv_search.py \
-  --from-date 2024/01/01 \
-  --to-date 2024/12/31 \
-  --query "eDNA" \
-  --out-dir results \
-  --out-prefix biorxiv_edna_2024
 ```
 
 ---
@@ -237,7 +216,7 @@ python3 script/edna_literature_fetch.py \
 
 `--abstract` 有効時は、統合後にEurope PMCでDOIから不足する要旨を補完します。
 `--no-europepmc-abstracts` で補完を無効にできます。
-補完後も要旨がない論文は `{out_prefix}.no_abstract.csv` と `.no_abstract.json` に保存し、主出力とStrands判定から除外します。
+補完後も要旨がない論文は `{out_prefix}.no_abstract.csv` に保存し、主出力とStrands判定から除外します。
 件数はログに表示します。
 
 ### 取得時にStrands Deciderで関連論文を絞り込む
@@ -278,21 +257,18 @@ Strands Decider
         ├─ process_error → retained
         └─ out_of_scope  → rejected
         ↓
-CSV / JSON出力
+CSV出力
 ```
 
 最終出力:
 
 ```text
 results/edna_latest.csv
-results/edna_latest.json
 results/edna_latest.rejected.csv
-results/edna_latest.rejected.json
 results/edna_latest.no_abstract.csv
-results/edna_latest.no_abstract.json
 ```
 
-通常のCSV/JSONには `in_scope` / `unsure` / `process_error` を残し、`out_of_scope` のみ `rejected` 側へ分離します。個別論文の判定エラーは取りこぼし防止のため自動除外しません。
+通常のCSVには `in_scope` / `unsure` / `process_error` を残し、`out_of_scope` のみ `rejected` 側へ分離します。個別論文の判定エラーは取りこぼし防止のため自動除外しません。
 
 `--strands-filter` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
 
@@ -302,18 +278,6 @@ results/edna_latest.no_abstract.json
 設定キー `batch_questions` はデフォルトで `false` です。
 `true` にすると4質問を1リクエストにまとめますが、GPUメモリの使用量が増えます。
 
-
-### CrossrefでDOI補完 (任意)
-
-```bash
-python3 script/edna_literature_fetch.py \
-  --email you@example.com \
-  --since 2020/01/01 \
-  --crossref \
-  --user-agent "edna-literature-fetch/1.0 (mailto:you@example.com)" \
-  --out-dir results \
-  --out-prefix edna_multisource_crossref_fill
-```
 
 ### 色々総まとめ
 
@@ -325,7 +289,6 @@ python3 script/edna_literature_fetch.py \
   --since 2008/01/01 \
   --until 2025/12/31 \
   --abstract \
-  --crossref \
   --crossref-max-items 2000 \
   --openalex-max-items 2000 \
   --run-biorxiv \
@@ -376,122 +339,6 @@ python3 script/edna_literature_fetch.py \
   --log-file logs/edna_multisource.log \
   --log-level INFO
 ```
-
----
-
-## bioRxiv/medRxiv: biorxiv_search.py
-
-`--query`に指定する内容の書き方は、Biorxivの[`Search-Tips`](https://www.biorxiv.org/content/search-tips)を参照下さい。
-
-### ヘルプ
-
-```bash
-python3 script/biorxiv_search.py --help
-```
-
-### 基本例 (bioRxiv 2024)
-
-```bash
-python3 script/biorxiv_search.py \
-  --server biorxiv \
-  --from-date 2024/01/01 \
-  --to-date 2024/12/31 \
-  --query "environmental DNA eDNA" \
-  --out-dir results \
-  --out-prefix biorxiv_edna_2024
-```
-
-### 最新版のみ
-
-同一DOIで複数バージョン (v1, v2, …) がある場合、**versionが最大のものだけ**を残します (デフォルト)。
-
-`--all-versions` を付けると全バージョンを残します。
-
-```bash
-# 最新版のみ (デフォルト)
-python3 script/biorxiv_search.py \
-  --from-date 2024/01/01 --to-date 2024/12/31 \
-  --query "eDNA" \
-  --latest-only
-
-# 全バージョンを保持
-python3 script/biorxiv_search.py \
-  --from-date 2024/01/01 --to-date 2024/12/31 \
-  --query "eDNA" \
-  --all-versions
-```
-
-### 逐次上書き
-
-途中で停止しても最新出力が残るようになっています。
-
-```bash
-python3 script/biorxiv_search.py \
-  --server biorxiv \
-  --from-date 2024/01/01 \
-  --to-date 2024/12/31 \
-  --query "environmental DNA eDNA" \
-  --exclude microbiome \
-  --incremental \
-  --out-dir results \
-  --out-prefix biorxiv_edna_2024
-```
-
-### バッチ処理
-
-週や月単位でのバッチ処理例です。
-
-```bash
-python3 script/biorxiv_search.py \
-  --server biorxiv \
-  --from-date 2024/01/01 \
-  --to-date 2024/12/31 \
-  --batch-unit monthly \
-  --query "environmental DNA eDNA" \
-  --out-dir results \
-  --out-prefix biorxiv_edna_2024
-```
-
-### 差分更新 (既存出力からの更新)
-
-既存出力からの更新処理です。
-既存の `out_prefix.csv/json` がある場合、**新規/更新DOIのみ**を `out_prefix.delta.csv/json` に出力します（デフォルト）。
-
-```bash
-python3 script/biorxiv_search.py \
-  --server biorxiv \
-  --from-date 2024/01/01 \
-  --to-date 2024/12/31 \
-  --query "environmental DNA eDNA" \
-  --update \
-  --write-delta \
-  --out-dir results \
-  --out-prefix biorxiv_edna_2024
-```
-
-### デバッグログ
-
-- doi/title/date/version を詳細表示する DEBUG 実行モードです。
-
-```bash
-python3 script/biorxiv_search.py \
-  --server biorxiv \
-  --from-date 2024/01/01 \
-  --to-date 2024/12/31 \
-  --query "environmental DNA eDNA" \
-  --log-level DEBUG \
-  --debug-max-items 20 \
-  --log-file logs/biorxiv_debug.log \
-  --out-dir results \
-  --out-prefix biorxiv_edna_2024
-```
-
-### 出力列 (日付)
-
-bioRxivの出力には以下が入ります。
-
-- `date` / `posted_date` : 投稿/掲載日 (APIのdate)
-- `retrieved_at` : 取得時刻 (スクリプト実行時)
 
 ---
 
@@ -692,9 +539,7 @@ pixi run e2e-latest14 \
 
 ```text
 e2e_latest14_YYYYMMDD.csv
-e2e_latest14_YYYYMMDD.json
 e2e_latest14_YYYYMMDD.rejected.csv
-e2e_latest14_YYYYMMDD.rejected.json
 e2e_latest14_YYYYMMDD_summary.json
 ```
 

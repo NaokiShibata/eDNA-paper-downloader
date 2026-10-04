@@ -10,13 +10,12 @@ import requests
 import typer
 from tqdm import tqdm
 
-from biorxiv_search import biorxiv_search_papers
 from libs.cli_logging import log_run_header, setup_logger
 from libs.edna_models import Paper
 from libs.sources import (
     _date_range_clause,
+    biorxiv_search_papers,
     build_query_with_excludes,
-    crossref_fill_missing_doi,
     crossref_search_papers,
     europepmc_fill_abstracts,
     merge_papers_by_doi_title,
@@ -115,19 +114,18 @@ def fetch(
         "--strands-base-url",
         help="Override the Strands Decider server URL from config.",
     ),
-    crossref: bool = typer.Option(False, help="Try filling missing DOI via Crossref (heuristic)."),
     user_agent: str | None = typer.Option(
         None,
         help="User-Agent header for Crossref requests.",
     ),
     sleep: float = typer.Option(0.34, min=0.0, help="Sleep seconds between Entrez requests."),
-    out_prefix: str = typer.Option("edna_papers", help="Output prefix (CSV/JSON)."),
+    out_prefix: str = typer.Option("edna_papers", help="Output prefix (CSV)."),
     out_dir: Path = typer.Option(Path("."), help="Output directory."),
     log_level: str = typer.Option("INFO", help="Log level: DEBUG, INFO, WARNING, ERROR"),
     log_file: Path | None = typer.Option(None, help="Write logs to this file as well."),
 ) -> None:
     """
-    Fetch paper metadata from PubMed and export CSV/JSON.
+    Fetch paper metadata from PubMed and export CSV.
     Merge duplicate records by DOI or title.
     """
     until = until or date.today().strftime("%Y/%m/%d")
@@ -214,7 +212,6 @@ def fetch(
         "strands_filter": strands_filter,
         "strands_config": str(strands_config_path) if strands_config_path else None,
         "strands_base_url": strands_cfg.base_url if strands_filter else None,
-        "crossref": crossref,
         "user_agent": user_agent,
         "sleep": sleep,
         "out_prefix": out_prefix,
@@ -305,8 +302,6 @@ def fetch(
         logger.error("No results from selected sources.")
         raise typer.Exit(code=1)
 
-    if crossref:
-        all_papers = crossref_fill_missing_doi(all_papers, user_agent=user_agent, logger=logger)
     papers = merge_papers_by_doi_title(all_papers, logger=logger)
 
     columns = list(Paper.__dataclass_fields__)
@@ -316,7 +311,6 @@ def fetch(
         missing = [p for p in papers if not (p.abstract or "").strip()]
         missing_df = pd.DataFrame([asdict(p) for p in missing], columns=columns)
         missing_df.to_csv(out_dir / f"{out_prefix}.no_abstract.csv", index=False)
-        missing_df.to_json(out_dir / f"{out_prefix}.no_abstract.json", orient="records", force_ascii=False, indent=2)
         logger.info("Records without abstract saved separately: %d", len(missing))
         papers = [p for p in papers if (p.abstract or "").strip()]
 
@@ -388,21 +382,13 @@ def fetch(
             logger.info("Strands cache hits=%d misses=%d", cache.hits, cache.misses)
 
     csv_path = out_dir / f"{out_prefix}.csv"
-    json_path = out_dir / f"{out_prefix}.json"
-
     logger.info(f"Writing CSV: {csv_path}")
     df.to_csv(csv_path, index=False)
 
-    logger.info(f"Writing JSON: {json_path}")
-    df.to_json(json_path, orient="records", force_ascii=False, indent=2)
-
     if rejected_df is not None:
         rejected_csv_path = out_dir / f"{out_prefix}.rejected.csv"
-        rejected_json_path = out_dir / f"{out_prefix}.rejected.json"
         logger.info(f"Writing Strands rejected CSV: {rejected_csv_path}")
         rejected_df.to_csv(rejected_csv_path, index=False)
-        logger.info(f"Writing Strands rejected JSON: {rejected_json_path}")
-        rejected_df.to_json(rejected_json_path, orient="records", force_ascii=False, indent=2)
 
     if strands_filter and rejected_df is not None:
         logger.info(

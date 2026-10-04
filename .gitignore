@@ -13,3 +13,4 @@ test/logs/
 test/config/
 benchmark/*.strands*.csv
 benchmark/*.errors.csv
+results/
