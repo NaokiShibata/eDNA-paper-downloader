@@ -132,6 +132,7 @@ GPU: NVIDIA ...
 | `pixi run strands-serve` | Strands Deciderを `cuda:1` でport 8012に起動 |
 | `pixi run strands-health` | 起動中のStrands Decider APIを確認 |
 | `pixi run strands-screen ...` | `script/strands_flagger.py` を実行 |
+| `pixi run e2e-latest14 ...` | 最新14日の文献取得→Strands判定→簡易検証を通し実行 |
 | `pixi run lint` | Ruff |
 | `pixi run typecheck` | mypy |
 
@@ -575,6 +576,77 @@ Strands固有の診断列:
 
 `flag_confidence` は `P(in_scope)` そのものではありません。採否の検証や閾値調整では
 `strands_p_in_scope` などの確率列も確認してください。
+
+## 最新14日のE2Eテスト
+
+`script/e2e_latest14.py` は、実行日を終点とする最新14日間について、文献取得からStrands Decider判定までを通しで確認します。
+
+Strands Deciderを別ターミナルで起動してから実行します。
+
+```bash
+pixi run strands-serve
+```
+
+別ターミナル:
+
+```bash
+pixi run e2e-latest14 --email you@example.com
+```
+
+`NCBI_EMAIL` を設定している場合は `--email` を省略できます。
+
+```bash
+export NCBI_EMAIL="you@example.com"
+pixi run e2e-latest14
+```
+
+デフォルトでは:
+
+- 実行日を含む直近14日
+- PubMed + Crossref + OpenAlex
+- eDNA / environmental DNA / eRNA / environmental RNA を検索
+- Abstractを持つレコードのみを出力
+- Crossref/OpenAlexは各最大300件
+- 取得後の先頭20件をStrandsで判定
+- `process_error=0`、必要な出力列、件数整合性を検証
+
+全件をStrandsで判定する場合:
+
+```bash
+pixi run e2e-latest14 \
+  --email you@example.com \
+  --screen-limit 0
+```
+
+期間を固定して再現実行する場合:
+
+```bash
+pixi run e2e-latest14 \
+  --email you@example.com \
+  --until-date 2026-10-04 \
+  --days 14
+```
+
+ローカルのStrands設定を使う場合:
+
+```bash
+pixi run e2e-latest14 \
+  --email you@example.com \
+  --config config/strands_flagger.jsonc
+```
+
+生成物はデフォルトで `test/results/` に出力されます。
+
+```text
+e2e_latest14_YYYYMMDD.csv
+e2e_latest14_YYYYMMDD.json
+e2e_latest14_YYYYMMDD_strands.csv
+e2e_latest14_YYYYMMDD_summary.json
+```
+
+正常終了時は最後に `E2E PASS` と取得件数、判定件数、ラベル分布、処理時間を表示します。
+
+---
 
 ## Strands Deciderベンチマーク
 
