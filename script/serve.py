@@ -39,17 +39,17 @@ def _detect_compute(preferred_gpu: int) -> tuple[str, int | None, str]:
 
 
 def _print_selection(device: str, gpu_index: int | None, reason: str) -> None:
-    print(f"[strands-serve] {reason}", flush=True)
+    print(f"[serve] {reason}", flush=True)
     if device == "cuda":
         assert gpu_index is not None
         print(
-            "[strands-serve] "
+            "[serve] "
             f"Using physical GPU {gpu_index}; Strands will see it as logical cuda:0.",
             flush=True,
         )
     else:
         print(
-            "[strands-serve] WARNING: Falling back to CPU explicitly (--device cpu). "
+            "[serve] WARNING: Falling back to CPU explicitly (--device cpu). "
             "Inference will be slower than CUDA.",
             flush=True,
         )
@@ -102,7 +102,7 @@ def main() -> None:
         str(args.port),
     ]
     print(
-        "[strands-serve] Starting: "
+        "[serve] Starting: "
         f"model={args.model} device={strands_device} host={args.host} port={args.port}",
         flush=True,
     )
@@ -111,7 +111,7 @@ def main() -> None:
         os.execvpe(cmd[0], cmd, env)
     except FileNotFoundError as exc:
         print(
-            "[strands-serve] ERROR: strands-decider executable was not found in PATH.",
+            "[serve] ERROR: strands-decider executable was not found in PATH.",
             file=sys.stderr,
             flush=True,
         )

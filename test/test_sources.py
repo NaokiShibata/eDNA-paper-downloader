@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "script"))
 
-import edna_literature_fetch
+import fetch
 from libs.edna_models import Paper
 from libs.sources import (
     _openalex_abstract,
@@ -32,18 +32,18 @@ from libs.sources import (
 
 class SourcesTest(unittest.TestCase):
     def test_sources(self) -> None:
-        self.assertEqual(edna_literature_fetch.parse_sources("pubmed, crossref,openalex,biorxiv,medrxiv"),
+        self.assertEqual(fetch.parse_sources("pubmed, crossref,openalex,biorxiv,medrxiv"),
                          {"pubmed", "crossref", "openalex", "biorxiv", "medrxiv"})
         for value in ("pubmed,unknown", "", "pubmed,"):
             with self.assertRaises(ValueError):
-                edna_literature_fetch.parse_sources(value)
-        result = CliRunner().invoke(edna_literature_fetch.app,
+                fetch.parse_sources(value)
+        result = CliRunner().invoke(fetch.app,
                                     ["--email", "test@example.org", "--sources", "unknown"])
         self.assertEqual(result.exit_code, 2)
         self.assertIn("Unknown sources: unknown", result.output)
 
     def test_days_window(self) -> None:
-        window = edna_literature_fetch.date_window
+        window = fetch.date_window
         self.assertEqual(window(None, "2026-03-01", 2), ("2026/02/28", "2026/03/01"))
         self.assertEqual(window(None, None, 14, date(2026, 10, 4)), ("2026/09/21", "2026/10/04"))
         self.assertEqual(window(None, "2026/01/01", 1), ("2026/01/01", "2026/01/01"))
@@ -114,13 +114,13 @@ class SourcesTest(unittest.TestCase):
                   Paper("123", "Merged", "J", 2026, "", "10.1000/abc", None, "url")]
         bio = Paper("", "Merged", "bioRxiv", 2026, "Author", "10.1000/abc", "Abstract", "bio-url")
         with tempfile.TemporaryDirectory() as directory, \
-                patch("edna_literature_fetch.crossref_search_papers", return_value=papers), \
-                patch("edna_literature_fetch.biorxiv_search_papers", return_value=[bio]) as search, \
-                patch("edna_literature_fetch.europepmc_fill_abstracts", side_effect=lambda papers, **kwargs: papers) as fill, \
-                patch("edna_literature_fetch.default_config_path", return_value=ROOT / "config/strands_flagger.example.jsonc"), \
-                patch("edna_literature_fetch.check_health", return_value={}), \
-                patch("edna_literature_fetch.screen_row", return_value={"flag_label": "in_scope"}) as screen:
-            result = CliRunner().invoke(edna_literature_fetch.app, [
+                patch("fetch.crossref_search_papers", return_value=papers), \
+                patch("fetch.biorxiv_search_papers", return_value=[bio]) as search, \
+                patch("fetch.europepmc_fill_abstracts", side_effect=lambda papers, **kwargs: papers) as fill, \
+                patch("fetch.default_config_path", return_value=ROOT / "config/strands_flagger.example.jsonc"), \
+                patch("fetch.check_health", return_value={}), \
+                patch("fetch.screen_row", return_value={"flag_label": "in_scope"}) as screen:
+            result = CliRunner().invoke(fetch.app, [
                 "--email", "test@example.org", "--since", "2026/01/01", "--until", "2026/01/31",
                 "--sources", "crossref,biorxiv", "--strands",
                 "--out-dir", directory, "--out-prefix", "test",
@@ -145,12 +145,12 @@ class SourcesTest(unittest.TestCase):
     def test_fetch_env_keys_days_and_shared_item_limit(self) -> None:
         paper = Paper("123", "eDNA study", "J", 2026, "", "10.1000/abc", "Abstract", "url")
         with tempfile.TemporaryDirectory() as directory, \
-                patch("edna_literature_fetch.pubmed_search_all_pmids", return_value=["123"]) as pubmed, \
-                patch("edna_literature_fetch.pubmed_fetch_details", return_value=[paper]) as details, \
-                patch("edna_literature_fetch.crossref_search_papers", return_value=[]) as crossref, \
-                patch("edna_literature_fetch.openalex_search_papers", return_value=[]) as openalex, \
-                patch("edna_literature_fetch.europepmc_fill_abstracts", side_effect=lambda papers, **kwargs: papers) as fill:
-            result = CliRunner().invoke(edna_literature_fetch.app, [
+                patch("fetch.pubmed_search_all_pmids", return_value=["123"]) as pubmed, \
+                patch("fetch.pubmed_fetch_details", return_value=[paper]) as details, \
+                patch("fetch.crossref_search_papers", return_value=[]) as crossref, \
+                patch("fetch.openalex_search_papers", return_value=[]) as openalex, \
+                patch("fetch.europepmc_fill_abstracts", side_effect=lambda papers, **kwargs: papers) as fill:
+            result = CliRunner().invoke(fetch.app, [
                 "--days", "14", "--until", "2026-10-04", "--max-items", "42", "--out-dir", directory,
             ], env={"NCBI_EMAIL": "test@example.org", "NCBI_API_KEY": "ncbi-key",
                     "OPENALEX_API_KEY": "openalex-key"})

@@ -45,13 +45,13 @@ def flag(
     abstract_column: str = typer.Option("abstract", "--abstract-column"),
     limit: int | None = typer.Option(None, "--limit", min=1),
     dry_run: bool = typer.Option(False, "--dry-run"),
-    log_file: Path = typer.Option(Path("logs/strands_flagger.log"), "--log-file"),
+    log_file: Path = typer.Option(Path("logs/screen.log"), "--log-file"),
     log_level: str = typer.Option("INFO", "--log-level"),
 ) -> None:
     """Flag eDNA/eRNA papers in a CSV using a running Strands Decider server."""
     config = config or default_config_path()
     out_csv = out_csv or input_csv.with_name(f"{input_csv.stem}.strands.csv")
-    logger = setup_logger("strands_flagger", log_level=log_level, log_file=log_file)
+    logger = setup_logger("screen", log_level=log_level, log_file=log_file)
     logger.info("Strands config: %s", config)
     try:
         cfg = ScreeningConfig.from_sources(load_config(config))
