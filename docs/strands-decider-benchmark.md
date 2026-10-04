@@ -210,3 +210,49 @@ Method-positive 7件、microbial-method-positive 3件、explicit-eDNA-method 2�
 
 この80件は合成benchmarkであり、実運用精度の保証ではありません。
 以後は通常運用で明らかな誤除外が見つかった場合に再検証する方針とします。
+
+## 実データ200件benchmarkでの確認結果
+
+`benchmark/edna_strands_200.review.labeled.csv`（natural 120件 + challenge 80件、人手gold）で、
+現行の閾値（上記の既定値）をtest partitionで評価した結果:
+
+| 指標 | 結果 |
+| --- | ---: |
+| binary gold | 107件 |
+| gold in_scope | 63件 |
+| gold out_of_scope | 44件 |
+| hard false negative | 0件 |
+| operational recall | 1.000 |
+| auto coverage | 0.626 |
+| manual review rate | 0.374 |
+| auto accuracy | 0.925 |
+| in-scope precision | 0.896 |
+
+calibration partition（86件）で除外閾値を探索すると、
+`exclude_actual_use_max=0.60`、`exclude_method_relevance_max=0.80` が提案されました
+（`benchmark/edna_strands_200.thresholds.json`）。
+ただしtest partitionでの改善は自動除外が19件から20件に増える1件のみで、
+`exclude_method_relevance_max=0.80` は探索範囲の上限でもあるため、Recall重視の方針から既定値は変更していません。
+
+False Positive 5件はいずれもmicrobial community profiling系（土壌真菌、ブロメリア貯水の微生物群集、
+有害微細藻類群集、16S定量）と、魚類の捕食検出PCRでした。
+`microbial_only` を `in_scope` の追加条件にする案も検証しましたが、
+これらの論文では `P(microbial_only)` が0.5未満のため効果はありませんでした。
+改善するには `microbial_only` の質問文の見直し（`PROMPT_VERSION` の更新を伴う）が必要です。
+
+再現手順:
+
+```bash
+pixi run strands-screen benchmark/edna_strands_200.review.csv \
+  --config config/strands_flagger.example.jsonc \
+  --out-csv benchmark/edna_strands_200.strands.v2.csv
+pixi run benchmark-eval benchmark/edna_strands_200.review.labeled.csv \
+  benchmark/edna_strands_200.strands.v2.csv \
+  --manifest benchmark/edna_strands_200.manifest.csv --partition test \
+  --out-errors benchmark/edna_strands_200.errors.csv \
+  --out-json benchmark/edna_strands_200.metrics.json
+pixi run benchmark-tune benchmark/edna_strands_200.review.labeled.csv \
+  benchmark/edna_strands_200.strands.v2.csv \
+  --manifest benchmark/edna_strands_200.manifest.csv --max-hard-fn 0 \
+  --out-json benchmark/edna_strands_200.thresholds.json
+```

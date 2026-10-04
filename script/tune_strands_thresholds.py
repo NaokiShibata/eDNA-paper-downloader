@@ -68,6 +68,10 @@ def tune(
     """
     gold = pd.read_csv(gold_csv, dtype=str, keep_default_na=False)
     pred = pd.read_csv(predictions_csv, dtype=str, keep_default_na=False)
+    pred_count = len(pred)
+    pred = pred.drop_duplicates(subset="flag_record_id", keep="last")
+    if dropped := pred_count - len(pred):
+        typer.echo(f"Dropped {dropped} duplicate prediction rows")
     manifest = pd.read_csv(manifest_csv, dtype=str, keep_default_na=False)
 
     required_gold = {"benchmark_record_id", "gold_label"}
