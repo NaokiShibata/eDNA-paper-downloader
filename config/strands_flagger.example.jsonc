@@ -16,15 +16,15 @@
   "timeout": 120.0,
   "retries": 3,
 
-  // Recall-oriented thresholds.
+  // Recall-oriented thresholds validated on the synthetic benchmark.
   // A paper is auto-included only when both the scope probability and actual-use
-  // probability pass their thresholds. Auto-exclusion is intentionally stricter;
-  // ambiguous cases become "unsure" for manual review.
+  // probability pass their thresholds. Auto-exclusion remains guarded by actual-use
+  // and method-relevance probabilities; ambiguous cases become "unsure" for manual review.
   "include_threshold": 0.70,
   "actual_use_threshold": 0.60,
-  "exclude_threshold": 0.90,
-  "exclude_actual_use_max": 0.15,
-  "exclude_method_relevance_max": 0.30,
+  "exclude_threshold": 0.50,
+  "exclude_actual_use_max": 0.50,
+  "exclude_method_relevance_max": 0.60,
 
   // Batching / resume
   "batch_size": null,
