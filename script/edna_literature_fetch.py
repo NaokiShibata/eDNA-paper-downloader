@@ -191,7 +191,7 @@ def fetch(
     out_dir: Path = typer.Option(Path("."), help="Output directory."),
     log_level: str = typer.Option("INFO", help="Log level: DEBUG, INFO, WARNING, ERROR"),
     log_file: Path | None = typer.Option(None, help="Write logs to this file as well."),
-):
+) -> None:
     """
     Fetch paper metadata from PubMed and export CSV/JSON.
     If DOI duplicates occur, keeps the record with newest (year, PMID).
