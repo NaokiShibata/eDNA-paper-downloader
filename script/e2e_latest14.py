@@ -198,9 +198,7 @@ def run(
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     retained_csv = out_dir_path / f"{prefix}.csv"
-    retained_json = out_dir_path / f"{prefix}.json"
     rejected_csv = out_dir_path / f"{prefix}.rejected.csv"
-    rejected_json = out_dir_path / f"{prefix}.rejected.json"
     summary_json = out_dir_path / f"{prefix}_summary.json"
     fetch_log = logs_dir / f"{prefix}.fetch.log"
 
@@ -222,7 +220,7 @@ def run(
         f"device={health.get('device')}"
     )
 
-    for path in (retained_csv, retained_json, rejected_csv, rejected_json):
+    for path in (retained_csv, rejected_csv):
         if path.exists():
             path.unlink()
 
@@ -286,9 +284,7 @@ def run(
         },
         "artifacts": {
             "retained_csv": str(retained_csv),
-            "retained_json": str(retained_json),
             "rejected_csv": str(rejected_csv),
-            "rejected_json": str(rejected_json),
             "fetch_log": str(fetch_log),
         },
     }

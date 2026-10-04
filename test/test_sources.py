@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import csv
 import logging
 import sys
 import tempfile
@@ -14,16 +14,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "script"))
 
 import edna_literature_fetch
-from biorxiv_search import biorxiv_search_papers, fetch_range_stream, keyword_filter
 from libs.edna_models import Paper
 from libs.sources import (
     _openalex_abstract,
     _parse_europepmc,
     _query_terms,
     _to_openalex_query,
-    crossref_fill_missing_doi,
+    biorxiv_search_papers,
     crossref_search_papers,
     europepmc_fill_abstracts,
+    fetch_range_stream,
+    keyword_filter,
     merge_papers_by_doi_title,
 )
 
@@ -102,14 +103,14 @@ class SourcesTest(unittest.TestCase):
                 "--out-dir", directory, "--out-prefix", "test",
             ])
             self.assertEqual(result.exit_code, 0, result.output)
-            retained = json.loads((Path(directory) / "test.json").read_text())
-            missing = json.loads((Path(directory) / "test.no_abstract.json").read_text())
+            retained = list(csv.DictReader((Path(directory) / "test.csv").read_text().splitlines()))
+            missing = list(csv.DictReader((Path(directory) / "test.no_abstract.csv").read_text().splitlines()))
             self.assertEqual(len(retained), 1)
             self.assertEqual(retained[0]["abstract"], "Abstract")
             self.assertEqual(retained[0]["pmid"], "123")
             self.assertEqual(missing[0]["title"], "Missing 要旨")
             self.assertTrue((Path(directory) / "test.no_abstract.csv").exists())
-            self.assertEqual(json.loads((Path(directory) / "test.rejected.json").read_text()), [])
+            self.assertEqual(list(csv.DictReader((Path(directory) / "test.rejected.csv").read_text().splitlines())), [])
             screen.assert_called_once()
             fill.assert_called_once()
             self.assertEqual(search.call_args.kwargs["from_date"], "2026/01/01")
@@ -193,7 +194,7 @@ class SourcesTest(unittest.TestCase):
     def test_biorxiv_adapter_latest_version_and_dates(self) -> None:
         items = [{"doi": "10.1000/abc", "title": "eDNA", "date": "2026-01-01", "version": "1"},
                  {"doi": "10.1000/abc", "title": "eDNA", "abstract": "Latest", "date": "2026-01-02", "version": "2"}]
-        with patch("biorxiv_search.fetch_range_stream", return_value=iter([(0, items, [])])) as fetch:
+        with patch("libs.sources.fetch_range_stream", return_value=iter([(0, items, [])])) as fetch:
             papers = biorxiv_search_papers("medrxiv", "2026/01/01", "2026-01-31", "eDNA", [], 0,
                                           logging.getLogger("test"), include_abstract=True)
         self.assertEqual(len(papers), 1)
@@ -201,29 +202,6 @@ class SourcesTest(unittest.TestCase):
         self.assertEqual(papers[0].pubmed_url, "https://www.medrxiv.org/content/10.1000/abcv2")
         self.assertEqual(fetch.call_args.args[1:3], ("2026-01-01", "2026-01-31"))
 
-    def test_crossref_fill_accepts_normalized_title_match(self) -> None:
-        paper = Paper("123", "Environmental DNA: A study", "Journal", 2026, "Author", None, None, "")
-        with patch("libs.sources.make_retry_session") as make_session:
-            make_session.return_value.get.return_value.json.return_value = {
-                "message": {"items": [{
-                    "title": ["ENVIRONMENTAL DNA: A study!"],
-                    "DOI": "https://doi.org/10.1000/ABC",
-                }]},
-            }
-            result = crossref_fill_missing_doi([paper], user_agent="test", sleep=0)
-        self.assertEqual(result, [Paper(**{**paper.__dict__, "doi": "10.1000/abc"})])
-        self.assertIsNone(paper.doi)
-        make_session.assert_called_once_with()
-
-    def test_crossref_fill_rejects_different_title(self) -> None:
-        paper = Paper("123", "Environmental DNA: A study", "Journal", 2026, "Author", None, None, "")
-        with patch("libs.sources.make_retry_session") as make_session:
-            make_session.return_value.get.return_value.json.return_value = {
-                "message": {"items": [{"title": ["A different study"], "DOI": "10.1000/abc"}]},
-            }
-            result = crossref_fill_missing_doi([paper], user_agent="test", sleep=0)
-        self.assertIs(result[0], paper)
-        self.assertIsNone(result[0].doi)
 
 
 if __name__ == "__main__":

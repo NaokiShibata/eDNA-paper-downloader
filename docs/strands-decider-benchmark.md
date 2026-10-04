@@ -162,11 +162,11 @@ pixi run strands-screen \
 
 ```bash
 pixi run benchmark-tune \
-  benchmark/strands_benchmark_80_gold.csv \
-  benchmark/strands_benchmark_80.strands.csv \
-  --manifest benchmark/strands_benchmark_80_manifest.csv \
+  benchmark/edna_strands_200.review.labeled.csv \
+  benchmark/edna_strands_200.strands.v3.csv \
+  --manifest benchmark/edna_strands_200.manifest.csv \
   --max-hard-fn 0 \
-  --out-json benchmark/strands_benchmark_80.thresholds.json
+  --out-json benchmark/edna_strands_200.thresholds.json
 ```
 
 `benchmark-tune` はinclusion側の閾値を固定し、以下を探索します。
@@ -181,40 +181,13 @@ pixi run benchmark-tune \
 
 ```bash
 pixi run benchmark-eval \
-  benchmark/strands_benchmark_80_gold.csv \
-  benchmark/strands_benchmark_80.strands.methodsafe.csv \
-  --manifest benchmark/strands_benchmark_80_manifest.csv \
+  benchmark/edna_strands_200.review.labeled.csv \
+  benchmark/edna_strands_200.strands.v3.csv \
+  --manifest benchmark/edna_strands_200.manifest.csv \
   --partition test \
-  --out-errors benchmark/strands_benchmark_80.methodsafe.errors.csv \
-  --out-json benchmark/strands_benchmark_80.methodsafe.metrics.json
+  --out-errors benchmark/edna_strands_200.v3.test.errors.csv \
+  --out-json benchmark/edna_strands_200.v3.test.metrics.json
 ```
-
-## 合成80件benchmarkでの確認結果
-
-Method系を安全側に残す設定
-`exclude_threshold=0.50`、`exclude_actual_use_max=0.50`、
-`exclude_method_relevance_max=0.60` をtest partitionで確認した結果:
-
-| 指標 | 結果 |
-| --- | ---: |
-| binary gold | 46件 |
-| gold in_scope | 24件 |
-| gold out_of_scope | 22件 |
-| hard false negative | 0件 |
-| operational recall | 1.000 |
-| auto coverage | 0.674 |
-| manual review rate | 0.326 |
-| auto accuracy | 0.968 |
-| in-scope precision | 0.958 |
-
-Method-positive 7件、microbial-method-positive 3件、explicit-eDNA-method 2件はいずれも正しく保持されました。
-
-一方、genericなmicrobial/metatranscriptomics研究を `in_scope` とするFalse Positiveが1件ありました。
-これは必要論文を捨てるFalse Negativeではなく余分な人手確認につながる誤差なので、
-今回のRecall重視の運用では追加ルールを増やさず許容しています。
-
-この80件は合成benchmarkであり、実運用精度の保証ではありません。
-以後は通常運用で明らかな誤除外が見つかった場合に再検証する方針とします。
 
 ## 実データ200件benchmarkでの確認結果
 
