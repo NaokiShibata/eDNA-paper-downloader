@@ -5,9 +5,9 @@ import io
 import logging
 import re
 import time
-from functools import partial
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict
+from functools import partial
 from typing import Any
 
 import requests
