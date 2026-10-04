@@ -55,7 +55,8 @@ def tune(
     gold_csv: Path = typer.Argument(..., exists=True, dir_okay=False),
     predictions_csv: Path = typer.Argument(..., exists=True, dir_okay=False),
     manifest_csv: Path = typer.Option(..., "--manifest", exists=True, dir_okay=False),
-    include_threshold: float = typer.Option(0.70, "--include-threshold"),
+    include_threshold: float = typer.Option(0.45, "--include-threshold"),
+    include_microbial_only_max: float = typer.Option(0.35, "--include-microbial-only-max"),
     actual_use_threshold: float = typer.Option(0.60, "--actual-use-threshold"),
     max_hard_fn: int = typer.Option(0, "--max-hard-fn", min=0),
     max_results: int = typer.Option(20, "--max-results", min=1),
@@ -80,6 +81,7 @@ def tune(
         "strands_p_in_scope",
         "strands_p_out_of_scope",
         "strands_p_actual_use",
+        "strands_p_microbial_only",
         "strands_p_method_relevance",
     }
     required_manifest = {"benchmark_record_id", "benchmark_partition"}
@@ -114,6 +116,7 @@ def tune(
         "strands_p_in_scope",
         "strands_p_out_of_scope",
         "strands_p_actual_use",
+        "strands_p_microbial_only",
         "strands_p_method_relevance",
     ]:
         frame[col] = pd.to_numeric(frame[col], errors="coerce")
@@ -122,6 +125,7 @@ def tune(
             "strands_p_in_scope",
             "strands_p_out_of_scope",
             "strands_p_actual_use",
+            "strands_p_microbial_only",
             "strands_p_method_relevance",
         ]
     )
@@ -142,10 +146,12 @@ def tune(
                 float(row["strands_p_out_of_scope"]),
                 float(row["strands_p_actual_use"]),
                 float(row["strands_p_method_relevance"]),
+                float(row["strands_p_microbial_only"]),
                 **thresholds,
             ),
             axis=1,
             include_threshold=include_threshold,
+            include_microbial_only_max=include_microbial_only_max,
             actual_use_threshold=actual_use_threshold,
             exclude_threshold=ex,
             exclude_actual_use_max=au,
@@ -209,6 +215,7 @@ def tune(
         top = json.loads(result.head(max_results).to_json(orient="records", force_ascii=False, indent=2))
         payload = {
             "fixed_include_threshold": include_threshold,
+            "fixed_include_microbial_only_max": include_microbial_only_max,
             "fixed_actual_use_threshold": actual_use_threshold,
             "max_hard_fn": max_hard_fn,
             "best": top[0],

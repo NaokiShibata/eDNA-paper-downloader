@@ -7,26 +7,31 @@ benchmark作成、gold label付与、閾値調整、評価手順をまとめま�
 
 ## 現在の判定閾値
 
-Method系の関連論文を誤って除外しにくいことを優先し、現在は以下をデフォルトとしています。
+`PROMPT_VERSION = "strands-v3"` では、実データ200件benchmarkのcalibration partitionで選んだ以下をデフォルトとしています。
 
 ```json
 {
-  "include_threshold": 0.70,
+  "include_threshold": 0.45,
+  "include_microbial_only_max": 0.35,
   "actual_use_threshold": 0.60,
   "exclude_threshold": 0.50,
   "exclude_actual_use_max": 0.50,
-  "exclude_method_relevance_max": 0.60
+  "exclude_method_relevance_max": 0.60,
+  "max_abstract_chars": 6000
 }
 ```
 
 判定は次の方針です。
 
-- `in_scope`: `P(in_scope) >= 0.70` かつ `P(actual_use) >= 0.60`
+- モデルへの入力は `Title: ...` と `Abstract: ...` の両方（gold付与と同じ情報）
+- `in_scope`: `P(in_scope) >= 0.45`、`P(actual_use) >= 0.60`、`P(microbial_only) < 0.35` をすべて満たす
 - `out_of_scope`: `P(out_of_scope) >= 0.50`、`P(actual_use) <= 0.50`、
-  `P(method_relevance) <= 0.60` をすべて満たす
+  `P(method_relevance) <= 0.60` をすべて満たす。ただしAbstractが300文字未満の場合は自動除外しない
 - それ以外: `unsure` として人手確認
 
-`microbial_only` は診断値として保存しますが、現時点では最終ラベルの条件には使用しません。
+`include_microbial_only_max` は感度が高く、0.25に下げると人手確認率がほぼ倍になります。
+`max_abstract_chars` を外すと、非常に長いAbstractでサーバの最大長（4096 token）を超え、
+CUDA device-side assertでサーバが使用不能になることがあります。
 
 ## Benchmarkの考え方
 
@@ -213,46 +218,54 @@ Method-positive 7件、microbial-method-positive 3件、explicit-eDNA-method 2�
 
 ## 実データ200件benchmarkでの確認結果
 
-`benchmark/edna_strands_200.review.labeled.csv`（natural 120件 + challenge 80件、人手gold）で、
-現行の閾値（上記の既定値）をtest partitionで評価した結果:
+`benchmark/edna_strands_200.review.labeled.csv`（natural 120件 + challenge 80件、人手gold）で評価しました。
 
-| 指標 | 結果 |
-| --- | ---: |
-| binary gold | 107件 |
-| gold in_scope | 63件 |
-| gold out_of_scope | 44件 |
-| hard false negative | 0件 |
-| operational recall | 1.000 |
-| auto coverage | 0.626 |
-| manual review rate | 0.374 |
-| auto accuracy | 0.925 |
-| in-scope precision | 0.896 |
+### Gold labelの修正
 
-calibration partition（86件）で除外閾値を探索すると、
-`exclude_actual_use_max=0.60`、`exclude_method_relevance_max=0.80` が提案されました
-（`benchmark/edna_strands_200.thresholds.json`）。
-ただしtest partitionでの改善は自動除外が19件から20件に増える1件のみで、
-`exclude_method_relevance_max=0.80` は探索範囲の上限でもあるため、Recall重視の方針から既定値は変更していません。
+当初のgoldでは、eDNAが主題のレビュー・展望・書籍・論説・会議報告24件が `in_scope` になっていましたが、
+上記の基準（自ら環境DNA/RNAを解析していない研究は `out_of_scope`）に合わせて `out_of_scope` へ修正しました
+（calibration 10件、test 14件）。該当行の `gold_note` に理由を記録しています。
 
-False Positive 5件はいずれもmicrobial community profiling系（土壌真菌、ブロメリア貯水の微生物群集、
-有害微細藻類群集、16S定量）と、魚類の捕食検出PCRでした。
-`microbial_only` を `in_scope` の追加条件にする案も検証しましたが、
-これらの論文では `P(microbial_only)` が0.5未満のため効果はありませんでした。
-改善するには `microbial_only` の質問文の見直し（`PROMPT_VERSION` の更新を伴う）が必要です。
+### strands-v2からstrands-v3への変更
+
+calibration partitionだけで質問文と閾値を比較し、以下を採用しました。
+
+- scope: レビュー類、host-associated microbiome、消化管内容物DNA、汎用的な微生物群集解析を `out_of_scope` と明記
+- actual_use: レビュー類は自らの解析がないため `false` と明記
+- microbial_only: 微生物群集の記述が主目的かを直接問う形に変更し、`in_scope` の追加条件に使用
+- method_relevance: 論文自身のデータで手法を検証しているかを問う形に変更
+- 入力にタイトルを追加。Abstractが途中で切れた論文（B0162）が、v3の質問文でもAbstractだけでは自動除外されていたため
+- 300文字未満のAbstractは自動除外しない安全策を追加
+
+### Test partitionの結果（修正後gold、107件）
+
+| 指標 | strands-v2 + 旧閾値 | strands-v3 |
+| --- | ---: | ---: |
+| hard false negative | 0件 | 0件 |
+| false positive | 12件 | 2件 |
+| 自動除外できたgold-negative | 19件 / 58件 | 36件 / 58件 |
+| manual review rate | 0.374 | 0.252 |
+| auto accuracy | 0.821 | 0.975 |
+| in-scope precision | 0.750 | 0.955 |
+| operational recall | 1.000 | 1.000 |
+
+test partitionは質問文の比較途中で一度参照しています（タイトル追加の前後）。
+タイトル追加は入力の不一致の修正であり閾値はすべてcalibrationで決めていますが、test結果はやや楽観的な可能性があります。
+
+300文字未満の安全策は、このbenchmarkでは正しい自動除外7件を `unsure` に回しており、防いだ誤除外はありません。
+Recall優先の方針から残していますが、人手確認を減らしたい場合は外す候補です。
+
+最新14日E2E（141件）では、v2の `in_scope=59 / unsure=65 / out_of_scope=17` が
+v3で `in_scope=61 / unsure=40 / out_of_scope=40` になりました。
 
 再現手順:
 
 ```bash
 pixi run strands-screen benchmark/edna_strands_200.review.csv \
   --config config/strands_flagger.example.jsonc \
-  --out-csv benchmark/edna_strands_200.strands.v2.csv
+  --out-csv benchmark/edna_strands_200.strands.v3.csv
 pixi run benchmark-eval benchmark/edna_strands_200.review.labeled.csv \
-  benchmark/edna_strands_200.strands.v2.csv \
+  benchmark/edna_strands_200.strands.v3.csv \
   --manifest benchmark/edna_strands_200.manifest.csv --partition test \
-  --out-errors benchmark/edna_strands_200.errors.csv \
-  --out-json benchmark/edna_strands_200.metrics.json
-pixi run benchmark-tune benchmark/edna_strands_200.review.labeled.csv \
-  benchmark/edna_strands_200.strands.v2.csv \
-  --manifest benchmark/edna_strands_200.manifest.csv --max-hard-fn 0 \
-  --out-json benchmark/edna_strands_200.thresholds.json
+  --out-json benchmark/edna_strands_200.v3.test.metrics.json
 ```

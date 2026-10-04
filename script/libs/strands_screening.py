@@ -13,7 +13,8 @@ import requests
 
 from libs.text_normalize import clean_doi
 
-PROMPT_VERSION = "strands-v2"
+PROMPT_VERSION = "strands-v3"
+MIN_ABSTRACT_CHARS_FOR_EXCLUSION = 300
 DEFAULT_BASE_URL = "http://127.0.0.1:8012"
 
 
@@ -22,12 +23,13 @@ class ScreeningConfig:
     base_url: str = DEFAULT_BASE_URL
     timeout: float = 120.0
     retries: int = 3
-    include_threshold: float = 0.70
+    include_threshold: float = 0.45
+    include_microbial_only_max: float = 0.35
     actual_use_threshold: float = 0.60
     exclude_threshold: float = 0.50
     exclude_actual_use_max: float = 0.50
     exclude_method_relevance_max: float = 0.60
-    max_abstract_chars: int | None = None
+    max_abstract_chars: int | None = 6000
     batch_questions: bool = False
 
     @classmethod
@@ -53,38 +55,42 @@ QUESTIONS: dict[str, dict[str, Any]] = {
     "scope": {
         "type": "choice",
         "instructions": (
-            "Classify whether this scientific abstract should be retained as environmental DNA (eDNA) "
-            "or environmental RNA (eRNA) research. Judge what the study actually does, not whether the "
-            "terms eDNA, eRNA, environmental DNA, or environmental RNA literally appear."
+            "Classify whether this scientific abstract should be retained as environmental DNA (eDNA) or "
+            "environmental RNA (eRNA) research. Judge what the study actually does, not whether the terms eDNA, "
+            "eRNA, environmental DNA, or environmental RNA literally appear."
         ),
         "criteria": {
             "in_scope": (
-                "The study actually collects, detects, quantifies, sequences, analyzes, validates, compares, "
-                "or models DNA or RNA obtained directly from an environmental sample or environmental matrix. "
-                "Examples include water, seawater, freshwater, sediment, soil, air, snow, ice, wastewater, "
-                "biofilms, passive samplers, environmental swabs, dust, or similar material. Include studies "
-                "using these nucleic acids to detect or characterize organisms, taxa, populations, communities, "
-                "biodiversity, biological signals, pathogens, or ecological patterns. The eDNA/eRNA terminology "
-                "does not need to be explicit."
+                "The study actually collects, detects, quantifies, sequences, analyzes, validates, compares, or "
+                "models DNA or RNA obtained directly from an environmental sample or environmental matrix. Examples "
+                "include water, seawater, freshwater, sediment, soil, air, snow, ice, wastewater, biofilms, passive "
+                "samplers, environmental swabs, dust, or similar material. Include studies using these nucleic acids "
+                "to detect or characterize organisms, taxa, populations, communities, biodiversity, biological "
+                "signals, pathogens, or ecological patterns. The eDNA/eRNA terminology does not need to be explicit. "
+                "The study must report its own primary data from such environmental samples."
             ),
             "out_of_scope": (
-                "The study does not actually analyze environmentally obtained DNA or RNA. This includes studies "
-                "based only on tissue, blood, isolated organisms, cultured strains, museum specimens, individual "
-                "genomes, ordinary transcriptomics, or studies that mention eDNA/eRNA only in the background, "
+                "The study does not itself analyze environmentally obtained DNA or RNA. This includes reviews, "
+                "systematic reviews, meta-analyses of published studies, perspectives, opinion pieces, editorials, "
+                "book chapters, and conference reports, even when eDNA/eRNA is their main subject; studies based only"
+                " on tissue, blood, isolated organisms, cultured strains, museum specimens, individual genomes, "
+                "ordinary transcriptomics, diet or gut-content DNA, or host-associated microbiomes (gut, skin, plant "
+                "or fruit surfaces); generic profiling of microbial communities (bacteria, archaea, fungi, "
+                "microalgae, protists, viruses) or metagenomics/metatranscriptomics without an eDNA/eRNA detection, "
+                "monitoring, or methodological purpose; and studies that mention eDNA/eRNA only in the background, "
                 "discussion, comparison, citation, or future work."
             ),
             "unsure": (
-                "The abstract does not provide enough information to determine whether environmentally obtained "
-                "DNA or RNA was actually collected or analyzed. Prefer unsure over guessing when evidence is "
-                "ambiguous."
+                "The abstract does not provide enough information to determine whether environmentally obtained DNA "
+                "or RNA was actually collected or analyzed. Prefer unsure over guessing when evidence is ambiguous."
             ),
         },
     },
     "actual_use": {
         "type": "noul",
         "instructions": (
-            "Does the study actually collect or analyze DNA or RNA obtained directly from an environmental "
-            "sample or environmental matrix as part of its methods or results?"
+            "Does the study actually collect or analyze DNA or RNA obtained directly from an environmental sample"
+            " or environmental matrix as part of its methods or results?"
         ),
         "criteria": {
             "true": (
@@ -92,23 +98,27 @@ QUESTIONS: dict[str, dict[str, Any]] = {
                 "sequenced, analyzed, compared, validated, or modeled."
             ),
             "false": (
-                "No environmental nucleic-acid analysis is actually performed, or it is only mentioned as "
-                "background, comparison, or future work."
+                "No environmental nucleic-acid analysis is performed by the authors in this study. Reviews, meta-"
+                "analyses of published studies, perspectives, editorials, book chapters, and conference reports are "
+                "false even if they discuss eDNA/eRNA methods in depth. Also false when eDNA/eRNA is only background,"
+                " comparison, or future work."
             ),
         },
     },
     "microbial_only": {
         "type": "noul",
         "instructions": (
-            "Is this primarily a conventional microbiome, microbial-community, metagenomic, or metatranscriptomic "
-            "study in which environmental DNA/RNA is simply source material, without a specific eDNA/eRNA "
-            "detection, monitoring, sampling, quantification, validation, or ecological-inference focus?"
+            "Is this primarily a study of microbial communities (bacteria, archaea, fungi, microalgae, protists, "
+            "or viruses) or of microbiomes, metagenomes, or metatranscriptomes, where nucleic acids are simply "
+            "the source material and the study is not framed as eDNA/eRNA detection, monitoring, sampling, or "
+            "method development?"
         ),
         "criteria": {
             "true": (
-                "The main goal is general microbial community profiling, microbiome composition, shotgun "
-                "metagenomics, MAG reconstruction, resistome/virome profiling, or similar work, without a clear "
-                "eDNA/eRNA-oriented detection, monitoring, or methodological contribution."
+                "The main goal is to describe microbial community composition, diversity, function, or responses to "
+                "environmental factors (e.g. soil fungal diversity, harmful algal assemblages, bacterial communities "
+                "in water or sediment, MAGs, resistomes, viromes), without an explicit eDNA/eRNA detection, "
+                "monitoring, or methodological contribution."
             ),
             "false": (
                 "The study is not merely generic microbial profiling, or it has a meaningful eDNA/eRNA detection, "
@@ -120,16 +130,21 @@ QUESTIONS: dict[str, dict[str, Any]] = {
     "method_relevance": {
         "type": "noul",
         "instructions": (
-            "Even if the study focuses on microorganisms or an adjacent field, does it evaluate a sampling, "
-            "preservation, extraction, detection, amplification, sequencing, quantification, bioinformatic, "
-            "modeling, or monitoring approach that could be directly useful for eDNA/eRNA research?"
+            "Does the study itself develop, evaluate, compare, or validate a sampling, preservation, extraction, "
+            "detection, amplification, sequencing, quantification, bioinformatic, or modeling method for DNA or "
+            "RNA recovered from environmental samples (water, sediment, soil, air, wastewater, biofilm, swabs, or"
+            " similar), using its own data?"
         ),
         "criteria": {
             "true": (
-                "The methodological findings are directly transferable or informative for environmental DNA/RNA "
-                "sampling, preservation, detection, quantification, sequencing, analysis, modeling, or monitoring."
+                "The paper's own experiments or field data directly test or validate such a method on environmental "
+                "DNA/RNA."
             ),
-            "false": "There is no clear methodological relevance to eDNA/eRNA work.",
+            "false": (
+                "No such method is tested with the paper's own data. Reviews, perspectives, editorials, clinical or "
+                "diagnostic assays on patient material, tissue or specimen analyses, phylogenetics, and environmental"
+                " policy, chemistry, or ecology without environmental nucleic-acid methods are false."
+            ),
         },
     },
 }
@@ -310,6 +325,12 @@ def prepare_abstract(value: str, max_chars: int | None) -> str:
     return f"{text[:head_len].rstrip()} ... {text[-tail_len:].lstrip()}"
 
 
+def build_state(meta: Mapping[str, str], cfg: ScreeningConfig, abstract_column: str = "abstract") -> str:
+    abstract = prepare_abstract(meta.get(abstract_column, ""), cfg.max_abstract_chars)
+    title = (meta.get("title") or "").strip()
+    return f"Title: {title}\nAbstract: {abstract}" if title else abstract
+
+
 def check_health(
     session: requests.Session,
     base_url: str,
@@ -406,13 +427,19 @@ def decide_label(
     p_out_of_scope: float,
     p_actual_use: float,
     p_method_relevance: float,
+    p_microbial_only: float,
     include_threshold: float,
+    include_microbial_only_max: float,
     actual_use_threshold: float,
     exclude_threshold: float,
     exclude_actual_use_max: float,
     exclude_method_relevance_max: float,
 ) -> str:
-    if p_in_scope >= include_threshold and p_actual_use >= actual_use_threshold:
+    if (
+        p_in_scope >= include_threshold
+        and p_actual_use >= actual_use_threshold
+        and p_microbial_only < include_microbial_only_max
+    ):
         return "in_scope"
     if (
         p_out_of_scope >= exclude_threshold
@@ -481,7 +508,9 @@ def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[st
         p_out_of_scope=p_out_of_scope,
         p_actual_use=p_actual_use,
         p_method_relevance=p_method_relevance,
+        p_microbial_only=p_microbial_only,
         include_threshold=cfg.include_threshold,
+        include_microbial_only_max=cfg.include_microbial_only_max,
         actual_use_threshold=cfg.actual_use_threshold,
         exclude_threshold=cfg.exclude_threshold,
         exclude_actual_use_max=cfg.exclude_actual_use_max,
@@ -526,12 +555,15 @@ def screen_row(
         try:
             scores = cache.get(result["flag_record_id"]) if cache is not None else None
             if scores is None:
-                scores = evaluate_abstract(session, abstract, cfg)
+                scores = evaluate_abstract(session, build_state(meta, cfg, abstract_column), cfg)
                 labels = apply_thresholds(scores, cfg)
                 if cache is not None:
                     cache.put(result["flag_record_id"], scores)
             else:
                 labels = apply_thresholds(scores, cfg)
+            if len(abstract) < MIN_ABSTRACT_CHARS_FOR_EXCLUSION and labels["flag_label"] == "out_of_scope":
+                labels["flag_label"] = "unsure"
+                labels["flag_reason"] = "unsure: abstract too short to exclude; " + labels["flag_reason"]
             return result | scores | labels
         except Exception as exc:
             label, reason = "process_error", str(exc)

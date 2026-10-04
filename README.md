@@ -574,19 +574,20 @@ cp config/strands_flagger.example.jsonc config/strands_flagger.jsonc
 ```
 
 デフォルトではCSVの `abstract` 列を使用します。
-`max_abstract_chars=null` の場合はAbstract全文を渡します。長い入力を意図的に切り詰めたい場合だけ文字数を指定してください。
+モデルにはタイトルとAbstractを渡します。`max_abstract_chars` のデフォルトは `6000` です。外すと非常に長いAbstractでサーバの最大長を超え、サーバが使用不能になることがあります。
 
 主な閾値:
 
 | 設定キー | デフォルト | 意味 |
 | --- | ---: | --- |
-| `include_threshold` | `0.70` | `P(in_scope)` の自動採用閾値 |
+| `include_threshold` | `0.45` | `P(in_scope)` の自動採用閾値 |
+| `include_microbial_only_max` | `0.35` | 自動採用で許容する `microbial_only` の上限（未満） |
 | `actual_use_threshold` | `0.60` | 自動採用時に必要な `actual_use` |
 | `exclude_threshold` | `0.50` | `P(out_of_scope)` の自動除外閾値 |
 | `exclude_actual_use_max` | `0.50` | 自動除外で許容する `actual_use` の上限 |
 | `exclude_method_relevance_max` | `0.60` | 自動除外で許容するMethod関連性の上限 |
 
-現在のデフォルトは、Method系をやや安全側に残す方針で合成benchmarkを用いて調整した値です。曖昧な論文は引き続き `unsure` として人手確認に回します。
+現在のデフォルトは、実データ200件benchmarkのcalibration partitionで選んだ値です（`docs/strands-decider-benchmark.md`）。Abstractが300文字未満の論文は自動除外しません。曖昧な論文は引き続き `unsure` として人手確認に回します。
 
 ### 3) 少数件でテスト
 

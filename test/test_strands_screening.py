@@ -19,6 +19,7 @@ from libs.strands_screening import (
     ScreeningConfig,
     _strip_jsonc,
     apply_thresholds,
+    build_state,
     classify_abstract,
     decide_label,
     prepare_abstract,
@@ -122,7 +123,7 @@ class StrandsScreeningTest(unittest.TestCase):
             "flag_label": "in_scope",
             "flag_reason": "in_scope: scope=in_scope; p_in_scope=0.820; p_out_of_scope=0.100; "
             "p_unsure=0.080; actual_use=0.750; microbial_only=0.200; method_relevance=0.400",
-            "flag_prompt_version": "strands-v2",
+            "flag_prompt_version": "strands-v3",
         })
         self.assertEqual(
             apply_thresholds(scores, ScreeningConfig(include_threshold=0.9))["flag_label"], "unsure",
@@ -149,7 +150,7 @@ class StrandsScreeningTest(unittest.TestCase):
 
     def test_screen_row_empty_and_error(self) -> None:
         session = Mock()
-        result = screen_row(session, {"doi": "10.1000/abc", "abstract": " "}, ScreeningConfig())
+        result = screen_row(session, {"doi": "10.1000/abc", "title": "Title", "abstract": " "}, ScreeningConfig())
         self.assertEqual(result["flag_record_id"], "doi:10.1000/abc")
         self.assertEqual(result["flag_reason"], "unsure: abstract is empty")
         session.post.assert_not_called()
@@ -164,7 +165,9 @@ class StrandsScreeningTest(unittest.TestCase):
             p_out_of_scope=0.10,
             p_actual_use=0.75,
             p_method_relevance=0.40,
-            include_threshold=0.70,
+            p_microbial_only=0.2,
+            include_threshold=0.45,
+            include_microbial_only_max=0.35,
             actual_use_threshold=0.60,
             exclude_threshold=0.50,
             exclude_actual_use_max=0.50,
@@ -178,7 +181,9 @@ class StrandsScreeningTest(unittest.TestCase):
             p_out_of_scope=0.82,
             p_actual_use=0.20,
             p_method_relevance=0.25,
-            include_threshold=0.70,
+            p_microbial_only=0.2,
+            include_threshold=0.45,
+            include_microbial_only_max=0.35,
             actual_use_threshold=0.60,
             exclude_threshold=0.50,
             exclude_actual_use_max=0.50,
@@ -192,7 +197,9 @@ class StrandsScreeningTest(unittest.TestCase):
             p_out_of_scope=0.78,
             p_actual_use=0.25,
             p_method_relevance=0.80,
-            include_threshold=0.70,
+            p_microbial_only=0.2,
+            include_threshold=0.45,
+            include_microbial_only_max=0.35,
             actual_use_threshold=0.60,
             exclude_threshold=0.50,
             exclude_actual_use_max=0.50,
@@ -206,13 +213,59 @@ class StrandsScreeningTest(unittest.TestCase):
             p_out_of_scope=0.15,
             p_actual_use=0.40,
             p_method_relevance=0.40,
-            include_threshold=0.70,
+            p_microbial_only=0.2,
+            include_threshold=0.45,
+            include_microbial_only_max=0.35,
             actual_use_threshold=0.60,
             exclude_threshold=0.50,
             exclude_actual_use_max=0.50,
             exclude_method_relevance_max=0.60,
         )
         self.assertEqual(label, "unsure")
+
+    def test_microbial_only_inclusion_guard(self) -> None:
+        for probability, expected in [(0.349, "in_scope"), (0.35, "unsure"), (0.8, "unsure")]:
+            with self.subTest(probability=probability):
+                self.assertEqual(decide_label(
+                    p_in_scope=0.45, p_out_of_scope=0.1, p_actual_use=0.60,
+                    p_method_relevance=0.4, p_microbial_only=probability,
+                    include_threshold=0.45, include_microbial_only_max=0.35,
+                    actual_use_threshold=0.60, exclude_threshold=0.50,
+                    exclude_actual_use_max=0.50, exclude_method_relevance_max=0.60,
+                ), expected)
+
+    def test_screen_row_short_abstract_guard(self) -> None:
+        scores = {
+            "strands_p_in_scope": 0.1, "strands_p_out_of_scope": 0.8,
+            "strands_p_unsure": 0.1, "strands_p_actual_use": 0.2,
+            "strands_p_microbial_only": 0.8, "strands_p_method_relevance": 0.2,
+        }
+        for length, expected in [(299, "unsure"), (300, "out_of_scope")]:
+            with self.subTest(length=length):
+                meta = {"title": "Title " * 100, "abstract": "a" * length}
+                response = {"answers": {
+                    "scope": {"probabilities": {"in_scope": 0.1, "out_of_scope": 0.8, "unsure": 0.1}},
+                    "actual_use": {"noul": 0.2}, "microbial_only": {"noul": 0.8},
+                    "method_relevance": {"noul": 0.2},
+                }}
+                cfg = ScreeningConfig(batch_questions=True)
+                with patch("libs.strands_screening._post_with_retry", return_value=response) as post:
+                    result = screen_row(Mock(), meta, cfg)
+                self.assertEqual(post.call_args.args[2]["state"], build_state(meta, cfg))
+                self.assertEqual(result["flag_label"], expected)
+                for key, value in scores.items():
+                    self.assertEqual(result[key], value)
+                if expected == "unsure":
+                    self.assertTrue(result["flag_reason"].startswith("unsure: abstract too short to exclude; "))
+
+    def test_build_state_with_and_without_title(self) -> None:
+        cfg = ScreeningConfig()
+        self.assertEqual(build_state({"title": "A title", "abstract": "A\n  short abstract"}, cfg),
+                         "Title: A title\nAbstract: A short abstract")
+        for meta in [{"abstract": "Abstract"}, {"title": " ", "abstract": "Abstract"}]:
+            self.assertEqual(build_state(meta, cfg), "Abstract")
+        self.assertEqual(build_state({"title": "Title", "summary": "Summary"}, cfg, "summary"),
+                         "Title: Title\nAbstract: Summary")
 
     def test_record_id_prefers_doi(self) -> None:
         self.assertEqual(

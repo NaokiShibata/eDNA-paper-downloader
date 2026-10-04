@@ -14,6 +14,7 @@ from libs.strands_screening import (
     EXTRA_COLUMNS,
     QUESTIONS,
     ScreeningConfig,
+    build_state,
     check_health,
     coalesce,
     format_status,
@@ -64,6 +65,7 @@ def flag(
     timeout: float | None = typer.Option(None, "--timeout"),
     retries: int | None = typer.Option(None, "--retries"),
     include_threshold: float | None = typer.Option(None, "--include-threshold"),
+    include_microbial_only_max: float | None = typer.Option(None, "--include-microbial-only-max"),
     actual_use_threshold: float | None = typer.Option(None, "--actual-use-threshold"),
     exclude_threshold: float | None = typer.Option(None, "--exclude-threshold"),
     exclude_actual_use_max: float | None = typer.Option(None, "--exclude-actual-use-max"),
@@ -87,6 +89,7 @@ def flag(
         timeout=timeout,
         retries=retries,
         include_threshold=include_threshold,
+        include_microbial_only_max=include_microbial_only_max,
         actual_use_threshold=actual_use_threshold,
         exclude_threshold=exclude_threshold,
         exclude_actual_use_max=exclude_actual_use_max,
@@ -134,7 +137,7 @@ def flag(
             meta = _row_to_meta(row)
             abstract = prepare_abstract(meta.get(abstract_column, ""), cfg.max_abstract_chars)
             if abstract:
-                typer.echo(json.dumps({"state": abstract, "questions": QUESTIONS}, indent=2, ensure_ascii=False))
+                typer.echo(json.dumps({"state": build_state(meta, cfg, abstract_column), "questions": QUESTIONS}, indent=2, ensure_ascii=False))
                 break
         return
 
