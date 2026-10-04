@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import csv
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -9,8 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "script"))
 
 from libs.strands_screening import (
+    PROMPT_VERSION,
     QUESTIONS,
+    SCORE_COLUMNS,
+    ScoreCache,
     ScreeningConfig,
+    _strip_jsonc,
     apply_thresholds,
     classify_abstract,
     decide_label,
@@ -21,6 +28,51 @@ from libs.strands_screening import (
 
 
 class StrandsScreeningTest(unittest.TestCase):
+    def test_strip_jsonc(self) -> None:
+        text = '{/* comment */"url": "https://example.org//path", // comment\n"values": [1, 2,],}'
+        self.assertEqual(json.loads(_strip_jsonc(text)), {"url": "https://example.org//path", "values": [1, 2]})
+
+    def test_score_cache_round_trip_and_thresholds(self) -> None:
+        scores = {"strands_p_in_scope": 0.82, "strands_p_out_of_scope": 0.1, "strands_p_unsure": 0.08,
+                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2, "strands_p_method_relevance": 0.4}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scores.csv"
+            path.touch()
+            cache = ScoreCache(path)
+            self.assertIsNone(cache.get("missing"))
+            cache.put("doi:current", scores | {"flag_label": "out_of_scope"})
+            with path.open("a", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS])
+                writer.writerow({"flag_record_id": "doi:old", "flag_prompt_version": "old", **scores})
+            loaded = ScoreCache(path)
+            self.assertIsNone(loaded.get("doi:old"))
+            hit = loaded.get("doi:current")
+            assert hit is not None
+            self.assertEqual(hit["strands_p_in_scope"], "0.82")
+            self.assertNotIn("flag_label", hit)
+            self.assertEqual(apply_thresholds(hit, ScreeningConfig())["flag_label"], "in_scope")
+            self.assertEqual(apply_thresholds(hit, ScreeningConfig(include_threshold=0.9))["flag_label"], "unsure")
+            with path.open(encoding="utf-8") as stream:
+                self.assertEqual(next(csv.DictReader(stream))["flag_prompt_version"], PROMPT_VERSION)
+
+    def test_screen_cache_hit_miss_and_failure(self) -> None:
+        scores = {"strands_p_in_scope": 0.82, "strands_p_out_of_scope": 0.1, "strands_p_unsure": 0.08,
+                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2, "strands_p_method_relevance": 0.4}
+        meta = {"doi": "10.1000/abc", "abstract": "Abstract"}
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ScoreCache(Path(directory) / "cache.csv")
+            with patch("libs.strands_screening.evaluate_abstract", return_value=scores) as evaluate:
+                self.assertEqual(screen_row(Mock(), meta, ScreeningConfig(), cache=cache)["flag_label"], "in_scope")
+                self.assertEqual(screen_row(Mock(), meta, ScreeningConfig(include_threshold=0.9), cache=cache)["flag_label"], "unsure")
+                evaluate.assert_called_once()
+            self.assertEqual((cache.hits, cache.misses), (1, 1))
+            with patch("libs.strands_screening.evaluate_abstract", side_effect=RuntimeError("failed")):
+                result = screen_row(Mock(), meta | {"doi": "10.1000/error"}, ScreeningConfig(), cache=cache)
+            self.assertEqual(result["flag_label"], "process_error")
+            self.assertIsNone(cache.get("doi:10.1000/error"))
+            screen_row(Mock(), meta | {"doi": "10.1000/empty", "abstract": ""}, ScreeningConfig(), cache=cache)
+            self.assertIsNone(cache.get("doi:10.1000/empty"))
+
     def test_config_source_precedence(self) -> None:
         cfg = ScreeningConfig.from_sources(
             {"timeout": 30, "retries": 5, "include_threshold": 0.8},
@@ -101,7 +153,7 @@ class StrandsScreeningTest(unittest.TestCase):
         self.assertEqual(result["flag_record_id"], "doi:10.1000/abc")
         self.assertEqual(result["flag_reason"], "unsure: abstract is empty")
         session.post.assert_not_called()
-        with patch("libs.strands_screening.classify_abstract", side_effect=RuntimeError("failed")):
+        with patch("libs.strands_screening.evaluate_abstract", side_effect=RuntimeError("failed")):
             result = screen_row(session, {"abstract": "abstract"}, ScreeningConfig())
         self.assertEqual(result["flag_label"], "process_error")
         self.assertEqual(result["flag_reason"], "failed")

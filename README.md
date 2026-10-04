@@ -207,7 +207,7 @@ python3 script/edna_literature_fetch.py \
   --openalex-max-items 2000
 ```
 
-### `biorxiv_search.py` を連続実行
+### bioRxiv/medRxivを統合取得
 
 ```bash
 python3 script/edna_literature_fetch.py \
@@ -218,6 +218,11 @@ python3 script/edna_literature_fetch.py \
   --biorxiv-to-date 2024/12/31 \
   --biorxiv-query "eDNA"
 ```
+
+`--run-biorxiv` を指定すると、bioRxivの結果も主出力へ統合し、重複除去とStrands判定の対象にします。
+`--biorxiv-server medrxiv` でmedRxivを取得できます。
+開始日は `--biorxiv-from-date`、省略時は `--since` が必要です。
+終了日は `--biorxiv-to-date`、省略時は `--until`、どちらも省略すると当日です。
 
 ### 要旨を含める (`--abstract`)
 
@@ -230,9 +235,14 @@ python3 script/edna_literature_fetch.py \
   --out-prefix edna_multisource_with_abstract
 ```
 
+`--abstract` 有効時は、統合後にEurope PMCでDOIから不足する要旨を補完します。
+`--no-europepmc-abstracts` で補完を無効にできます。
+補完後も要旨がない論文は `{out_prefix}.no_abstract.csv` と `.no_abstract.json` に保存し、主出力とStrands判定から除外します。
+件数はログに表示します。
+
 ### 取得時にStrands Deciderで関連論文を絞り込む
 
-Strands Deciderサーバを起動した状態で `--strands-filter` を指定すると、PubMed / Crossref / OpenAlexから取得・統合・重複除去した後の論文をAbstractで判定します。
+Strands Deciderサーバを起動した状態で `--strands-filter` を指定すると、PubMed / Crossref / OpenAlexと、`--run-biorxiv` 指定時のbioRxiv/medRxivから取得・統合・重複除去した後の論文をAbstractで判定します。
 
 ```bash
 pixi run strands-serve
@@ -254,11 +264,13 @@ pixi run python script/edna_literature_fetch.py \
 `--strands-filter` を指定した場合は、判定に必要なためAbstract取得が自動的に有効になります。処理順は以下です。
 
 ```text
-PubMed / Crossref / OpenAlex
+PubMed / Crossref / OpenAlex / bioRxiv・medRxiv (任意)
         ↓
 統合・重複除去
         ↓
-Abstractなしを除外
+Europe PMCでAbstract補完
+        ↓
+Abstractなしをno_abstractへ保存
         ↓
 Strands Decider
         ├─ in_scope      → retained
@@ -276,13 +288,19 @@ results/edna_latest.csv
 results/edna_latest.json
 results/edna_latest.rejected.csv
 results/edna_latest.rejected.json
+results/edna_latest.no_abstract.csv
+results/edna_latest.no_abstract.json
 ```
 
 通常のCSV/JSONには `in_scope` / `unsure` / `process_error` を残し、`out_of_scope` のみ `rejected` 側へ分離します。個別論文の判定エラーは取りこぼし防止のため自動除外しません。
 
 `--strands-filter` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
 
-`--run-biorxiv` で別途取得するbioRxiv出力には、現時点ではこの統合フィルタは適用されません。
+`--strands-cache results/strands_scores.csv` を指定すると、判定スコアをCSVに保存して再利用します。
+キャッシュは論文IDとプロンプトのバージョンで照合し、判定ラベルは毎回現在の閾値で計算します。
+判定エラーと要旨なしは保存せず、終了時にヒット数とミス数を表示します。
+設定キー `batch_questions` はデフォルトで `false` です。
+`true` にすると4質問を1リクエストにまとめますが、GPUメモリの使用量が増えます。
 
 
 ### CrossrefでDOI補完 (任意)
@@ -329,13 +347,15 @@ python3 script/edna_literature_fetch.py \
 ### 実装上の挙動
 
 - OpenAlex取得は `pyalex` を使用します（要 `pip install pyalex`）。
-- OpenAlex取得は `Works().search(...).filter(...).paginate(...)` で実行しています。
+- OpenAlex取得は `Works().filter(title_and_abstract={"search": ...}).filter(...).paginate(...)` で実行しています。
   - `per_page=200`
   - `n_max` は `--openalex-max-items` に対応
 - `pyalex.config.email` は `--email` の値を設定しています（OpenAlexの polite pool 利用を意図）。
 - OpenAlex APIキーは `--openalex-api-key` で設定できます（ログにはマスク表示）。
 - `Crossref/OpenAlex` では `type` ベースで preprint を除外します。
-- `--abstract` が有効な場合のみ、abstract 空レコードを最終出力から除外します。
+- `--abstract` が有効な場合のみ、要旨補完後もabstractが空のレコードを `no_abstract` 側へ保存します。
+- Crossrefはcursor pagingで取得します。Crossrefはboolean検索に対応しないため、クエリ語 (例: `environmental DNA`, `eDNA`) をタイトルまたは要旨に含む論文だけを残し、一致が0件のページに達した時点で取得を打ち切ります。
+- Crossref/OpenAlexの取得件数が上限に達するとwarningを表示します。必要に応じて `--crossref-max-items` / `--openalex-max-items` を増やしてください。
 - ログは `rich` を使って標準出力に表示されます（RUN HEADER含む）。
 
 ### OpenAlex APIメモ (pyalex)

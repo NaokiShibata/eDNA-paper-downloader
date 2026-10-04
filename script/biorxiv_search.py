@@ -15,6 +15,7 @@ import requests
 import typer
 
 from libs.cli_logging import log_run_header, setup_logger
+from libs.edna_models import Paper
 from libs.http_retry import make_retry_session
 from libs.text_normalize import clean_term, clean_text
 
@@ -107,9 +108,9 @@ def item_to_preprint(server: str, it: dict, retrieved_at: str) -> Preprint:
     ver = it.get("version")
     ver_str = str(ver) if ver is not None else None
     url = (
-        f"https://www.biorxiv.org/content/{doi}v{ver_str}"
+        f"https://www.{server}.org/content/{doi}v{ver_str}"
         if doi and ver_str
-        else (f"https://www.biorxiv.org/content/{doi}" if doi else "")
+        else (f"https://www.{server}.org/content/{doi}" if doi else "")
     )
     posted = clean_text(it.get("date", "")) or None
     return Preprint(
@@ -239,11 +240,16 @@ def fetch_range_stream(
 
         js = r.json()
         col = js.get("collection", []) or []
-        yield cursor, col, js.get("messages", [])
+        messages = js.get("messages", []) or []
+        yield cursor, col, messages
 
-        if len(col) < 100:
+        try:
+            total = int(messages[0]["total"])
+        except (IndexError, KeyError, TypeError, ValueError):
+            total = None
+        cursor += len(col)
+        if not col or (total is not None and cursor >= total):
             break
-        cursor += 100
         if sleep > 0:
             time.sleep(sleep)
 
@@ -251,6 +257,34 @@ def fetch_range_stream(
 # -------------------------
 # Batch range splitters
 # -------------------------
+def biorxiv_search_papers(
+    server: str, from_date: str, to_date: str, query: str, excludes: list[str],
+    sleep: float, logger: logging.Logger, include_abstract: bool = False,
+) -> list[Paper]:
+    if server not in {"biorxiv", "medrxiv"}:
+        raise typer.BadParameter("server must be biorxiv or medrxiv")
+    start = _parse_date(from_date.replace("-", "/"))
+    end = _parse_date(to_date.replace("-", "/"))
+    if start > end:
+        raise typer.BadParameter("bioRxiv start date must not be after end date")
+    rows: list[Preprint] = []
+    retrieved_at = datetime.now().isoformat()
+    exclude_terms = [clean_term(term) for value in excludes for term in re.split(r"\s+OR\s+", value, flags=re.IGNORECASE)]
+    with make_retry_session() as sess:
+        for _, items, _ in fetch_range_stream(server, _fmt_date(start), _fmt_date(end), sleep, logger, sess):
+            rows.extend(item_to_preprint(server, item, retrieved_at) for item in keyword_filter(items, query, exclude_terms))
+    papers = [
+        Paper(
+            pmid="", title=row.title, journal="bioRxiv" if server == "biorxiv" else "medRxiv",
+            year=int(row.date[:4]) if row.date else None, authors=row.authors, doi=row.doi or None,
+            abstract=row.abstract if include_abstract else None, pubmed_url=row.biorxiv_url,
+        )
+        for row in keep_latest_version_per_doi(rows)
+    ]
+    logger.info("%s collected: %d", server, len(papers))
+    return papers
+
+
 def iter_weekly_ranges(start: date, end: date) -> Iterable[tuple[date, date]]:
     cur = start
     while cur <= end:

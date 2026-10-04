@@ -367,11 +367,66 @@ def crossref_fill_missing_doi(
     return out
 
 
+def _parse_europepmc(js: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    out: dict[str, tuple[str, str]] = {}
+    for item in js.get("resultList", {}).get("result", []) or []:
+        doi = clean_doi(item.get("doi"))
+        abstract = _clean_abstract_text(str(item.get("abstractText") or ""))
+        if doi and abstract:
+            out[doi] = (abstract, str(item.get("pmid") or ""))
+    return out
+
+
+def europepmc_fill_abstracts(
+    papers: list[Paper], sleep: float = 0.2, logger: logging.Logger | None = None,
+) -> list[Paper]:
+    dois = list(dict.fromkeys(clean_doi(p.doi) for p in papers if p.doi and not (p.abstract or "").strip()))
+    found: dict[str, tuple[str, str]] = {}
+    with make_retry_session() as sess:
+        for start in range(0, len(dois), 25):
+            params: dict[str, Any] = {
+                "query": " OR ".join(f'DOI:"{doi}"' for doi in dois[start : start + 25]),
+                "resultType": "core", "format": "json", "pageSize": 100,
+            }
+            try:
+                response = sess.get("https://www.ebi.ac.uk/europepmc/webservices/rest/search", params=params, timeout=30)
+                response.raise_for_status()
+                found.update(_parse_europepmc(response.json()))
+            except requests.RequestException as exc:
+                if logger:
+                    logger.warning("Europe PMC abstract fetch failed: %s", exc)
+            if sleep > 0:
+                time.sleep(sleep)
+    out: list[Paper] = []
+    filled = 0
+    for paper in papers:
+        hit = found.get(clean_doi(paper.doi))
+        if hit and not (paper.abstract or "").strip():
+            abstract, pmid = hit
+            paper = Paper(**{**asdict(paper), "abstract": abstract, "pmid": paper.pmid or pmid})
+            filled += 1
+        out.append(paper)
+    if logger:
+        logger.info("Europe PMC abstracts filled: %d", filled)
+    return out
+
+
+def _to_openalex_query(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"\[[^\]]+\]", "", value)).strip()
+
+
 def _to_query_text(value: str) -> str:
     text = re.sub(r"\[[^\]]+\]", " ", value)
     text = text.replace('"', " ")
     text = re.sub(r"[()]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _query_terms(query: str) -> list[str]:
+    text = re.sub(r"\[[^\]]+\]", "", query)
+    parts = re.split(r"\s+(?:OR|AND)\s+", text, flags=re.IGNORECASE)
+    terms = [clean_term(part.strip().strip("()")).lower() for part in parts]
+    return [term for term in terms if term]
 
 
 def _to_dash_date(value: str | None) -> str | None:
@@ -422,11 +477,13 @@ def crossref_search_papers(
     headers = {"User-Agent": user_agent}
     out: list[Paper] = []
     preprint_skipped = 0
+    term_skipped = 0
+    terms = _query_terms(query)
 
     params: dict[str, Any] = {
         "query": _to_query_text(query),
         "rows": 200,
-        "offset": 0,
+        "cursor": "*",
     }
     filters: list[str] = []
     from_dash = _to_dash_date(from_date)
@@ -449,7 +506,7 @@ def crossref_search_papers(
             r.raise_for_status()
         except requests.RequestException as exc:
             if logger:
-                logger.warning(f"Crossref fetch failed (offset={params['offset']}): {exc}")
+                logger.warning(f"Crossref fetch failed (cursor={params['cursor']}): {exc}")
             break
 
         msg = r.json().get("message", {})
@@ -457,14 +514,21 @@ def crossref_search_papers(
         if not items:
             break
 
+        term_matches = 0
         for item in items:
+            title_list = item.get("title") or []
+            title = clean_text(str(title_list[0] if title_list else ""))
+            abstract = _clean_abstract_text(str(item.get("abstract") or ""))
+            text = f"{title} {abstract or ''}"
+            if not any(re.search(rf"\b{re.escape(term)}\b", text, re.I) for term in terms):
+                term_skipped += 1
+                continue
+            term_matches += 1
             work_type = str(item.get("type") or "").strip().lower()
             if work_type == "posted-content":
                 preprint_skipped += 1
                 continue
 
-            title_list = item.get("title") or []
-            title = clean_text(str(title_list[0] if title_list else ""))
             doi = clean_doi(item.get("DOI"))
             year_parts = (
                 _safe_get(item, "published-print", "date-parts", default=[])
@@ -491,7 +555,6 @@ def crossref_search_papers(
             if container:
                 journal = clean_text(str(container[0]))
 
-            abstract = _clean_abstract_text(str(item.get("abstract") or "")) if include_abstract else None
             url = str(item.get("URL") or "")
             paper = Paper(
                 pmid="",
@@ -500,7 +563,7 @@ def crossref_search_papers(
                 year=year,
                 authors=", ".join(authors),
                 doi=doi or None,
-                abstract=abstract or None,
+                abstract=(abstract or None) if include_abstract else None,
                 pubmed_url=url,
             )
             if _paper_matches_excludes(paper, excludes):
@@ -508,15 +571,21 @@ def crossref_search_papers(
             if len(out) >= max_items:
                 break
 
-        if len(items) < int(params["rows"]):
+        # ponytail: relevance-tail cutoff; page further if Crossref ranking proves unreliable
+        if len(items) == params["rows"] and term_matches == 0:
             break
-        params["offset"] = int(params["offset"]) + int(params["rows"])
+        if len(out) >= max_items or not msg.get("next-cursor"):
+            break
+        params["cursor"] = msg["next-cursor"]
         if sleep > 0:
             time.sleep(sleep)
 
     if logger:
         logger.info(f"Crossref preprint skipped (type=posted-content): {preprint_skipped}")
+        logger.info(f"Crossref term filter dropped: {term_skipped}")
         logger.info(f"Crossref collected: {len(out)}")
+        if len(out) >= max_items:
+            logger.warning("Crossref results were truncated; raise --crossref-max-items")
     return out
 
 
@@ -561,7 +630,7 @@ def openalex_search_papers(
     per_page = 200
     preprint_skipped = 0
 
-    works = Works().search(_to_query_text(query)).filter(type="!preprint")
+    works = Works().filter(title_and_abstract={"search": _to_openalex_query(query)}).filter(type="!preprint")
     from_dash = _to_dash_date(from_date)
     until_dash = _to_dash_date(until_date)
     if from_dash:
@@ -629,6 +698,8 @@ def openalex_search_papers(
     if logger:
         logger.info(f"OpenAlex preprint skipped (type=preprint): {preprint_skipped}")
         logger.info(f"OpenAlex collected: {len(out)}")
+        if len(out) >= max_items:
+            logger.warning("OpenAlex results were truncated; raise --openalex-max-items")
     return out
 
 
