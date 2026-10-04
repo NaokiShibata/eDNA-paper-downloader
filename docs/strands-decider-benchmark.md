@@ -1,6 +1,6 @@
 # Strands Decider benchmark
 
-このドキュメントでは、`script/strands_flagger.py` のeDNA/eRNA論文スクリーニングを検証するための
+このドキュメントでは、`script/screen.py` のeDNA/eRNA論文スクリーニングを検証するための
 benchmark作成、gold label付与、閾値調整、評価手順をまとめます。
 
 現在の論文判定はStrands Deciderに統一しています。
@@ -54,7 +54,7 @@ False Negative、特に本来 `in_scope` の論文を自動で `out_of_scope` �
 実データからblind benchmarkを作る場合:
 
 ```bash
-pixi run benchmark-make \
+pixi run benchmark make \
   test/results/edna_multisource20260228.csv \
   --out-prefix benchmark/edna_strands_200 \
   --n-total 200 \
@@ -156,7 +156,7 @@ eDNA/eRNA研究へ直接応用可能なMethod上の知見があるか。
 閾値を変更してもキャッシュから現在の閾値でラベルを計算します。
 
 ```bash
-pixi run strands-screen \
+pixi run screen \
   benchmark/edna_strands_200.review.csv \
   --out-csv benchmark/edna_strands_200.strands.csv
 ```
@@ -164,7 +164,7 @@ pixi run strands-screen \
 ## Calibrationで除外閾値を調整
 
 ```bash
-pixi run benchmark-tune \
+pixi run benchmark tune \
   benchmark/edna_strands_200.review.labeled.csv \
   benchmark/edna_strands_200.strands.v3.csv \
   --manifest benchmark/edna_strands_200.manifest.csv \
@@ -172,7 +172,8 @@ pixi run benchmark-tune \
   --out-json benchmark/edna_strands_200.thresholds.json
 ```
 
-`benchmark-tune` はinclusion側の閾値を固定し、以下を探索します。
+`pixi run benchmark tune` は共通のStrands設定からinclusion側の閾値を読み込み、固定したまま以下を探索します。
+`--config` で設定ファイルを指定できます。
 
 - `exclude_threshold`
 - `exclude_actual_use_max`
@@ -183,7 +184,7 @@ pixi run benchmark-tune \
 ## Test partitionで評価
 
 ```bash
-pixi run benchmark-eval \
+pixi run benchmark eval \
   benchmark/edna_strands_200.review.labeled.csv \
   benchmark/edna_strands_200.strands.v3.csv \
   --manifest benchmark/edna_strands_200.manifest.csv \
@@ -237,10 +238,10 @@ v3で `in_scope=61 / unsure=40 / out_of_scope=40` になりました。
 再現手順:
 
 ```bash
-pixi run strands-screen benchmark/edna_strands_200.review.csv \
+pixi run screen benchmark/edna_strands_200.review.csv \
   --config config/strands_flagger.example.jsonc \
   --out-csv benchmark/edna_strands_200.strands.v3.csv
-pixi run benchmark-eval benchmark/edna_strands_200.review.labeled.csv \
+pixi run benchmark eval benchmark/edna_strands_200.review.labeled.csv \
   benchmark/edna_strands_200.strands.v3.csv \
   --manifest benchmark/edna_strands_200.manifest.csv --partition test \
   --out-json benchmark/edna_strands_200.v3.test.metrics.json

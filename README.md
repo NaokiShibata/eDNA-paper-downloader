@@ -8,7 +8,7 @@ eDNA関連の文献・プレプリント情報を収集し、CSVとして保存�
 
 主なスクリプト:
 
-- `script/edna_literature_fetch.py`
+- `script/fetch.py`
   - デフォルトで `PubMed + Crossref + OpenAlex` から統合取得
   - DOI優先、タイトル+年フォールバックで重複統合
   - `Crossref/OpenAlex` は `type` による preprint 除外を実施
@@ -16,10 +16,10 @@ eDNA関連の文献・プレプリント情報を収集し、CSVとして保存�
   - `--strands` で統合後のAbstractをStrands Deciderで判定し、`out_of_scope` のみ最終出力から除外
   - 除外した論文は `*.rejected.csv` に保存して監査可能
   - `--sources` で bioRxiv/medRxiv も選択可能
-- `script/strands_serve_auto.py`
+- `script/serve.py`
   - GPU 1 → GPU 0 → CPUの順で計算デバイスを自動選択
   - CPU fallback時は低速になることを明示してから起動
-- `script/strands_flagger.py`
+- `script/screen.py`
   - Strands Deciderを使って `abstract` 全文からeDNA/eRNA関連性を高速判定
   - `in_scope` / `out_of_scope` / `unsure` の3段階でスクリーニング
   - 曖昧な論文は `unsure` に残すRecall重視の運用
@@ -96,7 +96,7 @@ pixi shell
 ### 4) 計算デバイスを確認
 
 ```bash
-pixi run strands-device-check
+pixi run serve-check
 ```
 
 CUDA GPUが利用可能な環境ではGPUを選択し、利用できない環境ではCPU fallbackを明示します。
@@ -110,11 +110,13 @@ conda-forgeではこのヘッダを `cuda-cudart-dev` から `targets/x86_64-lin
 
 | タスク | 内容 |
 | --- | --- |
-| `pixi run strands-device-check` | Strands Deciderが選択するGPU/CPUを表示 |
-| `pixi run strands-serve` | GPU 1 → GPU 0 → CPUの順で自動選択し、port 8012にStrands Deciderを起動 |
+| `pixi run serve-check` | Strands Deciderが選択するGPU/CPUを表示 |
+| `pixi run serve` | GPU 1 → GPU 0 → CPUの順で自動選択し、port 8012にStrands Deciderを起動 |
 | `pixi run strands-health` | 起動中のStrands Decider APIを確認 |
-| `pixi run strands-screen ...` | `script/strands_flagger.py` を実行 |
-| `pixi run e2e-latest14 ...` | 最新14日の文献取得→Strands判定→簡易検証を通し実行 |
+| `pixi run fetch ...` | `script/fetch.py` を実行 |
+| `pixi run benchmark make\|eval\|tune ...` | benchmarkの作成、評価、除外閾値の調整 |
+| `pixi run screen ...` | `script/screen.py` を実行 |
+| `pixi run e2e ...` | 最新14日の文献取得→Strands判定→簡易検証を通し実行 |
 | `pixi run lint` | Ruff |
 | `pixi run typecheck` | mypy |
 | `pixi run test` | Strands判定閾値・除外ガードの単体テスト |
@@ -125,7 +127,7 @@ conda-forgeではこのヘッダを `cuda-cudart-dev` から `targets/x86_64-lin
 
 ```bash
 # 文献統合取得 (PubMed + Crossref + OpenAlex)
-python3 script/edna_literature_fetch.py \
+python3 script/fetch.py \
   --email you@example.com \
   --since 2020/01/01 \
   --out-dir results \
@@ -134,18 +136,18 @@ python3 script/edna_literature_fetch.py \
 
 ---
 
-## 文献統合取得: edna_literature_fetch.py
+## 文献統合取得: fetch.py
 
 ### ヘルプ
 
 ```bash
-python3 script/edna_literature_fetch.py --help
+python3 script/fetch.py --help
 ```
 
 ### 基本例 (デフォルトで全ソース有効)
 
 ```bash
-python3 script/edna_literature_fetch.py \
+python3 script/fetch.py \
   --email you@example.com \
   --query '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])' \
   --since 2020/01/01 \
@@ -156,7 +158,7 @@ python3 script/edna_literature_fetch.py \
 ### 除外語
 
 ```bash
-python3 script/edna_literature_fetch.py \
+python3 script/fetch.py \
   --email you@example.com \
   --query '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])' \
   --exclude 'metagenome OR probiotic OR microbiome' \
@@ -174,15 +176,15 @@ APIキーは `NCBI_API_KEY` と `OPENALEX_API_KEY` からも読み込みます�
 
 ```bash
 # デフォルト: 3ソースすべて有効
-python3 script/edna_literature_fetch.py --email you@example.com
+python3 script/fetch.py --email you@example.com
 
 # 例: PubMedのみ
-python3 script/edna_literature_fetch.py \
+python3 script/fetch.py \
   --email you@example.com \
   --sources pubmed
 
 # 例: Crossref/OpenAlex件数上限を指定
-python3 script/edna_literature_fetch.py \
+python3 script/fetch.py \
   --email you@example.com \
   --max-items 2000
 ```
@@ -190,7 +192,7 @@ python3 script/edna_literature_fetch.py \
 ### bioRxiv/medRxivを統合取得
 
 ```bash
-python3 script/edna_literature_fetch.py \
+python3 script/fetch.py \
   --email you@example.com \
   --sources pubmed,crossref,openalex,biorxiv,medrxiv \
   --since 2024/01/01 \
@@ -213,13 +215,13 @@ bioRxiv/medRxivには `--since` と `--until` の期間を使い、`--query` か
 Strands Deciderサーバを起動した状態で `--strands` を指定すると、`--sources` で選択した取得元から取得・統合・重複除去した後の論文をAbstractで判定します。
 
 ```bash
-pixi run strands-serve
+pixi run serve
 ```
 
 別ターミナル:
 
 ```bash
-pixi run python script/edna_literature_fetch.py \
+pixi run python script/fetch.py \
   --email you@example.com \
   --days 14 \
   --until 2026/10/04 \
@@ -260,7 +262,7 @@ results/edna_latest.no_abstract.csv
 
 `--strands` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
 
-fetchとflaggerは設定の `cache_csv` を共用し、判定スコアをCSVに保存して再利用します。
+fetchとscreenは設定の `cache_csv` を共用し、判定スコアをCSVに保存して再利用します。
 デフォルトは `.cache/strands_scores.csv` で、`null` にすると無効になります。
 キャッシュは論文IDとプロンプトのバージョンで照合し、判定ラベルは毎回現在の閾値で計算します。
 判定エラーと要旨なしは保存せず、終了時にヒット数とミス数を表示します。
@@ -271,7 +273,7 @@ fetchとflaggerは設定の `cache_csv` を共用し、判定スコアをCSVに�
 ### 色々総まとめ
 
 ```bash
-python3 script/edna_literature_fetch.py \
+python3 script/fetch.py \
   --email you@example.com \
   --query '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])' \
   --exclude 'metagenome OR probiotic OR microbiome' \
@@ -316,7 +318,7 @@ python3 script/edna_literature_fetch.py \
 ### ログ出力 (RUN HEADER)
 
 ```bash
-python3 script/edna_literature_fetch.py \
+python3 script/fetch.py \
   --email you@example.com \
   --since 2020/01/01 \
   --out-dir results \
@@ -342,9 +344,9 @@ python3 script/edna_literature_fetch.py \
 
 ---
 
-## Strands DeciderでのAbstract判定 (strands_flagger.py)
+## Strands DeciderでのAbstract判定 (screen.py)
 
-`script/strands_flagger.py` は、Strands DeciderのHTTP APIを使ってCSVの `abstract` 列を判定します。
+`script/screen.py` は、Strands DeciderのHTTP APIを使ってCSVの `abstract` 列を判定します。
 現在の論文スクリーニング実装はStrands Deciderに統一しています。
 
 判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を評価します。RTX 5060 TiなどVRAMが限られるGPUでも安定させるため、現在は4質問を1 HTTP requestにまとめず、1質問ずつ順番に送信します。
@@ -362,7 +364,7 @@ python3 script/edna_literature_fetch.py \
 起動前に、どの計算デバイスが選ばれるか確認できます。
 
 ```bash
-pixi run strands-device-check
+pixi run serve-check
 ```
 
 自動選択の優先順位は次のとおりです。
@@ -376,14 +378,14 @@ GPUを選んだ場合は、選択した物理GPUだけを `CUDA_VISIBLE_DEVICES`
 CPUへ切り替える場合は黙ってフォールバックせず、起動前に次のようなwarningを表示します。
 
 ```text
-[strands-serve] No CUDA GPU detected
-[strands-serve] WARNING: Falling back to CPU explicitly (--device cpu). Inference will be slower than CUDA.
+[serve] No CUDA GPU detected
+[serve] WARNING: Falling back to CPU explicitly (--device cpu). Inference will be slower than CUDA.
 ```
 
 起動:
 
 ```bash
-pixi run strands-serve
+pixi run serve
 ```
 
 GPU環境では `--device cuda`、GPUがない環境では `--device cpu` を明示してStrands Deciderを起動します。古いStrands Decider CLIとの互換性を保つため、`--max-batch` など新しいサーバオプションには依存しません。
@@ -430,7 +432,7 @@ flaggerでは `--config` で別のファイルも指定できます。
 ### 3) 少数件でテスト
 
 ```bash
-pixi run strands-screen \
+pixi run screen \
   results/edna_multisource_2020plus.csv \
   --config config/strands_flagger.jsonc \
   --out-csv results/edna_multisource_2020plus.strands.csv \
@@ -440,7 +442,7 @@ pixi run strands-screen \
 ### 4) 全件実行
 
 ```bash
-pixi run strands-screen \
+pixi run screen \
   results/edna_multisource_2020plus.csv \
   --config config/strands_flagger.jsonc \
   --out-csv results/edna_multisource_2020plus.strands.csv
@@ -478,27 +480,27 @@ Strands固有の診断列:
 `flag_confidence` は `P(in_scope)` そのものではありません。採否の検証や閾値調整では
 `strands_p_in_scope` などの確率列も確認してください。
 
-## 最新14日のE2Eテスト
+## 最新文献のE2Eテスト
 
-`script/e2e_latest14.py` は、実行日を終点とする最新14日間について、文献取得から取得処理内のStrandsフィルタまでを通しで確認します。
+`script/e2e.py` は、実行日を終点とする最新14日間（`--days` で変更可能）について、文献取得から取得処理内のStrandsフィルタまでを通しで確認します。
 
 Strands Deciderを別ターミナルで起動します。
 
 ```bash
-pixi run strands-serve
+pixi run serve
 ```
 
 別ターミナル:
 
 ```bash
-pixi run e2e-latest14 --email you@example.com
+pixi run e2e --email you@example.com
 ```
 
 `NCBI_EMAIL` を設定している場合は `--email` を省略できます。
 
 ```bash
 export NCBI_EMAIL="you@example.com"
-pixi run e2e-latest14
+pixi run e2e
 ```
 
 E2Eでは以下を確認します。
@@ -513,13 +515,15 @@ E2Eでは以下を確認します。
 期間を固定して再現実行する場合:
 
 ```bash
-pixi run e2e-latest14 \
+pixi run e2e \
   --email you@example.com \
   --until-date 2026-10-04 \
   --days 14
 ```
 
 E2Eも共通のStrands設定を自動で読み込みます。
+取得処理を同じプロセス内で呼び出し、検索クエリと取得上限にはfetchの既定値を使います。
+`--out-dir` と `--prefix` で出力先とファイル名を変更できます。
 
 生成物はデフォルトで `test/results/` に出力されます。
 

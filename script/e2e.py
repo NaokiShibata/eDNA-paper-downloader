@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import shlex
-import subprocess
-import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -12,14 +9,11 @@ import pandas as pd
 import requests
 import typer
 
+from fetch import DEFAULT_QUERY, fetch
 from libs.strands_screening import ScreeningConfig, check_health, default_config_path, load_config
 
 app = typer.Typer(add_completion=False)
 
-DEFAULT_QUERY = (
-    '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract] '
-    'OR "environmental RNA"[Title/Abstract] OR eRNA[Title/Abstract])'
-)
 VALID_RETAINED_LABELS = {"in_scope", "unsure", "process_error"}
 
 
@@ -38,25 +32,6 @@ def _parse_date(value: str | None) -> date:
 
 def _repo_path(repo_root: Path, value: Path) -> Path:
     return value if value.is_absolute() else repo_root / value
-
-
-def _display_cmd(cmd: list[str]) -> str:
-    masked = cmd.copy()
-    for flag in ("--api-key", "--openalex-api-key"):
-        if flag in masked:
-            index = masked.index(flag)
-            if index + 1 < len(masked):
-                masked[index + 1] = "***"
-    return shlex.join(masked)
-
-
-def _run(cmd: list[str], *, cwd: Path) -> None:
-    typer.echo("")
-    typer.echo(f"$ {_display_cmd(cmd)}")
-    try:
-        subprocess.run(cmd, cwd=cwd, check=True)
-    except subprocess.CalledProcessError as exc:
-        raise typer.Exit(code=exc.returncode or 1) from exc
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -153,8 +128,6 @@ def run(
         "--until-date",
         help="Window end date. Defaults to the current local date.",
     ),
-    query: str = typer.Option(DEFAULT_QUERY, "--query"),
-    max_items: int = typer.Option(1000, "--max-items", min=1),
     out_dir: Path = typer.Option(
         Path("test/results"),
         "--out-dir",
@@ -163,7 +136,7 @@ def run(
     prefix: str | None = typer.Option(
         None,
         "--prefix",
-        help="Output prefix. Defaults to e2e_latest14_<YYYYMMDD>.",
+        help="Output prefix. Defaults to e2e_latest<days>_<YYYYMMDD>.",
     ),
 ) -> None:
     """Run latest literature retrieval with integrated Strands filtering."""
@@ -197,7 +170,7 @@ def run(
     except Exception as exc:
         raise typer.BadParameter(
             f"Strands Decider is not reachable at {cfg.base_url.rstrip('/')}/health: {exc}. "
-            "Start it first with: pixi run strands-serve"
+            "Start it first with: pixi run serve"
         ) from exc
     typer.echo(
         "Strands      : "
@@ -210,34 +183,21 @@ def run(
         if path.exists():
             path.unlink()
 
-    fetch_cmd = [
-        sys.executable,
-        str(repo_root / "script" / "edna_literature_fetch.py"),
-        "--email",
-        email,
-        "--query",
-        query,
-        "--days",
-        str(days),
-        "--until",
-        until.strftime("%Y/%m/%d"),
-        "--strands",
-        "--max-items",
-        str(max_items),
-        "--out-dir",
-        str(out_dir_path),
-        "--out-prefix",
-        prefix,
-        "--log-file",
-        str(fetch_log),
-    ]
-    if api_key:
-        fetch_cmd.extend(["--api-key", api_key])
-    if openalex_api_key:
-        fetch_cmd.extend(["--openalex-api-key", openalex_api_key])
-
     started = time.monotonic()
-    _run(fetch_cmd, cwd=repo_root)
+    try:
+        fetch(
+            email=email, api_key=api_key, openalex_api_key=openalex_api_key,
+            query=DEFAULT_QUERY, exclude=None, since=None,
+            until=until.strftime("%Y/%m/%d"), days=days,
+            datetype="pdat", sources="pubmed,crossref,openalex", max_items=1000,
+            strands=True, sleep=0.34, out_prefix=prefix, out_dir=out_dir_path,
+            log_level="INFO", log_file=fetch_log,
+        )
+    except typer.Exit as exc:
+        raise typer.Exit(code=exc.exit_code or 1) from exc
+    except Exception as exc:
+        typer.echo(f"E2E fetch failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     elapsed = time.monotonic() - started
 
     retained, rejected, counts = _validate_filtered_outputs(
@@ -251,7 +211,7 @@ def run(
             "until": until.isoformat(),
             "days": days,
         },
-        "query": query,
+        "query": DEFAULT_QUERY,
         "retrieved_with_abstract": int(len(retained) + len(rejected)),
         "retained_rows": int(len(retained)),
         "rejected_rows": int(len(rejected)),

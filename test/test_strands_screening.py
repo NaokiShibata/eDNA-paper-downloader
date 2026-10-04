@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "script"))
 
-import strands_flagger
+import screen
 from libs.strands_screening import (
     PROMPT_VERSION,
     QUESTIONS,
@@ -100,13 +100,13 @@ class StrandsScreeningTest(unittest.TestCase):
             config.write_text(json.dumps({"cache_csv": str(root / "cache/scores.csv")}), encoding="utf-8")
             output = root / "papers.strands.csv"
             args = [str(input_csv), "--log-file", str(root / "flagger.log")]
-            with patch("strands_flagger.default_config_path", return_value=config), \
-                    patch("strands_flagger.check_health", return_value={}), \
+            with patch("screen.default_config_path", return_value=config), \
+                    patch("screen.check_health", return_value={}), \
                     patch("libs.strands_screening.evaluate_abstract", return_value=scores) as evaluate:
                 for threshold, label in ((0.45, "in_scope"), (0.9, "unsure")):
                     config.write_text(json.dumps({"cache_csv": str(root / "cache/scores.csv"),
                                                   "include_threshold": threshold}), encoding="utf-8")
-                    result = CliRunner().invoke(strands_flagger.app, args)
+                    result = CliRunner().invoke(screen.app, args)
                     self.assertEqual(result.exit_code, 0, result.output)
                     with output.open(encoding="utf-8") as stream:
                         rows = list(csv.DictReader(stream))
@@ -114,7 +114,7 @@ class StrandsScreeningTest(unittest.TestCase):
                     self.assertEqual(rows[0]["flag_label"], label)
                 evaluate.assert_called_once()
                 input_csv.write_text("doi,title,abstract\n", encoding="utf-8")
-                result = CliRunner().invoke(strands_flagger.app, args)
+                result = CliRunner().invoke(screen.app, args)
                 self.assertEqual(result.exit_code, 0, result.output)
                 with output.open(encoding="utf-8") as stream:
                     self.assertEqual(list(csv.DictReader(stream)), [])

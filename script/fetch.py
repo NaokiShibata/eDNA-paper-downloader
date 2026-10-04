@@ -35,6 +35,8 @@ from libs.strands_screening import (
     screen_row,
 )
 
+DEFAULT_QUERY = '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])'
+
 app = typer.Typer(add_completion=False)
 
 
@@ -63,7 +65,7 @@ def fetch(
     email: str = typer.Option(..., envvar="NCBI_EMAIL", help="Your email for NCBI Entrez."),
     api_key: str | None = typer.Option(None, envvar="NCBI_API_KEY"),
     openalex_api_key: str | None = typer.Option(None, envvar="OPENALEX_API_KEY"),
-    query: str = typer.Option('("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])'),
+    query: str = typer.Option(DEFAULT_QUERY),
     exclude: list[str] | None = typer.Option(None, "--exclude"),
     since: str | None = typer.Option(None, help="Start date (YYYY/MM/DD or YYYY-MM-DD)."),
     until: str | None = typer.Option(None, help="End date; defaults to today."),
@@ -91,7 +93,7 @@ def fetch(
         raise typer.BadParameter("--since or --days is required for bioRxiv/medRxiv")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger("edna_literature_fetch", log_level=log_level, log_file=log_file)
+    logger = setup_logger("fetch", log_level=log_level, log_file=log_file)
 
     strands_cfg = ScreeningConfig()
     strands_config_path: Path | None = None
@@ -156,7 +158,7 @@ def fetch(
             "pandas": getattr(pd, "__version__", "unknown"),
             "typer": getattr(typer, "__version__", "unknown"),
         },
-        fallback_command="python script/edna_literature_fetch.py",
+        fallback_command="python script/fetch.py",
     )
 
     if date_clause:
