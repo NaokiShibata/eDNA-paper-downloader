@@ -287,7 +287,7 @@ def pubmed_search_all_pmids(
                 kwargs_page["maxdate"] = maxdate
 
         res2 = _entrez_request(
-            lambda: Entrez.esearch(
+            lambda retstart=retstart, kwargs_page=kwargs_page.copy(): Entrez.esearch(
                 db="pubmed",
                 term=query,
                 retmode="xml",
@@ -341,7 +341,7 @@ def pubmed_fetch_details(
     for i in tqdm(range(0, len(pmids), chunk_size), desc="Fetching PubMed details"):
         chunk = pmids[i : i + chunk_size]
         records = _entrez_request(
-            lambda: Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml"),
+            lambda chunk=chunk: Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml"),
             logger,
             f"efetch chunk start={i}",
         )
