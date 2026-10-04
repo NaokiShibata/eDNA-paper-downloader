@@ -5,9 +5,9 @@
   "batch_questions": false,
   "base_url": "http://127.0.0.1:8012",
 
-  // Input CSV column containing the abstract. Full abstract is used by default.
+  // Input CSV column containing the abstract. Long abstracts are shortened.
   "abstract_column": "abstract",
-  "max_abstract_chars": null,
+  "max_abstract_chars": 6000,
 
   // Output / logging
   "out_csv": "results/strands_flagged.csv",
@@ -18,11 +18,10 @@
   "timeout": 120.0,
   "retries": 3,
 
-  // Recall-oriented thresholds validated on the synthetic benchmark.
-  // A paper is auto-included only when both the scope probability and actual-use
-  // probability pass their thresholds. Auto-exclusion remains guarded by actual-use
-  // and method-relevance probabilities; ambiguous cases become "unsure" for manual review.
-  "include_threshold": 0.70,
+  // Thresholds were chosen on the calibration partition of the 200-paper human-labelled
+  // benchmark (docs/strands-decider-benchmark.md).
+  "include_threshold": 0.45,
+  "include_microbial_only_max": 0.35,
   "actual_use_threshold": 0.60,
   "exclude_threshold": 0.50,
   "exclude_actual_use_max": 0.50,

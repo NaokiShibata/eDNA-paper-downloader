@@ -1,0 +1,26 @@
+{
+  "partition": "calibration",
+  "metrics": {
+    "n_binary_gold": 86,
+    "gold_in_scope": 47,
+    "gold_out_of_scope": 39,
+    "tp": 41,
+    "tn": 17,
+    "false_positive": 0,
+    "hard_false_negative": 0,
+    "positive_sent_to_review": 6,
+    "negative_sent_to_review": 22,
+    "auto_decided": 58,
+    "manual_review": 28,
+    "auto_coverage": 0.6744186046511628,
+    "manual_review_rate": 0.32558139534883723,
+    "auto_accuracy": 1.0,
+    "in_scope_precision": 1.0,
+    "raw_recall_if_review_counts_as_miss": 0.8723404255319149,
+    "operational_recall_if_unsure_is_reviewed": 1.0,
+    "hard_false_negative_rate": 0.0,
+    "auto_false_positive_rate": 0.0,
+    "brier_p_in_scope": 0.11865461406976748
+  },
+  "auxiliary": {}
+}
