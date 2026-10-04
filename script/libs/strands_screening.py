@@ -311,7 +311,8 @@ def evaluate_questions_sequentially(
         merged_answers[name] = answers[name]
         if not model:
             model = str(data.get("model", "strands-decider"))
-        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        usage_raw = data.get("usage")
+        usage: dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}
         input_tokens += int(usage.get("input_tokens", 0) or 0)
         output_tokens += int(usage.get("output_tokens", 0) or 0)
         latency_ms += float(data.get("latency_ms", 0.0) or 0.0)
@@ -365,8 +366,14 @@ def parse_response(
     actual = answers.get("actual_use")
     microbial = answers.get("microbial_only")
     method = answers.get("method_relevance")
-    if not all(isinstance(x, dict) for x in (scope, actual, microbial, method)):
-        raise RuntimeError("response is missing one or more expected answers")
+    if not isinstance(scope, dict):
+        raise RuntimeError("response is missing scope answer")
+    if not isinstance(actual, dict):
+        raise RuntimeError("response is missing actual_use answer")
+    if not isinstance(microbial, dict):
+        raise RuntimeError("response is missing microbial_only answer")
+    if not isinstance(method, dict):
+        raise RuntimeError("response is missing method_relevance answer")
 
     probabilities = scope.get("probabilities")
     if not isinstance(probabilities, dict):
@@ -397,7 +404,8 @@ def parse_response(
         f"method_relevance={p_method_relevance:.3f}"
     )
 
-    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    usage_raw = data.get("usage")
+    usage: dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}
     return {
         "flag_label": label,
         "flag_confidence": round(float(scope.get("confidence", 0.0)), 6),
