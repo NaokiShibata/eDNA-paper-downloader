@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import asdict
@@ -29,12 +30,25 @@ def _ensure_runtime(modules: tuple[str, ...]) -> None:
     )
 
 
-_ensure_runtime(("pandas", "typer"))
+_ensure_runtime(("pandas", "requests", "tqdm", "typer"))
 
 import pandas as pd
+import requests
 import typer
+from tqdm import tqdm
 
 from libs.cli_logging import log_run_header, setup_logger
+from libs.strands_screening import (
+    DEFAULT_BASE_URL,
+    EXTRA_COLUMNS,
+    PROMPT_VERSION,
+    check_health,
+    classify_abstract,
+    coalesce,
+    load_config,
+    prepare_abstract,
+    record_id,
+)
 from libs.edna_pubmed import (
     _date_range_clause,
     _normalize_date_str,
@@ -152,6 +166,21 @@ def fetch(
     biorxiv_query: str = typer.Option("eDNA", help="Query string for bioRxiv local filtering."),
     biorxiv_out_prefix: str | None = typer.Option(None, help="Output prefix for bioRxiv results."),
     abstract: bool = typer.Option(False, help="Include abstracts."),
+    strands_filter: bool = typer.Option(
+        False,
+        "--strands-filter/--no-strands-filter",
+        help="Screen merged papers with Strands Decider and exclude only out_of_scope from final output.",
+    ),
+    strands_config: Path | None = typer.Option(
+        None,
+        "--strands-config",
+        help="Strands JSON/JSONC config. Defaults to config/strands_flagger.example.jsonc.",
+    ),
+    strands_base_url: str | None = typer.Option(
+        None,
+        "--strands-base-url",
+        help="Override the Strands Decider server URL from config.",
+    ),
     crossref: bool = typer.Option(False, help="Try filling missing DOI via Crossref (heuristic)."),
     user_agent: str = typer.Option(
         "edna-literature-fetch/1.0 (mailto:your_email@example.com)",
@@ -169,6 +198,49 @@ def fetch(
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logger("edna_literature_fetch", log_level=log_level, log_file=log_file)
+
+    if strands_filter and not abstract:
+        abstract = True
+        logger.info("Strands filtering requires abstracts; enabling abstract retrieval.")
+
+    strands_cfg: dict[str, object] = {}
+    strands_base = DEFAULT_BASE_URL
+    strands_timeout = 120.0
+    strands_retries = 3
+    strands_include_threshold = 0.70
+    strands_actual_use_threshold = 0.60
+    strands_exclude_threshold = 0.50
+    strands_exclude_actual_use_max = 0.50
+    strands_exclude_method_relevance_max = 0.60
+    strands_max_abstract_chars: int | None = None
+
+    if strands_filter:
+        config_path = strands_config
+        if config_path is None:
+            config_path = Path(__file__).resolve().parents[1] / "config" / "strands_flagger.example.jsonc"
+        strands_cfg = load_config(config_path)
+        strands_base = str(
+            coalesce(strands_base_url, strands_cfg, "base_url", DEFAULT_BASE_URL)
+        ).rstrip("/")
+        strands_timeout = float(coalesce(None, strands_cfg, "timeout", 120.0))
+        strands_retries = int(coalesce(None, strands_cfg, "retries", 3))
+        strands_include_threshold = float(
+            coalesce(None, strands_cfg, "include_threshold", 0.70)
+        )
+        strands_actual_use_threshold = float(
+            coalesce(None, strands_cfg, "actual_use_threshold", 0.60)
+        )
+        strands_exclude_threshold = float(
+            coalesce(None, strands_cfg, "exclude_threshold", 0.50)
+        )
+        strands_exclude_actual_use_max = float(
+            coalesce(None, strands_cfg, "exclude_actual_use_max", 0.50)
+        )
+        strands_exclude_method_relevance_max = float(
+            coalesce(None, strands_cfg, "exclude_method_relevance_max", 0.60)
+        )
+        max_chars_value = coalesce(None, strands_cfg, "max_abstract_chars", None)
+        strands_max_abstract_chars = int(max_chars_value) if max_chars_value is not None else None
 
     exclude_terms = exclude or []
     final_query = build_query_with_excludes(query, exclude_terms)
@@ -201,6 +273,9 @@ def fetch(
         "biorxiv_query": biorxiv_query,
         "biorxiv_out_prefix": biorxiv_out_prefix,
         "abstract": abstract,
+        "strands_filter": strands_filter,
+        "strands_config": str(strands_config) if strands_config else None,
+        "strands_base_url": strands_base if strands_filter else None,
         "crossref": crossref,
         "user_agent": user_agent,
         "sleep": sleep,
@@ -302,6 +377,131 @@ def fetch(
 
     df = pd.DataFrame([asdict(p) for p in papers])
 
+    rejected_df: pd.DataFrame | None = None
+    if strands_filter:
+        session = requests.Session()
+        try:
+            health_data = check_health(session, strands_base, strands_timeout)
+        except Exception as exc:
+            raise typer.BadParameter(
+                f"could not connect to Strands Decider at {strands_base}: {exc}"
+            ) from exc
+
+        logger.info(
+            "Strands filter server status=%s model=%s device=%s max_length=%s",
+            health_data.get("status"),
+            health_data.get("model"),
+            health_data.get("device"),
+            health_data.get("max_length"),
+        )
+
+        kept_rows: list[dict[str, object]] = []
+        rejected_rows: list[dict[str, object]] = []
+        error_count = 0
+
+        progress = tqdm(
+            df.to_dict(orient="records"),
+            total=len(df),
+            desc="Strands filtering",
+            position=0,
+            dynamic_ncols=True,
+        )
+        status = tqdm(
+            total=0,
+            position=1,
+            bar_format="{desc}",
+            leave=False,
+        )
+
+        for row in progress:
+            meta = {
+                str(key): "" if pd.isna(value) else str(value)
+                for key, value in row.items()
+            }
+            screened_row: dict[str, object] = dict(row)
+            screened_row["flag_record_id"] = record_id(meta)
+            prepared = prepare_abstract(meta.get("abstract", ""), strands_max_abstract_chars)
+
+            if not prepared:
+                screened_row.update(
+                    {
+                        "flag_label": "unsure",
+                        "flag_confidence": "",
+                        "flag_reason": "unsure: abstract is empty",
+                        "flag_model_path": "",
+                        "flag_prompt_version": PROMPT_VERSION,
+                    }
+                )
+            else:
+                try:
+                    screened_row.update(
+                        classify_abstract(
+                            session=session,
+                            abstract=prepared,
+                            base_url=strands_base,
+                            timeout=strands_timeout,
+                            retries=strands_retries,
+                            include_threshold=strands_include_threshold,
+                            actual_use_threshold=strands_actual_use_threshold,
+                            exclude_threshold=strands_exclude_threshold,
+                            exclude_actual_use_max=strands_exclude_actual_use_max,
+                            exclude_method_relevance_max=strands_exclude_method_relevance_max,
+                        )
+                    )
+                except Exception as exc:
+                    error_count += 1
+                    logger.warning(
+                        "Strands process_error record=%s error=%s",
+                        screened_row["flag_record_id"],
+                        exc,
+                    )
+                    screened_row.update(
+                        {
+                            "flag_label": "process_error",
+                            "flag_confidence": "",
+                            "flag_reason": str(exc),
+                            "flag_model_path": "",
+                            "flag_prompt_version": PROMPT_VERSION,
+                        }
+                    )
+
+            label = str(screened_row.get("flag_label", ""))
+            if label == "out_of_scope":
+                rejected_rows.append(screened_row)
+            else:
+                kept_rows.append(screened_row)
+
+            p_in = screened_row.get("strands_p_in_scope")
+            p_out = screened_row.get("strands_p_out_of_scope")
+            label_display = f"[{label:<13}]"
+            title = meta.get("title", "")
+            if isinstance(p_in, (int, float)) and isinstance(p_out, (int, float)):
+                message = f"{label_display} in={p_in:.2f} out={p_out:.2f} | {title}"
+            else:
+                message = f"{label_display} | {title}"
+
+            terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+            max_status_width = max(20, terminal_width - 1)
+            if len(message) > max_status_width:
+                message = message[: max_status_width - 3] + "..."
+            status.set_description_str(message, refresh=True)
+
+        status.clear()
+        status.close()
+        progress.refresh()
+
+        screened_columns = list(df.columns) + [
+            col for col in EXTRA_COLUMNS if col not in df.columns
+        ]
+        df = pd.DataFrame(kept_rows, columns=screened_columns)
+        rejected_df = pd.DataFrame(rejected_rows, columns=screened_columns)
+        logger.info(
+            "Strands filter result: retained=%d rejected=%d process_error=%d",
+            len(df),
+            len(rejected_df),
+            error_count,
+        )
+
     csv_path = out_dir / f"{out_prefix}.csv"
     json_path = out_dir / f"{out_prefix}.json"
 
@@ -309,7 +509,21 @@ def fetch(
     df.to_csv(csv_path, index=False)
 
     logger.info(f"Writing JSON: {json_path}")
-    json_path.write_text(json.dumps(df.to_dict(orient="records"), ensure_ascii=False, indent=2), encoding="utf-8")
+    json_path.write_text(
+        json.dumps(df.to_dict(orient="records"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    if rejected_df is not None:
+        rejected_csv_path = out_dir / f"{out_prefix}.rejected.csv"
+        rejected_json_path = out_dir / f"{out_prefix}.rejected.json"
+        logger.info(f"Writing Strands rejected CSV: {rejected_csv_path}")
+        rejected_df.to_csv(rejected_csv_path, index=False)
+        logger.info(f"Writing Strands rejected JSON: {rejected_json_path}")
+        rejected_json_path.write_text(
+            json.dumps(rejected_df.to_dict(orient="records"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     if run_biorxiv:
         if not biorxiv_from_date or not biorxiv_to_date:
@@ -331,7 +545,14 @@ def fetch(
             log_file=bio_log_file,
         )
 
-    logger.info(f"Done. Count: {len(df)}")
+    if strands_filter and rejected_df is not None:
+        logger.info(
+            "Done. Retained: %d, rejected out_of_scope: %d",
+            len(df),
+            len(rejected_df),
+        )
+    else:
+        logger.info(f"Done. Count: {len(df)}")
 
 
 if __name__ == "__main__":
