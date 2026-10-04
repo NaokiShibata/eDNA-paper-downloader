@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -624,11 +625,17 @@ def flag(
             label = str(out_row.get("flag_label", ""))
             p_in = out_row.get("strands_p_in_scope")
             p_out = out_row.get("strands_p_out_of_scope")
+            label_display = f"[{label:<13}]"
 
             if isinstance(p_in, (int, float)) and isinstance(p_out, (int, float)):
-                message = f"[{label}] in={p_in:.2f} out={p_out:.2f} | {title}"
+                message = f"{label_display} in={p_in:.2f} out={p_out:.2f} | {title}"
             else:
-                message = f"[{label}] | {title}"
+                message = f"{label_display} | {title}"
+
+            terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+            max_status_width = max(20, terminal_width - 1)
+            if len(message) > max_status_width:
+                message = message[: max_status_width - 3] + "..."
 
             status.set_description_str(message, refresh=True)
 
