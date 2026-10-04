@@ -12,14 +12,14 @@ from typing import Any
 import click
 
 try:
-    from rich.console import Console as _Console
-    from rich.logging import RichHandler as _RichHandler
-except Exception:  # pragma: no cover
-    _Console = None
-    _RichHandler = None
+    import rich.console
+    import rich.logging
 
-Console: Any = _Console
-RichHandler: Any = _RichHandler
+    Console: Any = rich.console.Console
+    RichHandler: Any = rich.logging.RichHandler
+except Exception:  # pragma: no cover
+    Console = None
+    RichHandler = None
 
 
 def setup_logger(
