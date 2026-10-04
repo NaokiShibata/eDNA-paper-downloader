@@ -21,6 +21,9 @@ eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして�
 - `script/crossref_semantic_fetch.py`
   - Crossref + Semantic Scholar を収集し DOI/タイトル+年で重複統合
   - PubMed CSVを除外リストとして利用可能
+- `script/strands_serve_auto.py`
+  - GPU 1 → GPU 0 → CPUの順で計算デバイスを自動選択
+  - CPU fallback時は低速になることを明示してから起動
 - `script/strands_flagger.py`
   - Strands Deciderを使って `abstract` 全文からeDNA/eRNA関連性を高速判定
   - `in_scope` / `out_of_scope` / `unsure` の3段階でスクリーニング
@@ -32,7 +35,7 @@ eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして�
 
 - Python 3.12
 - 文献取得・CSV処理: Linux
-- Strands Decider: Ubuntu/Linux + NVIDIA GPU + CUDA
+- Strands Decider: Ubuntu/Linux。NVIDIA CUDA GPUがあればGPUを使用し、利用できない場合はCPUへ明示的にフォールバック
 - 環境管理: Pixi
 - Pixi環境はリポジトリ直下の `.pixi/` に作成
 
@@ -95,31 +98,24 @@ pixi shell
 
 以降は通常の `python` / `python3` コマンドが `.pixi` 環境を使用します。シェルに入らず実行する場合は `pixi run python ...` でも構いません。
 
-### 4) CUDAを確認
+### 4) 計算デバイスを確認
+
+```bash
+pixi run strands-device-check
+```
+
+CUDA GPUが利用可能な環境ではGPUを選択し、利用できない環境ではCPU fallbackを明示します。
+
+CUDA利用時の詳細診断が必要な場合だけ、以下を実行してください。
 
 ```bash
 pixi run cuda-check
-```
-
-Tritonは実行時にCUDA Driver API用の小さなC拡張をJITコンパイルするため、`cuda.h` も必要です。
-conda-forgeではこのヘッダは `cuda-cudart-dev` から `targets/x86_64-linux/include/` に配置されるため、`pixi.toml` に `cuda-cudart-dev` を含めています。
-
-```bash
 pixi run cuda-header-check
 pixi run triton-driver-check
 ```
 
-`cuda-header-check` が `exists: True`、`triton-driver-check` が `libcuda: ok` とGPU targetを表示すれば、
-TritonのCUDA初期化まで通っています。
-
-例えば以下のように表示され、`CUDA available: True` になればStrands DeciderをGPUで実行できます。
-
-```text
-torch: ...
-CUDA available: True
-CUDA runtime: ...
-GPU: NVIDIA ...
-```
+TritonはCUDA利用時にDriver API用の小さなC拡張をJITコンパイルするため、`cuda.h` も必要です。
+conda-forgeではこのヘッダを `cuda-cudart-dev` から `targets/x86_64-linux/include/` に配置します。
 
 ### Pixiタスク
 
@@ -128,8 +124,8 @@ GPU: NVIDIA ...
 | タスク | 内容 |
 | --- | --- |
 | `pixi run cuda-check` | PyTorchから見えるCUDA GPUを一覧表示 |
-| `pixi run cuda1-check` | `cuda:1` のGPU名と空きVRAMを確認 |
-| `pixi run strands-serve` | Strands Deciderを `cuda:1` でport 8012に起動 |
+| `pixi run strands-device-check` | Strands Deciderが選択するGPU/CPUを表示 |
+| `pixi run strands-serve` | GPU 1 → GPU 0 → CPUの順で自動選択し、port 8012にStrands Deciderを起動 |
 | `pixi run strands-health` | 起動中のStrands Decider APIを確認 |
 | `pixi run strands-screen ...` | `script/strands_flagger.py` を実行 |
 | `pixi run e2e-latest14 ...` | 最新14日の文献取得→Strands判定→簡易検証を通し実行 |
@@ -480,20 +476,34 @@ bioRxivの出力には以下が入ります。
 
 ### 1) Strands Deciderを起動
 
-Pixi環境を構築後、まずGPU 1を確認します。
+起動前に、どの計算デバイスが選ばれるか確認できます。
 
 ```bash
-pixi run cuda1-check
+pixi run strands-device-check
 ```
 
-現在の構成では物理GPU 1のRTX 5060 Tiを使用します。Pixiタスクは `CUDA_VISIBLE_DEVICES=1` を設定してからStrands Deciderを起動するため、Strandsプロセス内ではRTX 5060 Tiが論理 `cuda:0` として見えます。
+自動選択の優先順位は次のとおりです。
+
+1. 物理GPU 1が利用可能ならGPU 1
+2. GPUが1枚だけ、またはGPU 1が利用できない場合はGPU 0
+3. CUDA GPUが利用できない場合はCPU
+
+GPUを選んだ場合は、選択した物理GPUだけを `CUDA_VISIBLE_DEVICES` でStrands Deciderへ公開するため、Strandsプロセス内では論理 `cuda:0` として見えます。
+
+CPUへ切り替える場合は黙ってフォールバックせず、起動前に次のようなwarningを表示します。
+
+```text
+[strands-serve] No CUDA GPU detected
+[strands-serve] WARNING: Falling back to CPU explicitly (--device cpu). Inference will be slower than CUDA.
+```
+
+起動:
 
 ```bash
 pixi run strands-serve
 ```
 
-`strands-serve` タスクは `CUDA_VISIBLE_DEVICES=1` と `--device cuda` を使用します。古いStrands Decider CLIとの互換性を保つため、`--max-batch` など新しいサーバオプションには依存しません。
-prefix cacheを無効にしても判定内容は同じで、主な違いは複数質問時の速度です。
+GPU環境では `--device cuda`、GPUがない環境では `--device cpu` を明示してStrands Deciderを起動します。古いStrands Decider CLIとの互換性を保つため、`--max-batch` など新しいサーバオプションには依存しません。
 
 別ターミナルからhealth checkします。
 
