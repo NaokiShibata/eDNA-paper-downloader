@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 import typer
 
-from libs.strands_screening import check_health
+from libs.strands_screening import ScreeningConfig, check_health, default_config_path, load_config
 
 app = typer.Typer(add_completion=False)
 
@@ -154,18 +154,7 @@ def run(
         help="Window end date. Defaults to the current local date.",
     ),
     query: str = typer.Option(DEFAULT_QUERY, "--query"),
-    crossref_max_items: int = typer.Option(1000, "--crossref-max-items", min=1),
-    openalex_max_items: int = typer.Option(1000, "--openalex-max-items", min=1),
-    config: Path = typer.Option(
-        Path("config/strands_flagger.example.jsonc"),
-        "--config",
-        help="Strands screening config.",
-    ),
-    base_url: str = typer.Option(
-        "http://127.0.0.1:8012",
-        "--base-url",
-        help="Running Strands Decider server.",
-    ),
+    max_items: int = typer.Option(1000, "--max-items", min=1),
     out_dir: Path = typer.Option(
         Path("test/results"),
         "--out-dir",
@@ -184,11 +173,8 @@ def run(
         )
 
     repo_root = Path(__file__).resolve().parents[1]
-    config_path = _repo_path(repo_root, config)
+    cfg = ScreeningConfig.from_sources(load_config(default_config_path()))
     out_dir_path = _repo_path(repo_root, out_dir)
-    if not config_path.exists():
-        raise typer.BadParameter(f"Strands config not found: {config_path}")
-
     until = _parse_date(until_date)
     since = until - timedelta(days=days - 1)
     prefix = prefix or f"e2e_latest{days}_{until:%Y%m%d}"
@@ -207,10 +193,10 @@ def run(
     typer.echo(f"output dir   : {out_dir_path}")
 
     try:
-        health = check_health(requests.Session(), base_url, 10.0)
+        health = check_health(requests.Session(), cfg.base_url, cfg.timeout)
     except Exception as exc:
         raise typer.BadParameter(
-            f"Strands Decider is not reachable at {base_url.rstrip('/')}/health: {exc}. "
+            f"Strands Decider is not reachable at {cfg.base_url.rstrip('/')}/health: {exc}. "
             "Start it first with: pixi run strands-serve"
         ) from exc
     typer.echo(
@@ -231,22 +217,13 @@ def run(
         email,
         "--query",
         query,
-        "--since",
-        since.strftime("%Y/%m/%d"),
+        "--days",
+        str(days),
         "--until",
         until.strftime("%Y/%m/%d"),
-        "--abstract",
-        "--strands-filter",
-        "--strands-config",
-        str(config_path),
-        "--strands-base-url",
-        base_url,
-        "--crossref-max-items",
-        str(crossref_max_items),
-        "--openalex-max-items",
-        str(openalex_max_items),
-        "--user-agent",
-        f"eDNA-paper-downloader-e2e/1.0 (mailto:{email})",
+        "--strands",
+        "--max-items",
+        str(max_items),
         "--out-dir",
         str(out_dir_path),
         "--out-prefix",

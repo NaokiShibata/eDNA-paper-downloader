@@ -8,9 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from typer.testing import CliRunner
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "script"))
 
+import strands_flagger
 from libs.strands_screening import (
     PROMPT_VERSION,
     QUESTIONS,
@@ -22,6 +25,7 @@ from libs.strands_screening import (
     build_state,
     classify_abstract,
     decide_label,
+    default_config_path,
     prepare_abstract,
     record_id,
     screen_row,
@@ -73,6 +77,54 @@ class StrandsScreeningTest(unittest.TestCase):
             self.assertIsNone(cache.get("doi:10.1000/error"))
             screen_row(Mock(), meta | {"doi": "10.1000/empty", "abstract": ""}, ScreeningConfig(), cache=cache)
             self.assertIsNone(cache.get("doi:10.1000/empty"))
+
+    def test_default_config_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_dir = root / "config"
+            config_dir.mkdir()
+            with patch("libs.strands_screening.__file__", str(root / "script/libs/strands_screening.py")):
+                self.assertEqual(default_config_path(), config_dir / "strands_flagger.example.jsonc")
+                local = config_dir / "strands_flagger.jsonc"
+                local.touch()
+                self.assertEqual(default_config_path(), local)
+
+    def test_flagger_rewrites_output_using_cached_scores(self) -> None:
+        scores = {"strands_p_in_scope": 0.82, "strands_p_out_of_scope": 0.1, "strands_p_unsure": 0.08,
+                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2, "strands_p_method_relevance": 0.4}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_csv = root / "papers.csv"
+            input_csv.write_text("doi,title,abstract\n10.1000/abc,Study,Abstract\n", encoding="utf-8")
+            config = root / "config.json"
+            config.write_text(json.dumps({"cache_csv": str(root / "cache/scores.csv")}), encoding="utf-8")
+            output = root / "papers.strands.csv"
+            args = [str(input_csv), "--log-file", str(root / "flagger.log")]
+            with patch("strands_flagger.default_config_path", return_value=config), \
+                    patch("strands_flagger.check_health", return_value={}), \
+                    patch("libs.strands_screening.evaluate_abstract", return_value=scores) as evaluate:
+                for threshold, label in ((0.45, "in_scope"), (0.9, "unsure")):
+                    config.write_text(json.dumps({"cache_csv": str(root / "cache/scores.csv"),
+                                                  "include_threshold": threshold}), encoding="utf-8")
+                    result = CliRunner().invoke(strands_flagger.app, args)
+                    self.assertEqual(result.exit_code, 0, result.output)
+                    with output.open(encoding="utf-8") as stream:
+                        rows = list(csv.DictReader(stream))
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0]["flag_label"], label)
+                evaluate.assert_called_once()
+                input_csv.write_text("doi,title,abstract\n", encoding="utf-8")
+                result = CliRunner().invoke(strands_flagger.app, args)
+                self.assertEqual(result.exit_code, 0, result.output)
+                with output.open(encoding="utf-8") as stream:
+                    self.assertEqual(list(csv.DictReader(stream)), [])
+            self.assertIn("Strands cache hits=1 misses=0", (root / "flagger.log").read_text())
+
+    def test_unknown_config_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown screening config keys: abstract_column, resume"):
+            ScreeningConfig.from_sources({"resume": True, "abstract_column": "abstract"})
+        self.assertEqual(ScreeningConfig.from_sources({"cache_csv": "scores.csv"}).cache_csv, "scores.csv")
+        self.assertIsNone(ScreeningConfig.from_sources({"cache_csv": None}).cache_csv)
 
     def test_config_source_precedence(self) -> None:
         cfg = ScreeningConfig.from_sources(

@@ -151,10 +151,13 @@ eDNA/eRNA研究へ直接応用可能なMethod上の知見があるか。
 
 ## Strandsで判定
 
+設定は `config/strands_flagger.jsonc`、なければexampleを読み込みます。
+出力CSVは毎回書き直し、設定の `cache_csv` に保存したスコアを再利用します。
+閾値を変更してもキャッシュから現在の閾値でラベルを計算します。
+
 ```bash
 pixi run strands-screen \
   benchmark/edna_strands_200.review.csv \
-  --config config/strands_flagger.jsonc \
   --out-csv benchmark/edna_strands_200.strands.csv
 ```
 

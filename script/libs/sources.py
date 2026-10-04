@@ -546,7 +546,7 @@ def crossref_search_papers(
         logger.info(f"Crossref term filter dropped: {term_skipped}")
         logger.info(f"Crossref collected: {len(out)}")
         if len(out) >= max_items:
-            logger.warning("Crossref results were truncated; raise --crossref-max-items")
+            logger.warning("Crossref results were truncated; raise --max-items")
     return out
 
 
@@ -660,7 +660,7 @@ def openalex_search_papers(
         logger.info(f"OpenAlex preprint skipped (type=preprint): {preprint_skipped}")
         logger.info(f"OpenAlex collected: {len(out)}")
         if len(out) >= max_items:
-            logger.warning("OpenAlex results were truncated; raise --openalex-max-items")
+            logger.warning("OpenAlex results were truncated; raise --max-items")
     return out
 
 

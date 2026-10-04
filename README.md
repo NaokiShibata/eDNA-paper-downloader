@@ -12,10 +12,10 @@ eDNA関連の文献・プレプリント情報を収集し、CSVとして保存�
   - デフォルトで `PubMed + Crossref + OpenAlex` から統合取得
   - DOI優先、タイトル+年フォールバックで重複統合
   - `Crossref/OpenAlex` は `type` による preprint 除外を実施
-  - `--abstract` 有効時は abstract 空レコードを最終出力から除外
-  - `--strands-filter` で統合後のAbstractをStrands Deciderで判定し、`out_of_scope` のみ最終出力から除外
+  - 要旨を常に取得し、要旨がないレコードは別CSVへ保存
+  - `--strands` で統合後のAbstractをStrands Deciderで判定し、`out_of_scope` のみ最終出力から除外
   - 除外した論文は `*.rejected.csv` に保存して監査可能
-  - `--run-biorxiv` で bioRxiv/medRxiv を統合取得可能
+  - `--sources` で bioRxiv/medRxiv も選択可能
 - `script/strands_serve_auto.py`
   - GPU 1 → GPU 0 → CPUの順で計算デバイスを自動選択
   - CPU fallback時は低速になることを明示してから起動
@@ -166,6 +166,9 @@ python3 script/edna_literature_fetch.py \
 ```
 
 `--exclude` は複数指定でき、各値内の `OR` も解釈されます。
+`--days N` は `--until` または当日を含むN日間を指定し、`--since` との併用はエラーになります。
+`--email` は必須ですが、`NCBI_EMAIL` でも指定できます。
+APIキーは `NCBI_API_KEY` と `OPENALEX_API_KEY` からも読み込みます。
 
 ### ソース切り替え
 
@@ -176,14 +179,12 @@ python3 script/edna_literature_fetch.py --email you@example.com
 # 例: PubMedのみ
 python3 script/edna_literature_fetch.py \
   --email you@example.com \
-  --no-source-crossref \
-  --no-source-openalex
+  --sources pubmed
 
 # 例: Crossref/OpenAlex件数上限を指定
 python3 script/edna_literature_fetch.py \
   --email you@example.com \
-  --crossref-max-items 2000 \
-  --openalex-max-items 2000
+  --max-items 2000
 ```
 
 ### bioRxiv/medRxivを統合取得
@@ -191,37 +192,25 @@ python3 script/edna_literature_fetch.py \
 ```bash
 python3 script/edna_literature_fetch.py \
   --email you@example.com \
-  --since 2020/01/01 \
-  --run-biorxiv \
-  --biorxiv-from-date 2024/01/01 \
-  --biorxiv-to-date 2024/12/31 \
-  --biorxiv-query "eDNA"
+  --sources pubmed,crossref,openalex,biorxiv,medrxiv \
+  --since 2024/01/01 \
+  --until 2024/12/31
 ```
 
-`--run-biorxiv` を指定すると、bioRxivの結果も主出力へ統合し、重複除去とStrands判定の対象にします。
-`--biorxiv-server medrxiv` でmedRxivを取得できます。
-開始日は `--biorxiv-from-date`、省略時は `--since` が必要です。
-終了日は `--biorxiv-to-date`、省略時は `--until`、どちらも省略すると当日です。
+`--sources` はカンマ区切りで指定します。
+使用できる名前は `pubmed`, `crossref`, `openalex`, `biorxiv`, `medrxiv` です。
+bioRxiv/medRxivには `--since` と `--until` の期間を使い、`--query` から抽出した検索語をOR条件で照合します。
+開始日は `--since` または `--days` で指定してください。
 
-### 要旨を含める (`--abstract`)
+### 要旨の取得
 
-```bash
-python3 script/edna_literature_fetch.py \
-  --email you@example.com \
-  --since 2020/01/01 \
-  --abstract \
-  --out-dir results \
-  --out-prefix edna_multisource_with_abstract
-```
-
-`--abstract` 有効時は、統合後にEurope PMCでDOIから不足する要旨を補完します。
-`--no-europepmc-abstracts` で補完を無効にできます。
+要旨は常に取得し、統合後にEurope PMCでDOIから不足する要旨を補完します。
 補完後も要旨がない論文は `{out_prefix}.no_abstract.csv` に保存し、主出力とStrands判定から除外します。
 件数はログに表示します。
 
 ### 取得時にStrands Deciderで関連論文を絞り込む
 
-Strands Deciderサーバを起動した状態で `--strands-filter` を指定すると、PubMed / Crossref / OpenAlexと、`--run-biorxiv` 指定時のbioRxiv/medRxivから取得・統合・重複除去した後の論文をAbstractで判定します。
+Strands Deciderサーバを起動した状態で `--strands` を指定すると、`--sources` で選択した取得元から取得・統合・重複除去した後の論文をAbstractで判定します。
 
 ```bash
 pixi run strands-serve
@@ -232,15 +221,14 @@ pixi run strands-serve
 ```bash
 pixi run python script/edna_literature_fetch.py \
   --email you@example.com \
-  --since 2026/09/21 \
+  --days 14 \
   --until 2026/10/04 \
-  --strands-filter \
-  --strands-config config/strands_flagger.jsonc \
+  --strands \
   --out-dir results \
   --out-prefix edna_latest
 ```
 
-`--strands-filter` を指定した場合は、判定に必要なためAbstract取得が自動的に有効になります。処理順は以下です。
+`--strands` はデフォルトで無効です。指定時の処理順は以下です。
 
 ```text
 PubMed / Crossref / OpenAlex / bioRxiv・medRxiv (任意)
@@ -270,9 +258,10 @@ results/edna_latest.no_abstract.csv
 
 通常のCSVには `in_scope` / `unsure` / `process_error` を残し、`out_of_scope` のみ `rejected` 側へ分離します。個別論文の判定エラーは取りこぼし防止のため自動除外しません。
 
-`--strands-filter` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
+`--strands` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
 
-`--strands-cache results/strands_scores.csv` を指定すると、判定スコアをCSVに保存して再利用します。
+fetchとflaggerは設定の `cache_csv` を共用し、判定スコアをCSVに保存して再利用します。
+デフォルトは `.cache/strands_scores.csv` で、`null` にすると無効になります。
 キャッシュは論文IDとプロンプトのバージョンで照合し、判定ラベルは毎回現在の閾値で計算します。
 判定エラーと要旨なしは保存せず、終了時にヒット数とミス数を表示します。
 設定キー `batch_questions` はデフォルトで `false` です。
@@ -288,12 +277,8 @@ python3 script/edna_literature_fetch.py \
   --exclude 'metagenome OR probiotic OR microbiome' \
   --since 2008/01/01 \
   --until 2025/12/31 \
-  --abstract \
-  --crossref-max-items 2000 \
-  --openalex-max-items 2000 \
-  --run-biorxiv \
-  --biorxiv-from-date 2024/01/01 \
-  --biorxiv-to-date 2024/12/31 \
+  --max-items 2000 \
+  --sources pubmed,crossref,openalex,biorxiv \
   --out-dir results \
   --out-prefix edna_multisource_$(date +%Y%m%d) \
   --log-file logs/edna_multisource_$(date +%Y%m%d).log
@@ -312,13 +297,13 @@ python3 script/edna_literature_fetch.py \
 - OpenAlex取得は `pyalex` を使用します（要 `pip install pyalex`）。
 - OpenAlex取得は `Works().filter(title_and_abstract={"search": ...}).filter(...).paginate(...)` で実行しています。
   - `per_page=200`
-  - `n_max` は `--openalex-max-items` に対応
+  - `n_max` は `--max-items` に対応
 - `pyalex.config.email` は `--email` の値を設定しています（OpenAlexの polite pool 利用を意図）。
 - OpenAlex APIキーは `--openalex-api-key` で設定できます（ログにはマスク表示）。
 - `Crossref/OpenAlex` では `type` ベースで preprint を除外します。
-- `--abstract` が有効な場合のみ、要旨補完後もabstractが空のレコードを `no_abstract` 側へ保存します。
+- 要旨補完後もabstractが空のレコードを `no_abstract` 側へ保存します。
 - Crossrefはcursor pagingで取得します。Crossrefはboolean検索に対応しないため、クエリ語 (例: `environmental DNA`, `eDNA`) をタイトルまたは要旨に含む論文だけを残し、一致が0件のページに達した時点で取得を打ち切ります。
-- Crossref/OpenAlexの取得件数が上限に達するとwarningを表示します。必要に応じて `--crossref-max-items` / `--openalex-max-items` を増やしてください。
+- Crossref/OpenAlexの取得件数が上限に達するとwarningを表示します。必要に応じて `--max-items` を増やしてください。
 - ログは `rich` を使って標準出力に表示されます（RUN HEADER含む）。
 
 ### OpenAlex APIメモ (pyalex)
@@ -420,7 +405,13 @@ pixi run strands-health
 cp config/strands_flagger.example.jsonc config/strands_flagger.jsonc
 ```
 
+設定は `config/strands_flagger.jsonc` があれば読み込み、なければ `config/strands_flagger.example.jsonc` を使います。
+使用したパスをログに表示します。
+設定には判定パラメータと `cache_csv` だけを指定し、未知のキーがあればエラーになります。
+flaggerでは `--config` で別のファイルも指定できます。
+
 デフォルトではCSVの `abstract` 列を使用します。
+`--abstract-column` で列名を変更できます。
 モデルにはタイトルとAbstractを渡します。`max_abstract_chars` のデフォルトは `6000` です。外すと非常に長いAbstractでサーバの最大長を超え、サーバが使用不能になることがあります。
 
 主な閾値:
@@ -455,8 +446,9 @@ pixi run strands-screen \
   --out-csv results/edna_multisource_2020plus.strands.csv
 ```
 
-`resume=true` がデフォルトです。正常に完了した `flag_record_id` はスキップし、
-`process_error` は再実行時に再試行します。
+出力CSVは毎回書き直し、判定した行から順に保存します。
+デフォルトの出力先は入力CSVと同じディレクトリの `<入力stem>.strands.csv` です。
+再実行時は共通キャッシュのスコアを使い、判定エラーは再試行します。
 
 ### 出力
 
@@ -527,13 +519,7 @@ pixi run e2e-latest14 \
   --days 14
 ```
 
-ローカルのStrands設定を使う場合:
-
-```bash
-pixi run e2e-latest14 \
-  --email you@example.com \
-  --config config/strands_flagger.jsonc
-```
+E2Eも共通のStrands設定を自動で読み込みます。
 
 生成物はデフォルトで `test/results/` に出力されます。
 

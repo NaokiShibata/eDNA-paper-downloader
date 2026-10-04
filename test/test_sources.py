@@ -5,6 +5,7 @@ import logging
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -30,6 +31,27 @@ from libs.sources import (
 
 
 class SourcesTest(unittest.TestCase):
+    def test_sources(self) -> None:
+        self.assertEqual(edna_literature_fetch.parse_sources("pubmed, crossref,openalex,biorxiv,medrxiv"),
+                         {"pubmed", "crossref", "openalex", "biorxiv", "medrxiv"})
+        for value in ("pubmed,unknown", "", "pubmed,"):
+            with self.assertRaises(ValueError):
+                edna_literature_fetch.parse_sources(value)
+        result = CliRunner().invoke(edna_literature_fetch.app,
+                                    ["--email", "test@example.org", "--sources", "unknown"])
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("Unknown sources: unknown", result.output)
+
+    def test_days_window(self) -> None:
+        window = edna_literature_fetch.date_window
+        self.assertEqual(window(None, "2026-03-01", 2), ("2026/02/28", "2026/03/01"))
+        self.assertEqual(window(None, None, 14, date(2026, 10, 4)), ("2026/09/21", "2026/10/04"))
+        self.assertEqual(window(None, "2026/01/01", 1), ("2026/01/01", "2026/01/01"))
+        self.assertEqual(window("2026/01/01", "2026/01/31", None), ("2026/01/01", "2026/01/31"))
+        for since, days in (("2026/01/01", 14), (None, 0)):
+            with self.assertRaises(ValueError):
+                window(since, None, days, date(2026, 10, 4))
+
     def test_query_terms(self) -> None:
         query = ('("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract] OR '
                  '"environmental RNA"[Title/Abstract] OR eRNA[Title/Abstract])')
@@ -85,7 +107,7 @@ class SourcesTest(unittest.TestCase):
             result = crossref_search_papers("eDNA", "test", max_items=2, sleep=0, logger=logger)
         self.assertEqual(cursors, ["*", "next"])
         self.assertEqual(len(result), 2)
-        logger.warning.assert_called_once_with("Crossref results were truncated; raise --crossref-max-items")
+        logger.warning.assert_called_once_with("Crossref results were truncated; raise --max-items")
 
     def test_fetch_merges_biorxiv_and_saves_missing_abstracts(self) -> None:
         papers = [Paper("", "Missing 要旨", "J", 2026, "", None, None, ""),
@@ -95,11 +117,12 @@ class SourcesTest(unittest.TestCase):
                 patch("edna_literature_fetch.crossref_search_papers", return_value=papers), \
                 patch("edna_literature_fetch.biorxiv_search_papers", return_value=[bio]) as search, \
                 patch("edna_literature_fetch.europepmc_fill_abstracts", side_effect=lambda papers, **kwargs: papers) as fill, \
+                patch("edna_literature_fetch.default_config_path", return_value=ROOT / "config/strands_flagger.example.jsonc"), \
                 patch("edna_literature_fetch.check_health", return_value={}), \
                 patch("edna_literature_fetch.screen_row", return_value={"flag_label": "in_scope"}) as screen:
             result = CliRunner().invoke(edna_literature_fetch.app, [
                 "--email", "test@example.org", "--since", "2026/01/01", "--until", "2026/01/31",
-                "--no-source-pubmed", "--no-source-openalex", "--run-biorxiv", "--strands-filter",
+                "--sources", "crossref,biorxiv", "--strands",
                 "--out-dir", directory, "--out-prefix", "test",
             ])
             self.assertEqual(result.exit_code, 0, result.output)
@@ -116,6 +139,35 @@ class SourcesTest(unittest.TestCase):
             self.assertEqual(search.call_args.kwargs["from_date"], "2026/01/01")
             self.assertEqual(search.call_args.kwargs["to_date"], "2026/01/31")
             self.assertTrue(search.call_args.kwargs["include_abstract"])
+            self.assertEqual(search.call_args.kwargs["query"], "environmental dna OR edna")
+            self.assertIsNotNone(screen.call_args.kwargs["cache"])
+
+    def test_fetch_env_keys_days_and_shared_item_limit(self) -> None:
+        paper = Paper("123", "eDNA study", "J", 2026, "", "10.1000/abc", "Abstract", "url")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("edna_literature_fetch.pubmed_search_all_pmids", return_value=["123"]) as pubmed, \
+                patch("edna_literature_fetch.pubmed_fetch_details", return_value=[paper]) as details, \
+                patch("edna_literature_fetch.crossref_search_papers", return_value=[]) as crossref, \
+                patch("edna_literature_fetch.openalex_search_papers", return_value=[]) as openalex, \
+                patch("edna_literature_fetch.europepmc_fill_abstracts", side_effect=lambda papers, **kwargs: papers) as fill:
+            result = CliRunner().invoke(edna_literature_fetch.app, [
+                "--days", "14", "--until", "2026-10-04", "--max-items", "42", "--out-dir", directory,
+            ], env={"NCBI_EMAIL": "test@example.org", "NCBI_API_KEY": "ncbi-key",
+                    "OPENALEX_API_KEY": "openalex-key"})
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(pubmed.call_args.kwargs["api_key"], "ncbi-key")
+            self.assertEqual(pubmed.call_args.kwargs["sort"], "most+recent")
+            self.assertEqual(pubmed.call_args.kwargs["batch"], 10000)
+            self.assertTrue(details.call_args.kwargs["include_abstract"])
+            for search in (crossref, openalex):
+                self.assertEqual(search.call_args.kwargs["max_items"], 42)
+                self.assertEqual(search.call_args.kwargs["from_date"], "2026/09/21")
+                self.assertEqual(search.call_args.kwargs["until_date"], "2026/10/04")
+                self.assertTrue(search.call_args.kwargs["include_abstract"])
+            self.assertIn("test@example.org", crossref.call_args.kwargs["user_agent"])
+            self.assertEqual(openalex.call_args.kwargs["api_key"], "openalex-key")
+            fill.assert_called_once()
+            self.assertTrue((Path(directory) / "edna_papers.no_abstract.csv").exists())
 
     def test_parse_europepmc(self) -> None:
         self.assertEqual(_parse_europepmc({"resultList": {"result": [
