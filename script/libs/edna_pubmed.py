@@ -5,6 +5,7 @@ import io
 import logging
 import re
 import time
+from functools import partial
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict
 from typing import Any
@@ -292,24 +293,21 @@ def pubmed_search_all_pmids(
             if maxdate:
                 kwargs_page["maxdate"] = maxdate
 
-        page_retstart = retstart
-        page_kwargs = kwargs_page.copy()
-
-        def _read_page() -> Any:
-            return Entrez.esearch(
-                db="pubmed",
-                term=query,
-                retmode="xml",
-                retstart=page_retstart,
-                retmax=min(batch, count - page_retstart),
-                webenv=webenv,
-                query_key=query_key,
-                sort=sort,
-                **page_kwargs,
-            )
+        read_page: Callable[[], Any] = partial(
+            Entrez.esearch,
+            db="pubmed",
+            term=query,
+            retmode="xml",
+            retstart=retstart,
+            retmax=min(batch, count - retstart),
+            webenv=webenv,
+            query_key=query_key,
+            sort=sort,
+            **kwargs_page,
+        )
 
         res2 = _entrez_request(
-            _read_page,
+            read_page,
             logger,
             f"esearch page retstart={retstart}",
         )
@@ -352,11 +350,14 @@ def pubmed_fetch_details(
 
     for i in tqdm(range(0, len(pmids), chunk_size), desc="Fetching PubMed details"):
         chunk = pmids[i : i + chunk_size]
-        def _read_chunk() -> Any:
-            return Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml")
-
+        read_chunk: Callable[[], Any] = partial(
+            Entrez.efetch,
+            db="pubmed",
+            id=",".join(chunk),
+            retmode="xml",
+        )
         records = _entrez_request(
-            _read_chunk,
+            read_chunk,
             logger,
             f"efetch chunk start={i}",
         )
