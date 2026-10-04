@@ -29,6 +29,7 @@ cuda1-check = """python -c "import torch; print('torch:', torch.__version__); pr
 strands-serve = "CUDA_VISIBLE_DEVICES=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cuda --host 127.0.0.1 --port 8012"
 strands-health = """python -c "import requests; print(requests.get('http://127.0.0.1:8012/health', timeout=10).json())" """
 strands-screen = "python script/strands_flagger.py"
+e2e-latest14 = "python script/e2e_latest14.py"
 benchmark-make = "python script/make_strands_benchmark.py"
 benchmark-eval = "python script/evaluate_strands_benchmark.py"
 benchmark-tune = "python script/tune_strands_thresholds.py"
