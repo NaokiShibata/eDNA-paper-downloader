@@ -14,6 +14,7 @@ from Bio import Entrez
 from tqdm import tqdm
 
 from .edna_models import Paper
+from .http_retry import make_retry_session
 from .text_normalize import clean_doi, clean_term, clean_text, norm_title
 
 
@@ -127,8 +128,6 @@ def _date_range_clause(since: str | None, until: str | None, datetype: str) -> s
     if not since_norm and not until_norm:
         return None
     field = datetype.upper()
-    if field not in ("PDAT", "EDAT"):
-        field = field.upper()
     start = since_norm or "0001/01/01"
     end = until_norm or "3000/12/31"
     return f'("{start}"[{field}] : "{end}"[{field}])'
@@ -187,43 +186,10 @@ def _pmid_key(pmid: str) -> int:
         return 0
 
 
-def keep_latest_per_doi_pubmed(papers: list[Paper], logger: logging.Logger | None = None) -> list[Paper]:
-    best: dict[str, Paper] = {}
-    no_doi: list[Paper] = []
-
-    for p in papers:
-        doi = (p.doi or "").strip().lower()
-        if not doi:
-            no_doi.append(p)
-            continue
-
-        cur = best.get(doi)
-        if cur is None:
-            best[doi] = p
-            continue
-
-        p_key = (p.year or 0, _pmid_key(p.pmid))
-        c_key = (cur.year or 0, _pmid_key(cur.pmid))
-        if p_key > c_key:
-            best[doi] = p
-
-    out = list(best.values()) + no_doi
-    out.sort(
-        key=lambda x: (x.year or 0, _pmid_key(x.pmid)),
-        reverse=True,
-    )
-    if logger:
-        logger.info(f"DOI latest-select (PubMed): {len(papers)} -> {len(out)}")
-    return out
-
-
 def pubmed_search_all_pmids(
     query: str,
     email: str,
     api_key: str | None = None,
-    mindate: str | None = None,
-    maxdate: str | None = None,
-    datetype: str = "pdat",
     sort: str = "most+recent",
     batch: int = 10000,
     sleep: float = 0.34,
@@ -241,15 +207,8 @@ def pubmed_search_all_pmids(
         "retmax": 0,
         "sort": sort,
     }
-    if mindate or maxdate:
-        kwargs.update({"datetype": datetype})
-        if mindate:
-            kwargs["mindate"] = mindate
-        if maxdate:
-            kwargs["maxdate"] = maxdate
-
     if logger:
-        logger.info(f"Entrez.esearch initial (retmax=0) sort={sort} datetype={datetype}")
+        logger.info(f"Entrez.esearch initial (retmax=0) sort={sort}")
 
     res = _entrez_request(lambda: Entrez.esearch(**kwargs), logger, "esearch initial")
 
@@ -268,14 +227,6 @@ def pubmed_search_all_pmids(
         if logger and logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Paging PMIDs retstart={retstart} retmax={min(batch, count - retstart)}")
 
-        kwargs_page = {}
-        if mindate or maxdate:
-            kwargs_page.update({"datetype": datetype})
-            if mindate:
-                kwargs_page["mindate"] = mindate
-            if maxdate:
-                kwargs_page["maxdate"] = maxdate
-
         read_page: Callable[[], Any] = partial(
             Entrez.esearch,
             db="pubmed",
@@ -286,7 +237,6 @@ def pubmed_search_all_pmids(
             webenv=webenv,
             query_key=query_key,
             sort=sort,
-            **kwargs_page,
         )
 
         res2 = _entrez_request(
@@ -382,7 +332,7 @@ def crossref_fill_missing_doi(
     sleep: float = 0.2,
     logger: logging.Logger | None = None,
 ) -> list[Paper]:
-    sess = requests.Session()
+    sess = make_retry_session()
     headers = {"User-Agent": user_agent}
     out: list[Paper] = []
 
@@ -399,8 +349,13 @@ def crossref_fill_missing_doi(
             r.raise_for_status()
             js = r.json()
             items = js.get("message", {}).get("items", [])
-            doi = items[0].get("DOI") if items else None
-            out.append(Paper(**{**asdict(p), "doi": doi}))
+            hit = items[0] if items else {}
+            titles = hit.get("title") or []
+            if titles and norm_title(titles[0]) == norm_title(p.title):
+                doi = clean_doi(hit.get("DOI")) or None
+                out.append(Paper(**{**asdict(p), "doi": doi}))
+            else:
+                out.append(p)
         except Exception as e:
             if logger and logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"Crossref lookup failed for title={p.title!r}: {e}")
@@ -463,7 +418,7 @@ def crossref_search_papers(
     sleep: float = 0.2,
     logger: logging.Logger | None = None,
 ) -> list[Paper]:
-    sess = requests.Session()
+    sess = make_retry_session()
     headers = {"User-Agent": user_agent}
     out: list[Paper] = []
     preprint_skipped = 0

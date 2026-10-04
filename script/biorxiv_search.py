@@ -193,7 +193,7 @@ def write_outputs_overwrite(out_dir: Path, out_prefix: str, rows: list[Preprint]
 
     logger.debug(f"Overwriting outputs: {csv_path}, {json_path} (rows={len(df)})")
     df.to_csv(csv_path, index=False)
-    json_path.write_text(json.dumps(df.to_dict(orient="records"), ensure_ascii=False, indent=2), encoding="utf-8")
+    df.to_json(json_path, orient="records", force_ascii=False, indent=2)
 
 
 def write_delta_outputs(out_dir: Path, out_prefix: str, delta_rows: list[Preprint], logger: logging.Logger) -> None:
@@ -206,7 +206,7 @@ def write_delta_outputs(out_dir: Path, out_prefix: str, delta_rows: list[Preprin
     logger.info(f"Writing DELTA CSV: {csv_path}")
     df.to_csv(csv_path, index=False)
     logger.info(f"Writing DELTA JSON: {json_path}")
-    json_path.write_text(json.dumps(df.to_dict(orient="records"), ensure_ascii=False, indent=2), encoding="utf-8")
+    df.to_json(json_path, orient="records", force_ascii=False, indent=2)
 
 
 def debug_log_hits(logger: logging.Logger, rows: list[Preprint], max_items: int, title: str = "HITS") -> None:
