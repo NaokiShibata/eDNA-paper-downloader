@@ -544,7 +544,21 @@ def flag(
         if write_header:
             writer.writeheader()
 
-        for _, row in tqdm(df.iterrows(), total=len(df), desc="Strands screening"):
+        progress = tqdm(
+            df.iterrows(),
+            total=len(df),
+            desc="Strands screening",
+            position=0,
+            dynamic_ncols=True,
+        )
+        status = tqdm(
+            total=0,
+            position=1,
+            bar_format="{desc}",
+            leave=False,
+        )
+
+        for _, row in progress:
             meta = _row_to_meta(row)
             record_id = _record_id(meta)
             if resume and record_id in processed:
@@ -605,6 +619,20 @@ def flag(
             writer.writerow(out_row)
             handle.flush()
             processed_count += 1
+
+            title = meta.get("title", "").strip()
+            label = str(out_row.get("flag_label", ""))
+            p_in = out_row.get("strands_p_in_scope")
+            p_out = out_row.get("strands_p_out_of_scope")
+
+            if isinstance(p_in, (int, float)) and isinstance(p_out, (int, float)):
+                message = f"[{label}] in={p_in:.2f} out={p_out:.2f} | {title}"
+            else:
+                message = f"[{label}] | {title}"
+
+            status.set_description_str(message, refresh=True)
+
+        status.close()
 
     typer.echo(
         f"Finished: processed={processed_count} skipped={skipped_count} errors={error_count} output={out_csv}"
