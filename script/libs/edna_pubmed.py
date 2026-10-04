@@ -5,8 +5,10 @@ import io
 import logging
 import re
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict
+from functools import partial
+from typing import Any
 
 import requests
 from Bio import Entrez
@@ -149,7 +151,7 @@ def _date_range_clause(since: str | None, until: str | None, datetype: str) -> s
     return f'("{start}"[{field}] : "{end}"[{field}])'
 
 
-def _entrez_read_handle(handle, logger: logging.Logger | None, context: str):
+def _entrez_read_handle(handle: Any, logger: logging.Logger | None, context: str) -> Any:
     raw = b""
     try:
         raw = handle.read()
@@ -172,7 +174,12 @@ def _entrez_read_handle(handle, logger: logging.Logger | None, context: str):
         raise
 
 
-def _entrez_request(read_fn, logger: logging.Logger | None, context: str, retries: int = 3):
+def _entrez_request(
+    read_fn: Callable[[], Any],
+    logger: logging.Logger | None,
+    context: str,
+    retries: int = 3,
+) -> Any:
     last_exc: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
@@ -239,9 +246,9 @@ def pubmed_search_all_pmids(
     sleep: float = 0.34,
     logger: logging.Logger | None = None,
 ) -> list[str]:
-    Entrez.email = email
+    Entrez.email = email  # type: ignore[assignment]
     if api_key:
-        Entrez.api_key = api_key
+        Entrez.api_key = api_key  # type: ignore[assignment]
 
     kwargs = {
         "db": "pubmed",
@@ -286,18 +293,21 @@ def pubmed_search_all_pmids(
             if maxdate:
                 kwargs_page["maxdate"] = maxdate
 
+        read_page: Callable[[], Any] = partial(
+            Entrez.esearch,
+            db="pubmed",
+            term=query,
+            retmode="xml",
+            retstart=retstart,
+            retmax=min(batch, count - retstart),
+            webenv=webenv,
+            query_key=query_key,
+            sort=sort,
+            **kwargs_page,
+        )
+
         res2 = _entrez_request(
-            lambda: Entrez.esearch(
-                db="pubmed",
-                term=query,
-                retmode="xml",
-                retstart=retstart,
-                retmax=min(batch, count - retstart),
-                webenv=webenv,
-                query_key=query_key,
-                sort=sort,
-                **kwargs_page,
-            ),
+            read_page,
             logger,
             f"esearch page retstart={retstart}",
         )
@@ -327,9 +337,9 @@ def pubmed_fetch_details(
     sleep: float = 0.34,
     logger: logging.Logger | None = None,
 ) -> list[Paper]:
-    Entrez.email = email
+    Entrez.email = email  # type: ignore[assignment]
     if api_key:
-        Entrez.api_key = api_key
+        Entrez.api_key = api_key  # type: ignore[assignment]
 
     pmids = list(pmids)
     papers: list[Paper] = []
@@ -340,8 +350,14 @@ def pubmed_fetch_details(
 
     for i in tqdm(range(0, len(pmids), chunk_size), desc="Fetching PubMed details"):
         chunk = pmids[i : i + chunk_size]
+        read_chunk: Callable[[], Any] = partial(
+            Entrez.efetch,
+            db="pubmed",
+            id=",".join(chunk),
+            retmode="xml",
+        )
         records = _entrez_request(
-            lambda: Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml"),
+            read_chunk,
             logger,
             f"efetch chunk start={i}",
         )
@@ -478,7 +494,7 @@ def crossref_search_papers(
     out: list[Paper] = []
     preprint_skipped = 0
 
-    params: dict[str, object] = {
+    params: dict[str, Any] = {
         "query": _to_query_text(query),
         "rows": 200,
         "offset": 0,

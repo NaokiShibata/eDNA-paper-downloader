@@ -7,12 +7,16 @@ import socket
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-import typer
+import click
 
 try:
-    from rich.console import Console
-    from rich.logging import RichHandler
+    import rich.console
+    import rich.logging
+
+    Console: Any = rich.console.Console
+    RichHandler: Any = rich.logging.RichHandler
 except Exception:  # pragma: no cover
     Console = None
     RichHandler = None
@@ -37,6 +41,7 @@ def setup_logger(
     )
 
     output_stream = sys.stderr if stream == "stderr" else sys.stdout
+    sh: logging.Handler
     if RichHandler is not None and Console is not None:
         console = Console(file=output_stream)
         sh = RichHandler(
@@ -80,8 +85,8 @@ def log_run_header(
         user = "unknown"
 
     try:
-        ctx = typer.get_current_context()
-        command_path = ctx.command_path
+        ctx = click.get_current_context(silent=True)
+        command_path = ctx.command_path if ctx is not None else fallback_command
     except Exception:
         command_path = fallback_command
 

@@ -77,7 +77,6 @@ def _binary_aux_metrics(
 
 def _metrics(frame: pd.DataFrame) -> dict[str, float | int]:
     gold = frame["gold_label_norm"]
-    pred = frame["flag_label_norm"]
 
     binary = frame.loc[gold.isin({"in_scope", "out_of_scope"})].copy()
     gold_b = binary["gold_label_norm"]

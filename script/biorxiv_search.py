@@ -7,10 +7,11 @@ import os
 import re
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 
 def _ensure_runtime(modules: tuple[str, ...]) -> None:
@@ -264,7 +265,7 @@ def fetch_range_stream(
     sleep: float,
     logger: logging.Logger,
     sess: requests.Session,
-):
+) -> Iterator[tuple[int, list[dict[str, Any]], list[Any]]]:
     cursor = 0
     while True:
         url = f"{API_BASE}/{server}/{from_date}/{to_date}/{cursor}"
@@ -422,7 +423,7 @@ def search(
     # logging
     log_level: str = typer.Option("INFO", help="Log level: DEBUG, INFO, WARNING, ERROR"),
     log_file: Path | None = typer.Option(None, help="Write logs to this file as well."),
-):
+) -> None:
     """
     Download bioRxiv/medRxiv metadata by date range (official API) and optionally filter locally.
 
@@ -484,7 +485,7 @@ def search(
 
     global_map: dict[str, Preprint] = {}
 
-    def merge_rows(rows: list[Preprint]):
+    def merge_rows(rows: list[Preprint]) -> None:
         for r in rows:
             k = (r.doi or "").strip().lower()
             if not k:

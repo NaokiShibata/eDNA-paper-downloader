@@ -8,6 +8,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import requests
@@ -161,7 +162,7 @@ def load_pubmed_index(csv_path: Path, logger: logging.Logger) -> tuple[set[str],
             years = df["year"].fillna("")
         else:
             years = ["" for _ in range(len(df))]
-        for title, year in zip(df["title"].fillna("").astype(str), years):
+        for title, year in zip(df["title"].fillna("").astype(str), years, strict=True):
             y = _norm_year_value(year)
             key = f"{_norm_title(title)}::{y}"
             if key != "::":
@@ -185,7 +186,7 @@ def crossref_fetch(
     sess: requests.Session,
     include_abstract: bool = False,
 ) -> list[PaperInfo]:
-    params = {"query.bibliographic": query, "rows": 100, "cursor": "*"}
+    params: dict[str, Any] = {"query.bibliographic": query, "rows": 100, "cursor": "*"}
     filters = []
     if from_date:
         filters.append(f"from-pub-date:{from_date}")
@@ -284,7 +285,7 @@ def semantic_fetch(
         "referenceCount",
         "fieldsOfStudy",
     ]
-    params = {"query": query, "limit": 100, "offset": 0, "fields": ",".join(fields)}
+    params: dict[str, Any] = {"query": query, "limit": 100, "offset": 0, "fields": ",".join(fields)}
 
     out: list[PaperInfo] = []
     total = 0
@@ -363,7 +364,7 @@ def fetch(
     out_dir: Path = typer.Option(Path("."), help="Output directory."),
     log_level: str = typer.Option("INFO", help="Log level: DEBUG, INFO, WARNING, ERROR"),
     log_file: Path | None = typer.Option(None, help="Write logs to this file as well."),
-):
+) -> None:
     """
     Collect paper metadata from Crossref REST API and Semantic Scholar API.
     Outputs CSV/JSON with a merged view (DOI/title-year de-dup).

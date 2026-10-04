@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import subprocess
 import sys
@@ -19,7 +18,7 @@ DEFAULT_QUERY = (
     '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract] '
     'OR "environmental RNA"[Title/Abstract] OR eRNA[Title/Abstract])'
 )
-VALID_LABELS = {"in_scope", "out_of_scope", "unsure", "process_error"}
+VALID_RETAINED_LABELS = {"in_scope", "unsure", "process_error"}
 
 
 def _parse_date(value: str | None) -> date:
@@ -75,32 +74,19 @@ def _check_strands(base_url: str, timeout: float = 10.0) -> dict[str, object]:
     return data
 
 
-def _validate_fetch(csv_path: Path) -> pd.DataFrame:
-    if not csv_path.exists():
-        raise RuntimeError(f"fetch output was not created: {csv_path}")
-
-    df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
-    required = {"title", "abstract"}
-    missing = sorted(required - set(df.columns))
-    if missing:
-        raise RuntimeError(f"fetch output is missing columns: {', '.join(missing)}")
-    if df.empty:
-        raise RuntimeError("fetch output contains zero papers")
-    if df["abstract"].str.strip().eq("").any():
-        raise RuntimeError("fetch output contains empty abstracts despite --abstract")
-
-    return df
+def _read_csv(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise RuntimeError(f"expected E2E artifact was not created: {path}")
+    return pd.read_csv(path, dtype=str, keep_default_na=False)
 
 
-def _validate_screen(
-    csv_path: Path,
-    *,
-    expected_rows: int,
-) -> tuple[pd.DataFrame, dict[str, int]]:
-    if not csv_path.exists():
-        raise RuntimeError(f"Strands output was not created: {csv_path}")
+def _validate_filtered_outputs(
+    retained_path: Path,
+    rejected_path: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]]:
+    retained = _read_csv(retained_path)
+    rejected = _read_csv(rejected_path)
 
-    df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
     required = {
         "title",
         "abstract",
@@ -110,28 +96,45 @@ def _validate_screen(
         "strands_p_actual_use",
         "strands_p_method_relevance",
     }
-    missing = sorted(required - set(df.columns))
-    if missing:
-        raise RuntimeError(f"Strands output is missing columns: {', '.join(missing)}")
-    if len(df) != expected_rows:
+    for name, df in (("retained", retained), ("rejected", rejected)):
+        missing = sorted(required - set(df.columns))
+        if missing:
+            raise RuntimeError(
+                f"{name} output is missing columns: {', '.join(missing)}"
+            )
+        if not df.empty and df["abstract"].str.strip().eq("").any():
+            raise RuntimeError(f"{name} output contains an empty abstract")
+
+    total = len(retained) + len(rejected)
+    if total == 0:
+        raise RuntimeError("E2E retrieval produced zero papers with abstracts")
+
+    retained_invalid = sorted(set(retained["flag_label"]) - VALID_RETAINED_LABELS)
+    if retained_invalid:
         raise RuntimeError(
-            f"unexpected Strands row count: expected={expected_rows} actual={len(df)}"
+            "retained output contains invalid labels: "
+            + ", ".join(retained_invalid)
         )
 
-    invalid = sorted(set(df["flag_label"]) - VALID_LABELS)
-    if invalid:
-        raise RuntimeError(f"unexpected flag_label values: {', '.join(invalid)}")
+    rejected_invalid = sorted(set(rejected["flag_label"]) - {"out_of_scope"})
+    if rejected_invalid:
+        raise RuntimeError(
+            "rejected output contains non-out_of_scope labels: "
+            + ", ".join(rejected_invalid)
+        )
 
     counts = {
-        label: int((df["flag_label"] == label).sum())
-        for label in ("in_scope", "out_of_scope", "unsure", "process_error")
+        "in_scope": int((retained["flag_label"] == "in_scope").sum()),
+        "unsure": int((retained["flag_label"] == "unsure").sum()),
+        "process_error": int((retained["flag_label"] == "process_error").sum()),
+        "out_of_scope": int(len(rejected)),
     }
     if counts["process_error"]:
         raise RuntimeError(
-            f"Strands screening completed with process_error={counts['process_error']}"
+            f"Strands filtering completed with process_error={counts['process_error']}"
         )
 
-    return df, counts
+    return retained, rejected, counts
 
 
 @app.command()
@@ -168,16 +171,10 @@ def run(
     query: str = typer.Option(DEFAULT_QUERY, "--query"),
     crossref_max_items: int = typer.Option(300, "--crossref-max-items", min=1),
     openalex_max_items: int = typer.Option(300, "--openalex-max-items", min=1),
-    screen_limit: int = typer.Option(
-        20,
-        "--screen-limit",
-        min=0,
-        help="Number of fetched papers to screen. 0 means all papers.",
-    ),
     config: Path = typer.Option(
         Path("config/strands_flagger.example.jsonc"),
         "--config",
-        help="Strands flagger config.",
+        help="Strands screening config.",
     ),
     base_url: str = typer.Option(
         "http://127.0.0.1:8012",
@@ -195,7 +192,7 @@ def run(
         help="Output prefix. Defaults to e2e_latest14_<YYYYMMDD>.",
     ),
 ) -> None:
-    """Run literature retrieval -> Strands screening -> basic E2E validation."""
+    """Run latest literature retrieval with integrated Strands filtering."""
     if not email:
         raise typer.BadParameter(
             "--email is required (or set the NCBI_EMAIL environment variable)"
@@ -215,16 +212,15 @@ def run(
     logs_dir = repo_root / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    fetch_csv = out_dir_path / f"{prefix}.csv"
-    fetch_json = out_dir_path / f"{prefix}.json"
-    strands_csv = out_dir_path / f"{prefix}_strands.csv"
+    retained_csv = out_dir_path / f"{prefix}.csv"
+    retained_json = out_dir_path / f"{prefix}.json"
+    rejected_csv = out_dir_path / f"{prefix}.rejected.csv"
+    rejected_json = out_dir_path / f"{prefix}.rejected.json"
     summary_json = out_dir_path / f"{prefix}_summary.json"
     fetch_log = logs_dir / f"{prefix}.fetch.log"
-    strands_log = logs_dir / f"{prefix}.strands.log"
 
-    typer.echo("E2E latest-literature test")
+    typer.echo("E2E latest-literature + integrated Strands filter")
     typer.echo(f"window       : {since.isoformat()} .. {until.isoformat()} ({days} days)")
-    typer.echo(f"screen limit : {'all' if screen_limit == 0 else screen_limit}")
     typer.echo(f"output dir   : {out_dir_path}")
 
     health = _check_strands(base_url)
@@ -234,6 +230,10 @@ def run(
         f"model={health.get('model')} "
         f"device={health.get('device')}"
     )
+
+    for path in (retained_csv, retained_json, rejected_csv, rejected_json):
+        if path.exists():
+            path.unlink()
 
     fetch_cmd = [
         sys.executable,
@@ -247,6 +247,11 @@ def run(
         "--until",
         until.strftime("%Y/%m/%d"),
         "--abstract",
+        "--strands-filter",
+        "--strands-config",
+        str(config_path),
+        "--strands-base-url",
+        base_url,
         "--crossref-max-items",
         str(crossref_max_items),
         "--openalex-max-items",
@@ -267,41 +272,12 @@ def run(
 
     started = time.monotonic()
     _run(fetch_cmd, cwd=repo_root)
-    fetched = _validate_fetch(fetch_csv)
-    fetch_seconds = time.monotonic() - started
+    elapsed = time.monotonic() - started
 
-    expected_screen_rows = len(fetched)
-    if screen_limit > 0:
-        expected_screen_rows = min(expected_screen_rows, screen_limit)
-
-    # strands_flagger appends by design. A deterministic E2E run must start clean.
-    if strands_csv.exists():
-        strands_csv.unlink()
-
-    screen_cmd = [
-        sys.executable,
-        str(repo_root / "script" / "strands_flagger.py"),
-        str(fetch_csv),
-        "--config",
-        str(config_path),
-        "--base-url",
-        base_url,
-        "--out-csv",
-        str(strands_csv),
-        "--log-file",
-        str(strands_log),
-        "--no-resume",
-    ]
-    if screen_limit > 0:
-        screen_cmd.extend(["--limit", str(screen_limit)])
-
-    started = time.monotonic()
-    _run(screen_cmd, cwd=repo_root)
-    screened, counts = _validate_screen(
-        strands_csv,
-        expected_rows=expected_screen_rows,
+    retained, rejected, counts = _validate_filtered_outputs(
+        retained_csv,
+        rejected_csv,
     )
-    screen_seconds = time.monotonic() - started
 
     summary = {
         "window": {
@@ -310,21 +286,19 @@ def run(
             "days": days,
         },
         "query": query,
-        "fetched_rows": int(len(fetched)),
-        "screened_rows": int(len(screened)),
-        "screen_limit": screen_limit,
+        "retrieved_with_abstract": int(len(retained) + len(rejected)),
+        "retained_rows": int(len(retained)),
+        "rejected_rows": int(len(rejected)),
         "labels": counts,
         "timing_seconds": {
-            "fetch": round(fetch_seconds, 3),
-            "screen": round(screen_seconds, 3),
-            "total": round(fetch_seconds + screen_seconds, 3),
+            "total": round(elapsed, 3),
         },
         "artifacts": {
-            "fetch_csv": str(fetch_csv),
-            "fetch_json": str(fetch_json),
-            "strands_csv": str(strands_csv),
+            "retained_csv": str(retained_csv),
+            "retained_json": str(retained_json),
+            "rejected_csv": str(rejected_csv),
+            "rejected_json": str(rejected_json),
             "fetch_log": str(fetch_log),
-            "strands_log": str(strands_log),
         },
     }
     summary_json.write_text(
@@ -334,19 +308,20 @@ def run(
 
     typer.echo("")
     typer.echo("E2E PASS")
-    typer.echo(f"fetched      : {len(fetched)}")
-    typer.echo(f"screened     : {len(screened)}")
+    typer.echo(f"retrieved     : {len(retained) + len(rejected)}")
+    typer.echo(f"retained      : {len(retained)}")
+    typer.echo(f"rejected      : {len(rejected)}")
     typer.echo(
-        "labels       : "
+        "labels        : "
         f"in_scope={counts['in_scope']} "
         f"out_of_scope={counts['out_of_scope']} "
         f"unsure={counts['unsure']} "
         f"process_error={counts['process_error']}"
     )
-    typer.echo(f"fetch time   : {fetch_seconds:.1f}s")
-    typer.echo(f"screen time  : {screen_seconds:.1f}s")
-    typer.echo(f"result       : {strands_csv}")
-    typer.echo(f"summary      : {summary_json}")
+    typer.echo(f"total time    : {elapsed:.1f}s")
+    typer.echo(f"retained CSV  : {retained_csv}")
+    typer.echo(f"rejected CSV  : {rejected_csv}")
+    typer.echo(f"summary       : {summary_json}")
 
 
 if __name__ == "__main__":

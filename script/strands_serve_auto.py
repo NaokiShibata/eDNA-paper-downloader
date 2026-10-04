@@ -4,7 +4,6 @@ import argparse
 import os
 import sys
 
-
 MODEL = "StrandsAgents/strands-decider-2B-hobson-v19"
 
 
@@ -110,13 +109,13 @@ def main() -> None:
 
     try:
         os.execvpe(cmd[0], cmd, env)
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
         print(
             "[strands-serve] ERROR: strands-decider executable was not found in PATH.",
             file=sys.stderr,
             flush=True,
         )
-        raise SystemExit(127)
+        raise SystemExit(127) from exc
 
 
 if __name__ == "__main__":
