@@ -3,7 +3,7 @@
 このドキュメントでは、`script/strands_flagger.py` のeDNA/eRNA論文スクリーニングを検証するための
 benchmark作成、gold label付与、閾値調整、評価手順をまとめます。
 
-現在の論文判定はStrands Deciderに統一しており、llama.cppベースの旧判定系は使用しません。
+現在の論文判定はStrands Deciderに統一しています。
 
 ## 現在の判定閾値
 
