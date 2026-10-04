@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 import time
@@ -150,6 +151,43 @@ EXTRA_COLUMNS = [
     "strands_latency_ms",
     "strands_input_tokens",
 ]
+
+
+SCORE_COLUMNS = [col for col in EXTRA_COLUMNS if col not in {
+    "flag_record_id", "flag_label", "flag_reason", "flag_prompt_version",
+}]
+
+
+class ScoreCache:
+    def __init__(self, path: Path):
+        self.path = path
+        self.rows: dict[str, dict[str, str]] = {}
+        self.hits = 0
+        self.misses = 0
+        if path.exists():
+            with path.open(newline="", encoding="utf-8") as stream:
+                for row in csv.DictReader(stream):
+                    if row.get("flag_prompt_version") == PROMPT_VERSION:
+                        self.rows[row["flag_record_id"]] = {col: row[col] for col in SCORE_COLUMNS}
+
+    def get(self, rec_id: str) -> dict[str, str] | None:
+        scores = self.rows.get(rec_id)
+        if scores is None:
+            self.misses += 1
+        else:
+            self.hits += 1
+        return scores
+
+    def put(self, rec_id: str, scores: Mapping[str, Any]) -> None:
+        row = {col: str(scores.get(col, "")) for col in SCORE_COLUMNS}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS])
+            if stream.tell() == 0:
+                writer.writeheader()
+            writer.writerow({"flag_record_id": rec_id, "flag_prompt_version": PROMPT_VERSION, **row})
+            stream.flush()
+        self.rows[rec_id] = row
 
 
 def _strip_jsonc(text: str) -> str:
@@ -459,13 +497,17 @@ def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[st
     return {"flag_label": label, "flag_reason": reason, "flag_prompt_version": PROMPT_VERSION}
 
 
-def classify_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
+def evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
     url = f"{cfg.base_url.rstrip('/')}/v1/systemone"
     if cfg.batch_questions:
         data = _post_with_retry(session, url, {"state": abstract, "questions": QUESTIONS}, cfg.timeout, cfg.retries)
     else:
         data = evaluate_questions_sequentially(session, url, abstract, QUESTIONS, cfg.timeout, cfg.retries)
-    scores = extract_scores(data)
+    return extract_scores(data)
+
+
+def classify_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
+    scores = evaluate_abstract(session, abstract, cfg)
     return scores | apply_thresholds(scores, cfg)
 
 
@@ -474,6 +516,7 @@ def screen_row(
     meta: Mapping[str, str],
     cfg: ScreeningConfig,
     abstract_column: str = "abstract",
+    cache: ScoreCache | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {"flag_record_id": record_id(meta)}
     abstract = prepare_abstract(meta.get(abstract_column, ""), cfg.max_abstract_chars)
@@ -481,7 +524,15 @@ def screen_row(
         label, reason = "unsure", "unsure: abstract is empty"
     else:
         try:
-            return result | classify_abstract(session, abstract, cfg)
+            scores = cache.get(result["flag_record_id"]) if cache is not None else None
+            if scores is None:
+                scores = evaluate_abstract(session, abstract, cfg)
+                labels = apply_thresholds(scores, cfg)
+                if cache is not None:
+                    cache.put(result["flag_record_id"], scores)
+            else:
+                labels = apply_thresholds(scores, cfg)
+            return result | scores | labels
         except Exception as exc:
             label, reason = "process_error", str(exc)
     return result | {

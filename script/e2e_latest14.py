@@ -154,8 +154,8 @@ def run(
         help="Window end date. Defaults to the current local date.",
     ),
     query: str = typer.Option(DEFAULT_QUERY, "--query"),
-    crossref_max_items: int = typer.Option(300, "--crossref-max-items", min=1),
-    openalex_max_items: int = typer.Option(300, "--openalex-max-items", min=1),
+    crossref_max_items: int = typer.Option(1000, "--crossref-max-items", min=1),
+    openalex_max_items: int = typer.Option(1000, "--openalex-max-items", min=1),
     config: Path = typer.Option(
         Path("config/strands_flagger.example.jsonc"),
         "--config",

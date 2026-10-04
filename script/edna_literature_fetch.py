@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -11,12 +10,15 @@ import requests
 import typer
 from tqdm import tqdm
 
+from biorxiv_search import biorxiv_search_papers
 from libs.cli_logging import log_run_header, setup_logger
+from libs.edna_models import Paper
 from libs.sources import (
     _date_range_clause,
     build_query_with_excludes,
     crossref_fill_missing_doi,
     crossref_search_papers,
+    europepmc_fill_abstracts,
     merge_papers_by_doi_title,
     openalex_search_papers,
     pubmed_fetch_details,
@@ -24,6 +26,7 @@ from libs.sources import (
 )
 from libs.strands_screening import (
     EXTRA_COLUMNS,
+    ScoreCache,
     ScreeningConfig,
     check_health,
     format_status,
@@ -32,45 +35,6 @@ from libs.strands_screening import (
 )
 
 app = typer.Typer(add_completion=False)
-
-
-def _run_biorxiv_search(
-    *,
-    server: str,
-    from_date: str,
-    to_date: str,
-    query: str,
-    out_dir: Path,
-    out_prefix: str,
-    sleep: float,
-    log_level: str,
-    log_file: Path | None,
-) -> None:
-    script_path = Path(__file__).resolve().parent / "biorxiv_search.py"
-    cmd = [
-        sys.executable,
-        str(script_path),
-        "--server",
-        server,
-        "--from-date",
-        from_date,
-        "--to-date",
-        to_date,
-        "--query",
-        query,
-        "--out-dir",
-        str(out_dir),
-        "--out-prefix",
-        out_prefix,
-        "--sleep",
-        str(sleep),
-        "--log-level",
-        log_level,
-    ]
-    if log_file is not None:
-        cmd.extend(["--log-file", str(log_file)])
-
-    subprocess.run(cmd, check=True)
 
 
 @app.command()
@@ -127,14 +91,15 @@ def fetch(
     run_biorxiv: bool = typer.Option(
         False,
         "--run-biorxiv/--no-run-biorxiv",
-        help="Run script/biorxiv_search.py after literature fetch.",
+        help="Merge bioRxiv/medRxiv records into literature results.",
     ),
     biorxiv_server: str = typer.Option("biorxiv", help='bioRxiv target server: "biorxiv" or "medrxiv".'),
     biorxiv_from_date: str | None = typer.Option(None, help="bioRxiv start date YYYY/MM/DD."),
     biorxiv_to_date: str | None = typer.Option(None, help="bioRxiv end date YYYY/MM/DD."),
     biorxiv_query: str = typer.Option("eDNA", help="Query string for bioRxiv local filtering."),
-    biorxiv_out_prefix: str | None = typer.Option(None, help="Output prefix for bioRxiv results."),
     abstract: bool = typer.Option(False, help="Include abstracts."),
+    europepmc_abstracts: bool = typer.Option(True, "--europepmc-abstracts/--no-europepmc-abstracts", help="Fill missing abstracts via Europe PMC."),
+    strands_cache: Path | None = typer.Option(None, help="CSV cache of Strands scores."),
     strands_filter: bool = typer.Option(
         False,
         "--strands-filter/--no-strands-filter",
@@ -165,6 +130,13 @@ def fetch(
     Fetch paper metadata from PubMed and export CSV/JSON.
     Merge duplicate records by DOI or title.
     """
+    until = until or date.today().strftime("%Y/%m/%d")
+    if run_biorxiv:
+        biorxiv_from_date = biorxiv_from_date or since
+        biorxiv_to_date = biorxiv_to_date or until
+        if not biorxiv_from_date:
+            raise typer.BadParameter("--since or --biorxiv-from-date is required with --run-biorxiv")
+
     out_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logger("edna_literature_fetch", log_level=log_level, log_file=log_file)
 
@@ -236,7 +208,8 @@ def fetch(
         "biorxiv_from_date": biorxiv_from_date,
         "biorxiv_to_date": biorxiv_to_date,
         "biorxiv_query": biorxiv_query,
-        "biorxiv_out_prefix": biorxiv_out_prefix,
+        "europepmc_abstracts": europepmc_abstracts,
+        "strands_cache": str(strands_cache) if strands_cache else None,
         "abstract": abstract,
         "strands_filter": strands_filter,
         "strands_config": str(strands_config_path) if strands_config_path else None,
@@ -320,6 +293,14 @@ def fetch(
             )
         )
 
+    if run_biorxiv:
+        assert biorxiv_from_date is not None and biorxiv_to_date is not None
+        all_papers.extend(biorxiv_search_papers(
+            server=biorxiv_server, from_date=biorxiv_from_date, to_date=biorxiv_to_date,
+            query=biorxiv_query, excludes=exclude_terms, sleep=sleep, logger=logger,
+            include_abstract=abstract,
+        ))
+
     if not all_papers:
         logger.error("No results from selected sources.")
         raise typer.Exit(code=1)
@@ -328,13 +309,18 @@ def fetch(
         all_papers = crossref_fill_missing_doi(all_papers, user_agent=user_agent, logger=logger)
     papers = merge_papers_by_doi_title(all_papers, logger=logger)
 
+    columns = list(Paper.__dataclass_fields__)
     if abstract:
-        before_filter = len(papers)
-        papers = [p for p in papers if p.abstract and p.abstract.strip()]
-        if len(papers) != before_filter:
-            logger.info(f"Filtered records without abstract: {before_filter} -> {len(papers)}")
+        if europepmc_abstracts:
+            papers = europepmc_fill_abstracts(papers, sleep=sleep, logger=logger)
+        missing = [p for p in papers if not (p.abstract or "").strip()]
+        missing_df = pd.DataFrame([asdict(p) for p in missing], columns=columns)
+        missing_df.to_csv(out_dir / f"{out_prefix}.no_abstract.csv", index=False)
+        missing_df.to_json(out_dir / f"{out_prefix}.no_abstract.json", orient="records", force_ascii=False, indent=2)
+        logger.info("Records without abstract saved separately: %d", len(missing))
+        papers = [p for p in papers if (p.abstract or "").strip()]
 
-    df = pd.DataFrame([asdict(p) for p in papers])
+    df = pd.DataFrame([asdict(p) for p in papers], columns=columns)
 
     rejected_df: pd.DataFrame | None = None
     if strands_filter:
@@ -344,6 +330,7 @@ def fetch(
         kept_rows: list[dict[str, object]] = []
         rejected_rows: list[dict[str, object]] = []
         error_count = 0
+        cache = ScoreCache(strands_cache) if strands_cache is not None else None
 
         progress = tqdm(
             df.to_dict(orient="records"),
@@ -364,7 +351,7 @@ def fetch(
                 str(key): "" if pd.isna(value) else str(value)
                 for key, value in row.items()
             }
-            screened_row: dict[str, object] = dict(row) | screen_row(strands_session, meta, strands_cfg)
+            screened_row: dict[str, object] = dict(row) | screen_row(strands_session, meta, strands_cfg, cache=cache)
             if screened_row["flag_label"] == "process_error":
                 error_count += 1
                 logger.warning(
@@ -397,6 +384,9 @@ def fetch(
             error_count,
         )
 
+        if cache is not None:
+            logger.info("Strands cache hits=%d misses=%d", cache.hits, cache.misses)
+
     csv_path = out_dir / f"{out_prefix}.csv"
     json_path = out_dir / f"{out_prefix}.json"
 
@@ -413,26 +403,6 @@ def fetch(
         rejected_df.to_csv(rejected_csv_path, index=False)
         logger.info(f"Writing Strands rejected JSON: {rejected_json_path}")
         rejected_df.to_json(rejected_json_path, orient="records", force_ascii=False, indent=2)
-
-    if run_biorxiv:
-        if not biorxiv_from_date or not biorxiv_to_date:
-            raise typer.BadParameter("--biorxiv-from-date and --biorxiv-to-date are required with --run-biorxiv")
-        bio_prefix = biorxiv_out_prefix or f"{out_prefix}_biorxiv"
-        bio_log_file = None
-        if log_file is not None:
-            bio_log_file = log_file.with_name(f"{log_file.stem}.biorxiv{log_file.suffix}")
-        logger.info("Running bioRxiv fetch via script/biorxiv_search.py")
-        _run_biorxiv_search(
-            server=biorxiv_server,
-            from_date=biorxiv_from_date,
-            to_date=biorxiv_to_date,
-            query=biorxiv_query,
-            out_dir=out_dir,
-            out_prefix=bio_prefix,
-            sleep=sleep,
-            log_level=log_level,
-            log_file=bio_log_file,
-        )
 
     if strands_filter and rejected_df is not None:
         logger.info(
