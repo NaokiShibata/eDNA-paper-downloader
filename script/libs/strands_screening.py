@@ -13,7 +13,7 @@ import requests
 
 from libs.text_normalize import clean_doi
 
-PROMPT_VERSION = "strands-v3"
+PROMPT_VERSION = "strands-v4"
 MIN_ABSTRACT_CHARS_FOR_EXCLUSION = 300
 DEFAULT_BASE_URL = "http://127.0.0.1:8012"
 
@@ -29,6 +29,8 @@ class ScreeningConfig:
     exclude_threshold: float = 0.50
     exclude_actual_use_max: float = 0.50
     exclude_method_relevance_max: float = 0.60
+    exclude_review_min: float = 0.60
+    exclude_review_out_min: float = 0.40
     max_abstract_chars: int | None = 6000
     batch_questions: bool = False
     cache_csv: str | None = ".cache/strands_scores.csv"
@@ -153,6 +155,22 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             ),
         },
     },
+    "study_type": {
+        "type": "choice",
+        "instructions": "Classify the type of publication described by this title and abstract.",
+        "criteria": {
+            "primary_research": (
+                "Reports the authors' own new empirical data: field sampling, laboratory experiments, assay development "
+                "and validation, surveys, mesocosms, case studies, datasets, or new analyses of samples they collected or obtained."
+            ),
+            "review": (
+                "Summarizes or discusses existing work without new empirical data of its own: narrative or systematic reviews, "
+                "meta-analyses of published studies, perspectives, opinion pieces, commentaries, editorials, book or chapter "
+                "introductions, conference reports, and correction notices."
+            ),
+            "other": "Anything else, including policy, social-science, or theoretical work not based on new empirical data.",
+        },
+    },
 }
 
 EXTRA_COLUMNS = [
@@ -169,6 +187,7 @@ EXTRA_COLUMNS = [
     "strands_p_actual_use",
     "strands_p_microbial_only",
     "strands_p_method_relevance",
+    "strands_p_review",
     "strands_latency_ms",
     "strands_input_tokens",
 ]
@@ -181,14 +200,20 @@ SCORE_COLUMNS = [col for col in EXTRA_COLUMNS if col not in {
 
 class ScoreCache:
     def __init__(self, path: Path):
+        path = path.with_name(f"{path.stem}.{PROMPT_VERSION}{path.suffix}")
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.rows: dict[str, dict[str, str]] = {}
         self.hits = 0
         self.misses = 0
+        self._incompatible_header = False
         if path.exists():
             with path.open(newline="", encoding="utf-8") as stream:
-                for row in csv.DictReader(stream):
+                reader = csv.DictReader(stream)
+                self._incompatible_header = not set(["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS]).issubset(reader.fieldnames or [])
+                if self._incompatible_header:
+                    return
+                for row in reader:
                     if row.get("flag_prompt_version") == PROMPT_VERSION:
                         self.rows[row["flag_record_id"]] = {col: row[col] for col in SCORE_COLUMNS}
 
@@ -203,12 +228,13 @@ class ScoreCache:
     def put(self, rec_id: str, scores: Mapping[str, Any]) -> None:
         row = {col: str(scores.get(col, "")) for col in SCORE_COLUMNS}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", newline="", encoding="utf-8") as stream:
+        with self.path.open("w" if self._incompatible_header else "a", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS])
             if stream.tell() == 0:
                 writer.writeheader()
             writer.writerow({"flag_record_id": rec_id, "flag_prompt_version": PROMPT_VERSION, **row})
             stream.flush()
+        self._incompatible_header = False
         self.rows[rec_id] = row
 
 
@@ -441,12 +467,15 @@ def decide_label(
     p_actual_use: float,
     p_method_relevance: float,
     p_microbial_only: float,
+    p_review: float,
     include_threshold: float,
     include_microbial_only_max: float,
     actual_use_threshold: float,
     exclude_threshold: float,
     exclude_actual_use_max: float,
     exclude_method_relevance_max: float,
+    exclude_review_min: float,
+    exclude_review_out_min: float,
 ) -> str:
     if (
         p_in_scope >= include_threshold
@@ -458,7 +487,7 @@ def decide_label(
         p_out_of_scope >= exclude_threshold
         and p_actual_use <= exclude_actual_use_max
         and p_method_relevance <= exclude_method_relevance_max
-    ):
+    ) or (p_review >= exclude_review_min and p_out_of_scope >= exclude_review_out_min):
         return "out_of_scope"
     return "unsure"
 
@@ -481,6 +510,13 @@ def extract_scores(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(method, dict):
         raise RuntimeError("response is missing method_relevance answer")
 
+    study_type = answers.get("study_type")
+    if not isinstance(study_type, dict):
+        raise RuntimeError("response is missing study_type answer")
+    study_probabilities = study_type.get("probabilities")
+    if not isinstance(study_probabilities, dict):
+        raise RuntimeError("study_type answer is missing probabilities")
+
     probabilities = scope.get("probabilities")
     if not isinstance(probabilities, dict):
         raise RuntimeError("scope answer is missing probabilities")
@@ -491,6 +527,7 @@ def extract_scores(data: dict[str, Any]) -> dict[str, Any]:
     p_actual_use = float(actual.get("noul", 0.0))
     p_microbial_only = float(microbial.get("noul", 0.0))
     p_method_relevance = float(method.get("noul", 0.0))
+    p_review = float(study_probabilities.get("review", 0.0))
 
     usage_raw = data.get("usage")
     usage: dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}
@@ -504,6 +541,7 @@ def extract_scores(data: dict[str, Any]) -> dict[str, Any]:
         "strands_p_actual_use": round(p_actual_use, 6),
         "strands_p_microbial_only": round(p_microbial_only, 6),
         "strands_p_method_relevance": round(p_method_relevance, 6),
+        "strands_p_review": round(p_review, 6),
         "strands_latency_ms": data.get("latency_ms", ""),
         "strands_input_tokens": usage.get("input_tokens", ""),
     }
@@ -516,24 +554,28 @@ def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[st
     p_actual_use = float(scores["strands_p_actual_use"])
     p_microbial_only = float(scores["strands_p_microbial_only"])
     p_method_relevance = float(scores["strands_p_method_relevance"])
+    p_review = float(scores["strands_p_review"])
     label = decide_label(
         p_in_scope=p_in_scope,
         p_out_of_scope=p_out_of_scope,
         p_actual_use=p_actual_use,
         p_method_relevance=p_method_relevance,
         p_microbial_only=p_microbial_only,
+        p_review=p_review,
         include_threshold=cfg.include_threshold,
         include_microbial_only_max=cfg.include_microbial_only_max,
         actual_use_threshold=cfg.actual_use_threshold,
         exclude_threshold=cfg.exclude_threshold,
         exclude_actual_use_max=cfg.exclude_actual_use_max,
         exclude_method_relevance_max=cfg.exclude_method_relevance_max,
+        exclude_review_min=cfg.exclude_review_min,
+        exclude_review_out_min=cfg.exclude_review_out_min,
     )
     reason = (
         f"{label}: scope={scores.get('strands_scope_choice', '')}; "
         f"p_in_scope={p_in_scope:.3f}; p_out_of_scope={p_out_of_scope:.3f}; p_unsure={p_unsure:.3f}; "
         f"actual_use={p_actual_use:.3f}; microbial_only={p_microbial_only:.3f}; "
-        f"method_relevance={p_method_relevance:.3f}"
+        f"method_relevance={p_method_relevance:.3f}; review={p_review:.3f}"
     )
 
     return {"flag_label": label, "flag_reason": reason, "flag_prompt_version": PROMPT_VERSION}

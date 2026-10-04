@@ -263,7 +263,7 @@ results/edna_latest.no_abstract.csv
 `--strands` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
 
 fetchとscreenは設定の `cache_csv` を共用し、判定スコアをCSVに保存して再利用します。
-デフォルトは `.cache/strands_scores.csv` で、`null` にすると無効になります。
+設定のデフォルトは `.cache/strands_scores.csv` で、実際にはプロンプトのバージョンを付けた `.cache/strands_scores.strands-v4.csv` に保存します。`null` にすると無効になります。
 キャッシュは論文IDとプロンプトのバージョンで照合し、判定ラベルは毎回現在の閾値で計算します。
 判定エラーと要旨なしは保存せず、終了時にヒット数とミス数を表示します。
 設定キー `batch_questions` はデフォルトで `false` です。
@@ -426,6 +426,8 @@ flaggerでは `--config` で別のファイルも指定できます。
 | `exclude_threshold` | `0.50` | `P(out_of_scope)` の自動除外閾値 |
 | `exclude_actual_use_max` | `0.50` | 自動除外で許容する `actual_use` の上限 |
 | `exclude_method_relevance_max` | `0.60` | 自動除外で許容するMethod関連性の上限 |
+| `exclude_review_min` | `0.60` | レビューの自動除外に必要な `P(review)` の下限 |
+| `exclude_review_out_min` | `0.40` | レビューの自動除外に必要な `P(out_of_scope)` の下限 |
 
 現在のデフォルトは、実データ200件benchmarkのcalibration partitionで選んだ値です（`docs/strands-decider-benchmark.md`）。Abstractが300文字未満の論文は自動除外しません。曖昧な論文は引き続き `unsure` として人手確認に回します。
 

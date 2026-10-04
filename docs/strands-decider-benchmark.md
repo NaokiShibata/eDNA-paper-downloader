@@ -7,7 +7,7 @@ benchmark作成、gold label付与、閾値調整、評価手順をまとめま�
 
 ## 現在の判定閾値
 
-`PROMPT_VERSION = "strands-v3"` では、実データ200件benchmarkのcalibration partitionで選んだ以下をデフォルトとしています。
+`PROMPT_VERSION = "strands-v4"` では、実データ200件benchmarkのcalibration partitionで選んだ以下をデフォルトとしています。
 
 ```json
 {
@@ -17,6 +17,8 @@ benchmark作成、gold label付与、閾値調整、評価手順をまとめま�
   "exclude_threshold": 0.50,
   "exclude_actual_use_max": 0.50,
   "exclude_method_relevance_max": 0.60,
+  "exclude_review_min": 0.60,
+  "exclude_review_out_min": 0.40,
   "max_abstract_chars": 6000
 }
 ```
@@ -27,6 +29,7 @@ benchmark作成、gold label付与、閾値調整、評価手順をまとめま�
 - `in_scope`: `P(in_scope) >= 0.45`、`P(actual_use) >= 0.60`、`P(microbial_only) < 0.35` をすべて満たす
 - `out_of_scope`: `P(out_of_scope) >= 0.50`、`P(actual_use) <= 0.50`、
   `P(method_relevance) <= 0.60` をすべて満たす。ただしAbstractが300文字未満の場合は自動除外しない
+- `out_of_scope`: study_type質問で `P(review) >= 0.60`、`P(out_of_scope) >= 0.40` を満たす場合も除外。ただし `in_scope` の条件を優先し、Abstractが300文字未満の場合は自動除外しない
 - それ以外: `unsure` として人手確認
 
 `include_microbial_only_max` は感度が高く、0.25に下げると人手確認率がほぼ倍になります。
@@ -166,7 +169,7 @@ pixi run screen \
 ```bash
 pixi run benchmark tune \
   benchmark/edna_strands_200.review.labeled.csv \
-  benchmark/edna_strands_200.strands.v3.csv \
+  benchmark/edna_strands_200.strands.v4.csv \
   --manifest benchmark/edna_strands_200.manifest.csv \
   --max-hard-fn 0 \
   --out-json benchmark/edna_strands_200.thresholds.json
@@ -186,7 +189,7 @@ pixi run benchmark tune \
 ```bash
 pixi run benchmark eval \
   benchmark/edna_strands_200.review.labeled.csv \
-  benchmark/edna_strands_200.strands.v3.csv \
+  benchmark/edna_strands_200.strands.v4.csv \
   --manifest benchmark/edna_strands_200.manifest.csv \
   --partition test \
   --out-errors benchmark/edna_strands_200.v3.test.errors.csv \
@@ -241,6 +244,26 @@ calibrationでは自動除外が17件から23件に増えましたが、testで�
 
 最新14日E2E（141件）では、v2の `in_scope=59 / unsure=65 / out_of_scope=17` が
 v3で `in_scope=61 / unsure=40 / out_of_scope=40` になりました。
+
+### strands-v4: 論文種別の質問を追加
+
+v3で `unsure` に残ったcalibration 30件を分析すると、最大の群はeDNAが主題のレビュー・展望（7件、gold `out_of_scope`）でした。
+`P(out_of_scope)` は高いものの `P(actual_use)` が0.51〜0.79に留まり、`exclude_actual_use_max=0.50` で除外できていませんでした。
+そこで論文種別を問う `study_type` 質問（一次研究 / レビュー等 / その他）を追加し、
+`P(review) >= 0.60` かつ `P(out_of_scope) >= 0.40` の論文も自動除外するようにしました。
+gold `in_scope` の `P(review)` は最大でもcalibration 0.099、test 0.039で、閾値0.5〜0.8の範囲で結果は変わりません。
+
+| 指標（修正後gold） | v3 calibration | v4 calibration | v3 test | v4 test |
+| --- | ---: | ---: | ---: | ---: |
+| hard false negative | 0 | 0 | 0 | 0 |
+| false positive | 0 | 0 | 2 | 2 |
+| 自動除外できたgold-negative | 17 / 39 | 25 / 39 | 36 / 58 | 43 / 58 |
+| manual review rate | 0.326 | 0.233 | 0.252 | 0.187 |
+
+新たに除外されたのはすべてgold `out_of_scope`（レビュー、書籍、ハンドブック、展望、会議報告など）でした。
+残る `unsure` の主な群は、`microbial_only` がgold `in_scope` と重なる微生物群集研究と、
+`P(in_scope)` が低めに出る一次eDNA研究で、閾値では分離できないため今回は対象外としています。
+質問が1つ増えたため、1論文あたりのリクエストは4回から5回になります。
 
 再現手順:
 

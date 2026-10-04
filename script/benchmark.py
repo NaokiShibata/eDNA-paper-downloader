@@ -631,6 +631,7 @@ def evaluate(
             "strands_p_actual_use",
             "strands_p_microbial_only",
             "strands_p_method_relevance",
+            "strands_p_review",
             "gold_note",
             "abstract",
         ]
@@ -687,6 +688,7 @@ def tune(
         "strands_p_actual_use",
         "strands_p_microbial_only",
         "strands_p_method_relevance",
+        "strands_p_review",
     }
     required_manifest = {"benchmark_record_id", "benchmark_partition"}
 
@@ -722,6 +724,7 @@ def tune(
         "strands_p_actual_use",
         "strands_p_microbial_only",
         "strands_p_method_relevance",
+        "strands_p_review",
     ]:
         frame[col] = pd.to_numeric(frame[col], errors="coerce")
     frame = frame.dropna(
@@ -731,6 +734,7 @@ def tune(
             "strands_p_actual_use",
             "strands_p_microbial_only",
             "strands_p_method_relevance",
+            "strands_p_review",
         ]
     )
 
@@ -751,6 +755,7 @@ def tune(
                 float(row["strands_p_actual_use"]),
                 float(row["strands_p_method_relevance"]),
                 float(row["strands_p_microbial_only"]),
+                float(row["strands_p_review"]),
                 **thresholds,
             ),
             axis=1,
@@ -760,6 +765,8 @@ def tune(
             exclude_threshold=ex,
             exclude_actual_use_max=au,
             exclude_method_relevance_max=mr,
+            exclude_review_min=cfg.exclude_review_min,
+            exclude_review_out_min=cfg.exclude_review_out_min,
         )
         counts = _binary_metrics(frame["gold_label"].astype(str).str.strip().str.lower(), labels)
         m = {
