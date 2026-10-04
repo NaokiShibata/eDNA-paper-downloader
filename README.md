@@ -13,6 +13,8 @@ eDNA関連の文献・プレプリント情報を収集し、CSV/JSONとして�
   - DOI優先、タイトル+年フォールバックで重複統合
   - `Crossref/OpenAlex` は `type` による preprint 除外を実施
   - `--abstract` 有効時は abstract 空レコードを最終出力から除外
+  - `--strands-filter` で統合後のAbstractをStrands Deciderで判定し、`out_of_scope` のみ最終出力から除外
+  - 除外した論文は `*.rejected.csv/json` に保存して監査可能
   - `--run-biorxiv` で `script/biorxiv_search.py` を連続実行可能
 - `script/biorxiv_search.py`
   - bioRxiv/medRxiv APIで期間取得 (`YYYY/MM/DD`)
@@ -229,6 +231,61 @@ python3 script/edna_literature_fetch.py \
   --out-dir results \
   --out-prefix edna_multisource_with_abstract
 ```
+
+### 取得時にStrands Deciderで関連論文を絞り込む
+
+Strands Deciderサーバを起動した状態で `--strands-filter` を指定すると、PubMed / Crossref / OpenAlexから取得・統合・重複除去した後の論文をAbstractで判定します。
+
+```bash
+pixi run strands-serve
+```
+
+別ターミナル:
+
+```bash
+pixi run python script/edna_literature_fetch.py \
+  --email you@example.com \
+  --since 2026/09/21 \
+  --until 2026/10/04 \
+  --strands-filter \
+  --strands-config config/strands_flagger.jsonc \
+  --out-dir results \
+  --out-prefix edna_latest
+```
+
+`--strands-filter` を指定した場合は、判定に必要なためAbstract取得が自動的に有効になります。処理順は以下です。
+
+```text
+PubMed / Crossref / OpenAlex
+        ↓
+統合・重複除去
+        ↓
+Abstractなしを除外
+        ↓
+Strands Decider
+        ├─ in_scope      → retained
+        ├─ unsure        → retained
+        ├─ process_error → retained
+        └─ out_of_scope  → rejected
+        ↓
+CSV / JSON出力
+```
+
+最終出力:
+
+```text
+results/edna_latest.csv
+results/edna_latest.json
+results/edna_latest.rejected.csv
+results/edna_latest.rejected.json
+```
+
+通常のCSV/JSONには `in_scope` / `unsure` / `process_error` を残し、`out_of_scope` のみ `rejected` 側へ分離します。個別論文の判定エラーは取りこぼし防止のため自動除外しません。
+
+`--strands-filter` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
+
+`--run-biorxiv` で別途取得するbioRxiv出力には、現時点ではこの統合フィルタは適用されません。
+
 
 ### CrossrefでDOI補完 (任意)
 
@@ -589,9 +646,9 @@ Strands固有の診断列:
 
 ## 最新14日のE2Eテスト
 
-`script/e2e_latest14.py` は、実行日を終点とする最新14日間について、文献取得からStrands Decider判定までを通しで確認します。
+`script/e2e_latest14.py` は、実行日を終点とする最新14日間について、文献取得から取得処理内のStrandsフィルタまでを通しで確認します。
 
-Strands Deciderを別ターミナルで起動してから実行します。
+Strands Deciderを別ターミナルで起動します。
 
 ```bash
 pixi run strands-serve
@@ -610,23 +667,14 @@ export NCBI_EMAIL="you@example.com"
 pixi run e2e-latest14
 ```
 
-デフォルトでは:
+E2Eでは以下を確認します。
 
-- 実行日を含む直近14日
-- PubMed + Crossref + OpenAlex
-- eDNA / environmental DNA / eRNA / environmental RNA を検索
-- Abstractを持つレコードのみを出力
-- Crossref/OpenAlexは各最大300件
-- 取得後の先頭20件をStrandsで判定
-- `process_error=0`、必要な出力列、件数整合性を検証
-
-全件をStrandsで判定する場合:
-
-```bash
-pixi run e2e-latest14 \
-  --email you@example.com \
-  --screen-limit 0
-```
+- 実行日を含む直近14日のPubMed + Crossref + OpenAlex取得
+- Abstractを持つレコードのStrands判定
+- retained側に `out_of_scope` が混ざっていないこと
+- rejected側が `out_of_scope` のみであること
+- 必要なStrands診断列が存在すること
+- `process_error=0`
 
 期間を固定して再現実行する場合:
 
@@ -650,11 +698,12 @@ pixi run e2e-latest14 \
 ```text
 e2e_latest14_YYYYMMDD.csv
 e2e_latest14_YYYYMMDD.json
-e2e_latest14_YYYYMMDD_strands.csv
+e2e_latest14_YYYYMMDD.rejected.csv
+e2e_latest14_YYYYMMDD.rejected.json
 e2e_latest14_YYYYMMDD_summary.json
 ```
 
-正常終了時は最後に `E2E PASS` と取得件数、判定件数、ラベル分布、処理時間を表示します。
+正常終了時は最後に `E2E PASS` と取得件数、retained/rejected件数、ラベル分布、処理時間を表示します。
 
 ---
 
