@@ -511,7 +511,7 @@ GPU環境では `--device cuda`、GPUがない環境では `--device cpu` を明
 pixi run strands-health
 ```
 
-`"status":"ok"` と `"device":"cuda"` が返れば実行可能です。物理GPUの選択は `CUDA_VISIBLE_DEVICES=1` で行っているため、health responseだけでは物理GPU番号は表示されません。
+`"status":"ok"` が返れば実行可能です。GPU利用時は `"device":"cuda"`、CPU fallback時は `"device":"cpu"` になります。GPU利用時は選択した物理GPUだけを `CUDA_VISIBLE_DEVICES` で公開するため、health responseには物理GPU番号は表示されません。
 
 `causal_conv1d` や `flash-linear-attention` が未導入というwarningが出る場合でも、
 最適化カーネルを使わないPyTorch実装へフォールバックします。まず判定精度の検証を優先してください。
