@@ -26,6 +26,7 @@ from libs.strands_screening import (
     classify_abstract,
     decide_label,
     default_config_path,
+    extract_scores,
     prepare_abstract,
     record_id,
     screen_row,
@@ -39,14 +40,15 @@ class StrandsScreeningTest(unittest.TestCase):
 
     def test_score_cache_round_trip_and_thresholds(self) -> None:
         scores = {"strands_p_in_scope": 0.82, "strands_p_out_of_scope": 0.1, "strands_p_unsure": 0.08,
-                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2, "strands_p_method_relevance": 0.4}
+                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2, "strands_p_method_relevance": 0.4, "strands_p_review": 0.1}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "scores.csv"
             path.touch()
             cache = ScoreCache(path)
+            self.assertEqual(cache.path, path.with_name(f"scores.{PROMPT_VERSION}.csv"))
             self.assertIsNone(cache.get("missing"))
             cache.put("doi:current", scores | {"flag_label": "out_of_scope"})
-            with path.open("a", newline="", encoding="utf-8") as stream:
+            with cache.path.open("a", newline="", encoding="utf-8") as stream:
                 writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS])
                 writer.writerow({"flag_record_id": "doi:old", "flag_prompt_version": "old", **scores})
             loaded = ScoreCache(path)
@@ -57,12 +59,31 @@ class StrandsScreeningTest(unittest.TestCase):
             self.assertNotIn("flag_label", hit)
             self.assertEqual(apply_thresholds(hit, ScreeningConfig())["flag_label"], "in_scope")
             self.assertEqual(apply_thresholds(hit, ScreeningConfig(include_threshold=0.9))["flag_label"], "unsure")
-            with path.open(encoding="utf-8") as stream:
+            with cache.path.open(encoding="utf-8") as stream:
                 self.assertEqual(next(csv.DictReader(stream))["flag_prompt_version"], PROMPT_VERSION)
+
+    def test_score_cache_replaces_incompatible_header(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scores.csv"
+            versioned_path = path.with_name(f"scores.{PROMPT_VERSION}.csv")
+            columns = ["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS]
+            columns.remove("strands_p_review")
+            with versioned_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=columns)
+                writer.writeheader()
+                writer.writerow({"flag_record_id": "doi:old", "flag_prompt_version": PROMPT_VERSION})
+            cache = ScoreCache(path)
+            self.assertEqual(cache.rows, {})
+            cache.put("doi:current", {"strands_p_review": 0.1})
+            cache.put("doi:next", {"strands_p_review": 0.2})
+            loaded = ScoreCache(path)
+            self.assertIsNone(loaded.get("doi:old"))
+            self.assertEqual(loaded.rows["doi:current"]["strands_p_review"], "0.1")
+            self.assertEqual(loaded.rows["doi:next"]["strands_p_review"], "0.2")
 
     def test_screen_cache_hit_miss_and_failure(self) -> None:
         scores = {"strands_p_in_scope": 0.82, "strands_p_out_of_scope": 0.1, "strands_p_unsure": 0.08,
-                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2, "strands_p_method_relevance": 0.4}
+                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2, "strands_p_method_relevance": 0.4, "strands_p_review": 0.1}
         meta = {"doi": "10.1000/abc", "abstract": "Abstract"}
         with tempfile.TemporaryDirectory() as directory:
             cache = ScoreCache(Path(directory) / "cache.csv")
@@ -91,7 +112,7 @@ class StrandsScreeningTest(unittest.TestCase):
 
     def test_flagger_rewrites_output_using_cached_scores(self) -> None:
         scores = {"strands_p_in_scope": 0.82, "strands_p_out_of_scope": 0.1, "strands_p_unsure": 0.08,
-                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2, "strands_p_method_relevance": 0.4}
+                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2, "strands_p_method_relevance": 0.4, "strands_p_review": 0.1}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             input_csv = root / "papers.csv"
@@ -169,13 +190,14 @@ class StrandsScreeningTest(unittest.TestCase):
             "strands_p_actual_use": "0.75",
             "strands_p_microbial_only": "0.2",
             "strands_p_method_relevance": "0.4",
+            "strands_p_review": "0.1",
         }
         result = apply_thresholds(scores, ScreeningConfig())
         self.assertEqual(result, {
             "flag_label": "in_scope",
             "flag_reason": "in_scope: scope=in_scope; p_in_scope=0.820; p_out_of_scope=0.100; "
-            "p_unsure=0.080; actual_use=0.750; microbial_only=0.200; method_relevance=0.400",
-            "flag_prompt_version": "strands-v3",
+            "p_unsure=0.080; actual_use=0.750; microbial_only=0.200; method_relevance=0.400; review=0.100",
+            "flag_prompt_version": "strands-v4",
         })
         self.assertEqual(
             apply_thresholds(scores, ScreeningConfig(include_threshold=0.9))["flag_label"], "unsure",
@@ -191,6 +213,7 @@ class StrandsScreeningTest(unittest.TestCase):
                 "actual_use": {"noul": 0.7},
                 "microbial_only": {"noul": 0.2},
                 "method_relevance": {"noul": 0.4},
+                "study_type": {"probabilities": {"review": 0.1}},
             },
         }
         result = classify_abstract(session, "abstract", ScreeningConfig(batch_questions=True))
@@ -218,12 +241,14 @@ class StrandsScreeningTest(unittest.TestCase):
             p_actual_use=0.75,
             p_method_relevance=0.40,
             p_microbial_only=0.2,
+            p_review=0.1,
             include_threshold=0.45,
             include_microbial_only_max=0.35,
             actual_use_threshold=0.60,
             exclude_threshold=0.50,
             exclude_actual_use_max=0.50,
             exclude_method_relevance_max=0.60,
+            exclude_review_min=0.60, exclude_review_out_min=0.40,
         )
         self.assertEqual(label, "in_scope")
 
@@ -234,12 +259,14 @@ class StrandsScreeningTest(unittest.TestCase):
             p_actual_use=0.20,
             p_method_relevance=0.25,
             p_microbial_only=0.2,
+            p_review=0.1,
             include_threshold=0.45,
             include_microbial_only_max=0.35,
             actual_use_threshold=0.60,
             exclude_threshold=0.50,
             exclude_actual_use_max=0.50,
             exclude_method_relevance_max=0.60,
+            exclude_review_min=0.60, exclude_review_out_min=0.40,
         )
         self.assertEqual(label, "out_of_scope")
 
@@ -250,12 +277,14 @@ class StrandsScreeningTest(unittest.TestCase):
             p_actual_use=0.25,
             p_method_relevance=0.80,
             p_microbial_only=0.2,
+            p_review=0.1,
             include_threshold=0.45,
             include_microbial_only_max=0.35,
             actual_use_threshold=0.60,
             exclude_threshold=0.50,
             exclude_actual_use_max=0.50,
             exclude_method_relevance_max=0.60,
+            exclude_review_min=0.60, exclude_review_out_min=0.40,
         )
         self.assertEqual(label, "unsure")
 
@@ -266,12 +295,14 @@ class StrandsScreeningTest(unittest.TestCase):
             p_actual_use=0.40,
             p_method_relevance=0.40,
             p_microbial_only=0.2,
+            p_review=0.1,
             include_threshold=0.45,
             include_microbial_only_max=0.35,
             actual_use_threshold=0.60,
             exclude_threshold=0.50,
             exclude_actual_use_max=0.50,
             exclude_method_relevance_max=0.60,
+            exclude_review_min=0.60, exclude_review_out_min=0.40,
         )
         self.assertEqual(label, "unsure")
 
@@ -280,10 +311,11 @@ class StrandsScreeningTest(unittest.TestCase):
             with self.subTest(probability=probability):
                 self.assertEqual(decide_label(
                     p_in_scope=0.45, p_out_of_scope=0.1, p_actual_use=0.60,
-                    p_method_relevance=0.4, p_microbial_only=probability,
+                    p_method_relevance=0.4, p_microbial_only=probability, p_review=0.1,
                     include_threshold=0.45, include_microbial_only_max=0.35,
                     actual_use_threshold=0.60, exclude_threshold=0.50,
                     exclude_actual_use_max=0.50, exclude_method_relevance_max=0.60,
+                    exclude_review_min=0.60, exclude_review_out_min=0.40,
                 ), expected)
 
     def test_screen_row_short_abstract_guard(self) -> None:
@@ -291,6 +323,7 @@ class StrandsScreeningTest(unittest.TestCase):
             "strands_p_in_scope": 0.1, "strands_p_out_of_scope": 0.8,
             "strands_p_unsure": 0.1, "strands_p_actual_use": 0.2,
             "strands_p_microbial_only": 0.8, "strands_p_method_relevance": 0.2,
+            "strands_p_review": 0.1,
         }
         for length, expected in [(299, "unsure"), (300, "out_of_scope")]:
             with self.subTest(length=length):
@@ -299,6 +332,7 @@ class StrandsScreeningTest(unittest.TestCase):
                     "scope": {"probabilities": {"in_scope": 0.1, "out_of_scope": 0.8, "unsure": 0.1}},
                     "actual_use": {"noul": 0.2}, "microbial_only": {"noul": 0.8},
                     "method_relevance": {"noul": 0.2},
+                    "study_type": {"probabilities": {"review": 0.1}},
                 }}
                 cfg = ScreeningConfig(batch_questions=True)
                 with patch("libs.strands_screening._post_with_retry", return_value=response) as post:
@@ -309,6 +343,37 @@ class StrandsScreeningTest(unittest.TestCase):
                     self.assertEqual(result[key], value)
                 if expected == "unsure":
                     self.assertTrue(result["flag_reason"].startswith("unsure: abstract too short to exclude; "))
+
+    def test_review_exclusion_rule(self) -> None:
+        for p_in, p_out, p_review, expected in [
+            (0.2, 0.40, 0.60, "out_of_scope"),
+            (0.45, 0.40, 0.60, "in_scope"),
+            (0.2, 0.399, 0.9, "unsure"),
+            (0.2, 0.40, 0.599, "unsure"),
+        ]:
+            with self.subTest(p_in=p_in, p_out=p_out, p_review=p_review):
+                scores = {
+                    "strands_p_in_scope": p_in, "strands_p_out_of_scope": p_out,
+                    "strands_p_unsure": 0.1, "strands_p_actual_use": 0.7,
+                    "strands_p_microbial_only": 0.1, "strands_p_method_relevance": 0.8,
+                    "strands_p_review": p_review,
+                }
+                self.assertEqual(apply_thresholds(scores, ScreeningConfig())["flag_label"], expected)
+                if expected == "out_of_scope":
+                    with patch("libs.strands_screening.evaluate_abstract", return_value=scores):
+                        result = screen_row(Mock(), {"abstract": "short"}, ScreeningConfig())
+                    self.assertEqual(result["flag_label"], "unsure")
+                    cfg = ScreeningConfig(exclude_review_min=0.7, exclude_review_out_min=0.5)
+                    self.assertEqual(apply_thresholds(scores, cfg)["flag_label"], "unsure")
+
+    def test_extract_scores_review_probability(self) -> None:
+        scores = extract_scores({"answers": {
+            "scope": {"probabilities": {"out_of_scope": 0.4}},
+            "actual_use": {"noul": 0.7}, "microbial_only": {"noul": 0.1},
+            "method_relevance": {"noul": 0.8},
+            "study_type": {"probabilities": {"review": 0.61234567}},
+        }})
+        self.assertEqual(scores["strands_p_review"], 0.612346)
 
     def test_build_state_with_and_without_title(self) -> None:
         cfg = ScreeningConfig()

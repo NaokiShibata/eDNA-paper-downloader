@@ -13,5 +13,7 @@
   "actual_use_threshold": 0.60,
   "exclude_threshold": 0.50,
   "exclude_actual_use_max": 0.50,
-  "exclude_method_relevance_max": 0.60
+  "exclude_method_relevance_max": 0.60,
+  "exclude_review_min": 0.60,
+  "exclude_review_out_min": 0.40
 }

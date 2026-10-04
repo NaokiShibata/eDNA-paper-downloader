@@ -28,7 +28,7 @@ class BenchmarkScriptsTest(unittest.TestCase):
         self.assertEqual(metrics["auto_coverage"], 0.5)
         self.assertEqual(_binary_metrics(pd.Series(dtype=str), pd.Series(dtype=str))["auto_accuracy"], 0)
 
-    def test_tune_uses_config_inclusion_thresholds(self) -> None:
+    def test_tune_uses_config_inclusion_and_review_thresholds(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             gold = root / "gold.csv"
@@ -39,13 +39,15 @@ class BenchmarkScriptsTest(unittest.TestCase):
             gold.write_text("benchmark_record_id,gold_label\na,in_scope\n")
             pred.write_text(
                 "flag_record_id,strands_p_in_scope,strands_p_out_of_scope,"
-                "strands_p_actual_use,strands_p_microbial_only,strands_p_method_relevance\n"
-                "a,0.5,0.1,0.7,0.1,0.9\n"
+                "strands_p_actual_use,strands_p_microbial_only,strands_p_method_relevance,strands_p_review\n"
+                "a,0.5,0.4,0.7,0.1,0.9,0.6\n"
             )
             manifest.write_text("benchmark_record_id,benchmark_partition\na,calibration\n")
             config.write_text(json.dumps({"include_threshold": 0.8,
                                          "include_microbial_only_max": 0.2,
-                                         "actual_use_threshold": 0.9}))
+                                         "actual_use_threshold": 0.9,
+                                         "exclude_review_min": 0.7,
+                                         "exclude_review_out_min": 0.5}))
             result = CliRunner().invoke(app, ["tune", str(gold), str(pred),
                 "--manifest", str(manifest), "--config", str(config), "--out-json", str(output)])
             self.assertEqual(result.exit_code, 0, result.output)
