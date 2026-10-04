@@ -632,7 +632,9 @@ def flag(
 
             status.set_description_str(message, refresh=True)
 
+        status.clear()
         status.close()
+        progress.refresh()
 
     typer.echo(
         f"Finished: processed={processed_count} skipped={skipped_count} errors={error_count} output={out_csv}"
