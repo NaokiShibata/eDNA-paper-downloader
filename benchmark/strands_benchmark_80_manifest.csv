@@ -1,0 +1,81 @@
+benchmark_id,benchmark_record_id,benchmark_source,benchmark_stratum,difficulty,benchmark_partition
+B001,title:environmental dna reveals seasonal occupancy of a threatened stream salamander|year:2026,core,explicit_edna,easy,calibration
+B002,title:marine environmental dna maps a coastal shark nursery|year:2026,core,explicit_edna,easy,calibration
+B003,title:sedimentary edna tracks century-scale turnover in alpine lake fish|year:2026,core,explicit_edna,easy,test
+B004,title:airborne environmental dna detects mammals in a temperate forest|year:2026,core,explicit_edna,easy,test
+B005,title:environmental rna captures diel gene-expression signals released by reef fish|year:2026,core,explicit_erna,easy,test
+B006,title:passive samplers improve environmental dna detection in turbid rivers|year:2026,core,explicit_edna_method,easy,test
+B007,title:droplet digital pcr quantifies invasive mussel environmental dna below visual detection|year:2026,core,explicit_edna,easy,test
+B008,title:soil environmental dna identifies burrowing mammal activity|year:2026,core,explicit_edna,easy,calibration
+B009,title:environmental dna metabarcoding resolves fish turnover across an estuarine salinity gradient|year:2026,core,explicit_edna,easy,calibration
+B010,title:snow environmental dna documents winter use of mountain passes by carnivores|year:2026,core,explicit_edna,easy,test
+B011,title:environmental dna transport downstream biases abundance inference in a regulated river|year:2026,core,explicit_edna_model,easy,test
+B012,title:environmental rna and dna differ in persistence after fish removal|year:2026,core,explicit_erna,easy,test
+B013,title:a multiplex lamp assay detects amphibian environmental dna at remote ponds|year:2026,core,explicit_edna_method,easy,test
+B014,title:environmental dna from seawater supports individual haplotype recovery in a spawning aggregation|year:2026,core,explicit_edna,easy,test
+B015,title:urban stream environmental dna detects pathogen reservoirs in wildlife|year:2026,core,explicit_edna,easy,calibration
+B016,title:environmental dna occupancy estimates improve monitoring of a rare freshwater snail|year:2026,core,explicit_edna,easy,calibration
+B017,title:water-borne mitochondrial traces reveal cryptic fish spawning migrations|year:2026,challenge,implicit_environmental_nucleic_acid,hard,calibration
+B018,title:vertebrate metabarcoding of drinking-water reservoirs recovers surrounding terrestrial fauna|year:2026,challenge,implicit_environmental_nucleic_acid,hard,calibration
+B019,title:dna recovered from cave drip water indicates seasonal bat use|year:2026,challenge,implicit_environmental_nucleic_acid,hard,calibration
+B020,title:molecular traces on flower surfaces reveal nocturnal pollinator visitation|year:2026,challenge,implicit_environmental_nucleic_acid,hard,test
+B021,title:mitochondrial sequences in beach sand identify nesting sea turtles|year:2026,challenge,implicit_environmental_nucleic_acid,hard,calibration
+B022,title:high-volume seawater filtration recovers whale haplotypes across a migration corridor|year:2026,challenge,implicit_environmental_nucleic_acid,hard,calibration
+B023,title:rna recovered from coastal water tracks harmful algal bloom activity|year:2026,challenge,implicit_environmental_nucleic_acid,hard,calibration
+B024,title:dust-borne plant dna reconstructs flowering phenology in an agricultural landscape|year:2026,challenge,implicit_environmental_nucleic_acid,hard,test
+B025,title:river sediment dna indicates upstream spawning by a migratory fish|year:2026,challenge,implicit_environmental_nucleic_acid,hard,test
+B026,title:molecular detection from leech gut contents complements vertebrate surveys|year:2026,challenge,implicit_environmental_nucleic_acid,hard,test
+B027,title:filter-feeding sponges integrate vertebrate dna signals over reef habitats|year:2026,challenge,implicit_environmental_nucleic_acid,hard,calibration
+B028,title:rainwater dna reveals episodic aerial transport of forest arthropods|year:2026,challenge,implicit_environmental_nucleic_acid,hard,calibration
+B029,title:preservative choice alters recovery of low-copy dna from stream-water filters|year:2026,challenge,method_positive,medium,test
+B030,title:a comparison of pore-size filters for biodiversity dna capture in turbid estuaries|year:2026,challenge,method_positive,medium,calibration
+B031,title:extraction chemistry determines recovery of extracellular rna from wastewater|year:2026,challenge,method_positive,medium,calibration
+B032,title:primer degeneracy improves detection of freshwater vertebrates in mixed-template water samples|year:2026,challenge,method_positive,medium,test
+B033,title:occupancy-aware thresholding reduces false detections in low-copy metabarcoding data|year:2026,challenge,method_positive,medium,test
+B034,title:cell-free dna enrichment improves surveillance of antibiotic resistance genes in river water|year:2026,challenge,microbial_method_positive,hard,test
+B035,title:passive membrane samplers integrate wastewater viral rna over 24 hours|year:2026,challenge,microbial_method_positive,hard,test
+B036,title:freeze-thaw cycles bias quantitative recovery of fecal-marker dna from seawater|year:2026,challenge,microbial_method_positive,hard,test
+B037,title:a mock-community framework benchmarks taxonomic assignment for environmental amplicons|year:2026,challenge,method_positive,medium,test
+B038,title:inhibitor removal columns improve qpcr sensitivity in peatland water|year:2026,challenge,method_positive,medium,test
+B039,title:long-read sequencing recovers linked haplotypes from high-molecular-weight lake-water dna|year:2026,challenge,method_positive,hard,test
+B040,title:field-deployable crispr detection of invasive-fish dna in river water|year:2026,challenge,method_positive,medium,test
+B041,title:population genomics of a threatened river fish reveals three management units|year:2026,core,clear_negative,easy,test
+B042,title:single-cell transcriptomics identifies immune states in oyster gill tissue|year:2026,core,clear_negative,easy,test
+B043,title:complete mitochondrial genomes clarify relationships among cave salamanders|year:2026,core,clear_negative,easy,test
+B044,title:gut microbiome composition predicts growth in farmed salmon|year:2026,core,clear_negative,easy,test
+B045,title:metagenome-assembled genomes reveal metabolic exchange in the human oral microbiome|year:2026,core,clear_negative,easy,calibration
+B046,title:reference genome assembly for an invasive freshwater snail|year:2026,core,clear_negative,easy,calibration
+B047,title:blood-based cell-free dna detects relapse in canine lymphoma|year:2026,core,clear_negative,easy,test
+B048,title:rna-seq of drought-stressed leaves identifies conserved stress pathways|year:2026,core,clear_negative,easy,test
+B049,title:microsatellite markers reveal fine-scale dispersal in a coastal crab|year:2026,core,clear_negative,easy,calibration
+B050,title:comparative genomics of cultured cyanobacteria identifies toxin gene loss|year:2026,core,clear_negative,easy,calibration
+B051,title:museum genomics reconstructs historical diversity of an extinct island bird|year:2026,core,clear_negative,easy,test
+B052,title:whole-blood transcriptomics predicts migration timing in a songbird|year:2026,core,clear_negative,easy,test
+B053,title:amplicon sequencing of fungal endophytes across tree leaves|year:2026,core,clear_negative,easy,test
+B054,title:genome-wide association identifies salinity-tolerance loci in tilapia|year:2026,core,clear_negative,easy,test
+B055,title:crispr knockout confirms a pigmentation gene in zebrafish|year:2026,core,clear_negative,easy,test
+B056,title:phylogeography of a marine turtle using nesting-female blood samples|year:2026,core,clear_negative,easy,test
+B057,title:visual surveys remain effective for monitoring stream fish under low-flow conditions|year:2026,challenge,edna_mention_only,hard,calibration
+B058,title:conservation priorities for cave fauna under groundwater extraction|year:2026,challenge,edna_mention_only,hard,test
+B059,title:a review of molecular tools for freshwater biodiversity assessment|year:2026,challenge,review_only,hard,test
+B060,title:camera traps and acoustic recorders reveal mammal responses to road construction|year:2026,challenge,edna_mention_only,hard,test
+B061,title:benchmarking fish biodiversity indicators from conventional survey data|year:2026,challenge,edna_comparison_only,hard,calibration
+B062,title:effects of turbidity on electrofishing detection probability|year:2026,challenge,edna_mention_only,hard,calibration
+B063,title:microbial community succession in activated sludge under altered aeration|year:2026,challenge,microbial_profile_negative,hard,test
+B064,title:seasonal soil microbiome turnover along an elevation gradient|year:2026,challenge,microbial_profile_negative,hard,test
+B065,title:shotgun metagenomics profiles antibiotic resistance in hospital wastewater|year:2026,challenge,microbial_profile_negative,hard,test
+B066,title:metatranscriptomics reveals carbon cycling in coastal sediments|year:2026,challenge,microbial_profile_negative,hard,test
+B067,title:environmental dna terminology in ecological publications has expanded rapidly|year:2026,challenge,bibliometric_edna,hard,test
+B068,title:machine learning predicts suitable habitat for an invasive carp|year:2026,challenge,secondary_edna_data_absent,hard,test
+B069,title:comparing environmental dna and electrofishing: a protocol for a planned multicenter study|year:2026,challenge,protocol_no_data,hard,calibration
+B070,title:meta-analysis of environmental dna detection probability across freshwater taxa|year:2026,challenge,meta_analysis_only,hard,calibration
+B071,title:freshwater biodiversity policy recommendations for national monitoring programs|year:2026,challenge,policy_review_only,hard,test
+B072,title:dna barcoding improves identification of larval fishes from plankton nets|year:2026,challenge,specimen_barcoding_negative,hard,calibration
+B073,title:molecular surveillance of rare amphibians across seasonal wetlands|year:2026,challenge,insufficient_sample_matrix,hard,test
+B074,title:dna-based detection improves monitoring of an elusive cave fish|year:2026,challenge,insufficient_sample_matrix,hard,calibration
+B075,title:rna signatures track pathogen activity in municipal monitoring samples|year:2026,challenge,ambiguous_surveillance_matrix,hard,calibration
+B076,title:metabarcoding reveals unexpected vertebrate diversity at tropical field sites|year:2026,challenge,ambiguous_substrate,hard,test
+B077,title:low-copy mitochondrial dna predicts recent presence of a threatened mammal|year:2026,challenge,ambiguous_noninvasive_sample,hard,test
+B078,title:a molecular assay increases detection of freshwater parasites|year:2026,challenge,ambiguous_parasite_sampling,hard,test
+B079,title:sequence-based monitoring detects seasonal changes in coastal biodiversity|year:2026,challenge,ambiguous_sampling_material,hard,test
+B080,title:molecular traces reveal presence of an invasive freshwater species|year:2026,challenge,ambiguous_molecular_trace,hard,calibration
