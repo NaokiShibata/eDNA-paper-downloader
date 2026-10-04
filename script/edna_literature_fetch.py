@@ -204,6 +204,7 @@ def fetch(
         logger.info("Strands filtering requires abstracts; enabling abstract retrieval.")
 
     strands_cfg: dict[str, object] = {}
+    strands_config_path: Path | None = None
     strands_base = DEFAULT_BASE_URL
     strands_timeout = 120.0
     strands_retries = 3
@@ -216,10 +217,17 @@ def fetch(
     strands_session: requests.Session | None = None
 
     if strands_filter:
-        config_path = strands_config
-        if config_path is None:
-            config_path = Path(__file__).resolve().parents[1] / "config" / "strands_flagger.example.jsonc"
-        strands_cfg = load_config(config_path)
+        strands_config_path = strands_config
+        if strands_config_path is None:
+            strands_config_path = (
+                Path(__file__).resolve().parents[1]
+                / "config"
+                / "strands_flagger.example.jsonc"
+            )
+        try:
+            strands_cfg = load_config(strands_config_path)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            raise typer.BadParameter(f"invalid Strands config: {exc}") from exc
         strands_base = str(
             coalesce(strands_base_url, strands_cfg, "base_url", DEFAULT_BASE_URL)
         ).rstrip("/")
@@ -290,7 +298,7 @@ def fetch(
         "biorxiv_out_prefix": biorxiv_out_prefix,
         "abstract": abstract,
         "strands_filter": strands_filter,
-        "strands_config": str(strands_config) if strands_config else None,
+        "strands_config": str(strands_config_path) if strands_config_path else None,
         "strands_base_url": strands_base if strands_filter else None,
         "crossref": crossref,
         "user_agent": user_agent,
