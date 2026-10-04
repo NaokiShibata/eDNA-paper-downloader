@@ -13,10 +13,13 @@ select = [
   "B",
 ]
 ignore = [
-  "E402",  # runtime dependency bootstrap intentionally precedes optional imports
   "E501",
   "B008",  # Typer uses Option/Argument calls in function defaults by design
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"script/biorxiv_search.py" = ["E402"]
+"script/edna_literature_fetch.py" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["libs"]
