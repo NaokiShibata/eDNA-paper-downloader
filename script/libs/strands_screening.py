@@ -31,9 +31,13 @@ class ScreeningConfig:
     exclude_method_relevance_max: float = 0.60
     max_abstract_chars: int | None = 6000
     batch_questions: bool = False
+    cache_csv: str | None = ".cache/strands_scores.csv"
 
     @classmethod
     def from_sources(cls, config: Mapping[str, Any], **overrides: Any) -> ScreeningConfig:
+        unknown = (set(config) | set(overrides)) - {field.name for field in fields(cls)}
+        if unknown:
+            raise ValueError(f"Unknown screening config keys: {', '.join(sorted(unknown))}")
         values: dict[str, Any] = {}
         for field in fields(cls):
             name = field.name
@@ -41,6 +45,8 @@ class ScreeningConfig:
             if value is not None:
                 if name == "base_url":
                     value = str(value).rstrip("/")
+                elif name == "cache_csv":
+                    value = str(value)
                 elif name in ("retries", "max_abstract_chars"):
                     value = int(value)
                 elif name == "batch_questions":
@@ -175,6 +181,7 @@ SCORE_COLUMNS = [col for col in EXTRA_COLUMNS if col not in {
 
 class ScoreCache:
     def __init__(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.rows: dict[str, dict[str, str]] = {}
         self.hits = 0
@@ -284,6 +291,12 @@ def _remove_trailing_commas(text: str) -> str:
                 continue
         out.append(ch)
     return "".join(out)
+
+
+def default_config_path() -> Path:
+    config_dir = Path(__file__).resolve().parents[2] / "config"
+    local = config_dir / "strands_flagger.jsonc"
+    return local if local.exists() else config_dir / "strands_flagger.example.jsonc"
 
 
 def load_config(path: Path | None) -> dict[str, Any]:

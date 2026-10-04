@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +14,7 @@ from libs.cli_logging import log_run_header, setup_logger
 from libs.edna_models import Paper
 from libs.sources import (
     _date_range_clause,
+    _query_terms,
     biorxiv_search_papers,
     build_query_with_excludes,
     crossref_search_papers,
@@ -28,6 +29,7 @@ from libs.strands_screening import (
     ScoreCache,
     ScreeningConfig,
     check_health,
+    default_config_path,
     format_status,
     load_config,
     screen_row,
@@ -36,129 +38,72 @@ from libs.strands_screening import (
 app = typer.Typer(add_completion=False)
 
 
+def parse_sources(value: str) -> set[str]:
+    sources = {name.strip() for name in value.split(",")}
+    unknown = sources - {"pubmed", "crossref", "openalex", "biorxiv", "medrxiv"}
+    if unknown:
+        raise ValueError(f"Unknown sources: {', '.join(sorted(unknown))}")
+    return sources
+
+
+def date_window(since: str | None, until: str | None, days: int | None,
+                today: date | None = None) -> tuple[str | None, str]:
+    end = date.fromisoformat(until.replace("/", "-")) if until else today or date.today()
+    if days is not None:
+        if since is not None:
+            raise ValueError("--days cannot be combined with --since")
+        if days < 1:
+            raise ValueError("--days must be > 0")
+        since = (end - timedelta(days=days - 1)).strftime("%Y/%m/%d")
+    return since, end.strftime("%Y/%m/%d")
+
+
 @app.command()
 def fetch(
-    email: str = typer.Option(..., help="Your email for NCBI Entrez."),
-    api_key: str | None = typer.Option(None, help="NCBI API key (optional)."),
-    query: str = typer.Option(
-        '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])',
-        help="Base PubMed query string.",
-    ),
-    exclude: list[str] | None = typer.Option(
-        None,
-        "--exclude",
-        help="Exclude term(s). Can be repeated. Example: --exclude review --exclude '\"meta-analysis\"'",
-    ),
-    since: str | None = typer.Option(
-        None,
-        "--since",
-        help="Start date (YYYY/MM/DD) for date filter.",
-    ),
-    until: str | None = typer.Option(
-        None,
-        "--until",
-        help="End date (YYYY/MM/DD) for date filter (optional).",
-    ),
-    datetype: str = typer.Option(
-        "pdat",
-        help='Date filter type: "pdat" (publication date) or "edat" (Entrez date).',
-    ),
-    sort: str = typer.Option(
-        "most+recent",
-        help='Sort: "most+recent" (recent) or "pub+date" (publication date).',
-    ),
-    pmid_batch: int = typer.Option(
-        10000,
-        min=100,
-        max=100000,
-        help="Batch size for PMID paging in esearch.",
-    ),
-    source_pubmed: bool = typer.Option(True, "--source-pubmed/--no-source-pubmed", help="Use PubMed source."),
-    source_crossref: bool = typer.Option(
-        True,
-        "--source-crossref/--no-source-crossref",
-        help="Use Crossref source (DOI-rich).",
-    ),
-    source_openalex: bool = typer.Option(
-        True,
-        "--source-openalex/--no-source-openalex",
-        help="Use OpenAlex source (DOI-rich).",
-    ),
-    crossref_max_items: int = typer.Option(1000, min=1, help="Max items to collect from Crossref."),
-    openalex_max_items: int = typer.Option(1000, min=1, help="Max items to collect from OpenAlex."),
-    openalex_api_key: str | None = typer.Option(None, help="OpenAlex API key (recommended/required by policy)."),
-    run_biorxiv: bool = typer.Option(
-        False,
-        "--run-biorxiv/--no-run-biorxiv",
-        help="Merge bioRxiv/medRxiv records into literature results.",
-    ),
-    biorxiv_server: str = typer.Option("biorxiv", help='bioRxiv target server: "biorxiv" or "medrxiv".'),
-    biorxiv_from_date: str | None = typer.Option(None, help="bioRxiv start date YYYY/MM/DD."),
-    biorxiv_to_date: str | None = typer.Option(None, help="bioRxiv end date YYYY/MM/DD."),
-    biorxiv_query: str = typer.Option("eDNA", help="Query string for bioRxiv local filtering."),
-    abstract: bool = typer.Option(False, help="Include abstracts."),
-    europepmc_abstracts: bool = typer.Option(True, "--europepmc-abstracts/--no-europepmc-abstracts", help="Fill missing abstracts via Europe PMC."),
-    strands_cache: Path | None = typer.Option(None, help="CSV cache of Strands scores."),
-    strands_filter: bool = typer.Option(
-        False,
-        "--strands-filter/--no-strands-filter",
-        help="Screen merged papers with Strands Decider and exclude only out_of_scope from final output.",
-    ),
-    strands_config: Path | None = typer.Option(
-        None,
-        "--strands-config",
-        help="Strands JSON/JSONC config. Defaults to config/strands_flagger.example.jsonc.",
-    ),
-    strands_base_url: str | None = typer.Option(
-        None,
-        "--strands-base-url",
-        help="Override the Strands Decider server URL from config.",
-    ),
-    user_agent: str | None = typer.Option(
-        None,
-        help="User-Agent header for Crossref requests.",
-    ),
-    sleep: float = typer.Option(0.34, min=0.0, help="Sleep seconds between Entrez requests."),
-    out_prefix: str = typer.Option("edna_papers", help="Output prefix (CSV)."),
-    out_dir: Path = typer.Option(Path("."), help="Output directory."),
-    log_level: str = typer.Option("INFO", help="Log level: DEBUG, INFO, WARNING, ERROR"),
-    log_file: Path | None = typer.Option(None, help="Write logs to this file as well."),
+    email: str = typer.Option(..., envvar="NCBI_EMAIL", help="Your email for NCBI Entrez."),
+    api_key: str | None = typer.Option(None, envvar="NCBI_API_KEY"),
+    openalex_api_key: str | None = typer.Option(None, envvar="OPENALEX_API_KEY"),
+    query: str = typer.Option('("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract])'),
+    exclude: list[str] | None = typer.Option(None, "--exclude"),
+    since: str | None = typer.Option(None, help="Start date (YYYY/MM/DD or YYYY-MM-DD)."),
+    until: str | None = typer.Option(None, help="End date; defaults to today."),
+    days: int | None = typer.Option(None, min=1, help="Inclusive window ending at --until or today."),
+    datetype: str = typer.Option("pdat"),
+    sources: str = typer.Option("pubmed,crossref,openalex", help="Comma-separated source names."),
+    max_items: int = typer.Option(1000, min=1, help="Maximum items per Crossref/OpenAlex source."),
+    strands: bool = typer.Option(False, "--strands/--no-strands"),
+    sleep: float = typer.Option(0.34, min=0.0),
+    out_prefix: str = typer.Option("edna_papers"),
+    out_dir: Path = typer.Option(Path(".")),
+    log_level: str = typer.Option("INFO"),
+    log_file: Path | None = typer.Option(None),
 ) -> None:
     """
-    Fetch paper metadata from PubMed and export CSV.
+    Fetch papers with abstracts from selected sources and export CSV.
     Merge duplicate records by DOI or title.
     """
-    until = until or date.today().strftime("%Y/%m/%d")
-    if run_biorxiv:
-        biorxiv_from_date = biorxiv_from_date or since
-        biorxiv_to_date = biorxiv_to_date or until
-        if not biorxiv_from_date:
-            raise typer.BadParameter("--since or --biorxiv-from-date is required with --run-biorxiv")
+    try:
+        selected_sources = parse_sources(sources)
+        since, until = date_window(since, until, days)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if selected_sources & {"biorxiv", "medrxiv"} and not since:
+        raise typer.BadParameter("--since or --days is required for bioRxiv/medRxiv")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logger("edna_literature_fetch", log_level=log_level, log_file=log_file)
-
-    if strands_filter and not abstract:
-        abstract = True
-        logger.info("Strands filtering requires abstracts; enabling abstract retrieval.")
 
     strands_cfg = ScreeningConfig()
     strands_config_path: Path | None = None
     strands_session: requests.Session | None = None
 
-    if strands_filter:
-        strands_config_path = strands_config
-        if strands_config_path is None:
-            strands_config_path = (
-                Path(__file__).resolve().parents[1]
-                / "config"
-                / "strands_flagger.example.jsonc"
-            )
+    if strands:
+        strands_config_path = default_config_path()
+        logger.info("Strands config: %s", strands_config_path)
         try:
-            cfg_dict = load_config(strands_config_path)
+            strands_cfg = ScreeningConfig.from_sources(load_config(strands_config_path))
         except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
             raise typer.BadParameter(f"invalid Strands config: {exc}") from exc
-        strands_cfg = ScreeningConfig.from_sources(cfg_dict, base_url=strands_base_url)
         strands_session = requests.Session()
         try:
             health_data = check_health(strands_session, strands_cfg.base_url, strands_cfg.timeout)
@@ -180,8 +125,7 @@ def fetch(
     if date_clause:
         final_query = f"({final_query}) AND {date_clause}"
 
-    if user_agent is None:
-        user_agent = f"edna-literature-fetch/1.0 (mailto:{email})"
+    user_agent = f"edna-literature-fetch/1.0 (mailto:{email})"
 
     params = {
         "email": email,
@@ -193,26 +137,11 @@ def fetch(
         "until": until,
         "date_clause": date_clause,
         "datetype": datetype,
-        "sort": sort,
-        "pmid_batch": pmid_batch,
-        "source_pubmed": source_pubmed,
-        "source_crossref": source_crossref,
-        "source_openalex": source_openalex,
-        "crossref_max_items": crossref_max_items,
-        "openalex_max_items": openalex_max_items,
+        "sources": sources,
+        "max_items": max_items,
         "openalex_api_key": "***" if openalex_api_key else None,
-        "run_biorxiv": run_biorxiv,
-        "biorxiv_server": biorxiv_server,
-        "biorxiv_from_date": biorxiv_from_date,
-        "biorxiv_to_date": biorxiv_to_date,
-        "biorxiv_query": biorxiv_query,
-        "europepmc_abstracts": europepmc_abstracts,
-        "strands_cache": str(strands_cache) if strands_cache else None,
-        "abstract": abstract,
-        "strands_filter": strands_filter,
+        "strands": strands,
         "strands_config": str(strands_config_path) if strands_config_path else None,
-        "strands_base_url": strands_cfg.base_url if strands_filter else None,
-        "user_agent": user_agent,
         "sleep": sleep,
         "out_prefix": out_prefix,
         "out_dir": str(out_dir),
@@ -235,13 +164,13 @@ def fetch(
 
     all_papers = []
 
-    if source_pubmed:
+    if "pubmed" in selected_sources:
         pmids = pubmed_search_all_pmids(
             query=final_query,
             email=email,
             api_key=api_key,
-            sort=sort,
-            batch=pmid_batch,
+            sort="most+recent",
+            batch=10000,
             sleep=sleep,
             logger=logger,
         )
@@ -251,7 +180,7 @@ def fetch(
                 pmids=pmids,
                 email=email,
                 api_key=api_key,
-                include_abstract=abstract,
+                include_abstract=True,
                 sleep=sleep,
                 logger=logger,
             )
@@ -259,43 +188,43 @@ def fetch(
         else:
             logger.warning("No PubMed results.")
 
-    if source_crossref:
+    if "crossref" in selected_sources:
         all_papers.extend(
             crossref_search_papers(
                 query=query,
                 user_agent=user_agent,
-                max_items=crossref_max_items,
+                max_items=max_items,
                 from_date=since,
                 until_date=until,
-                include_abstract=abstract,
+                include_abstract=True,
                 excludes=exclude_terms,
                 sleep=sleep,
                 logger=logger,
             )
         )
 
-    if source_openalex:
+    if "openalex" in selected_sources:
         all_papers.extend(
             openalex_search_papers(
                 query=query,
-                max_items=openalex_max_items,
+                max_items=max_items,
                 from_date=since,
                 until_date=until,
                 email=email,
                 api_key=openalex_api_key,
-                include_abstract=abstract,
+                include_abstract=True,
                 excludes=exclude_terms,
                 sleep=sleep,
                 logger=logger,
             )
         )
 
-    if run_biorxiv:
-        assert biorxiv_from_date is not None and biorxiv_to_date is not None
+    for server in sorted(selected_sources & {"biorxiv", "medrxiv"}):
+        assert since is not None
         all_papers.extend(biorxiv_search_papers(
-            server=biorxiv_server, from_date=biorxiv_from_date, to_date=biorxiv_to_date,
-            query=biorxiv_query, excludes=exclude_terms, sleep=sleep, logger=logger,
-            include_abstract=abstract,
+            server=server, from_date=since, to_date=until,
+            query=" OR ".join(_query_terms(query)), excludes=exclude_terms,
+            sleep=sleep, logger=logger, include_abstract=True,
         ))
 
     if not all_papers:
@@ -305,26 +234,24 @@ def fetch(
     papers = merge_papers_by_doi_title(all_papers, logger=logger)
 
     columns = list(Paper.__dataclass_fields__)
-    if abstract:
-        if europepmc_abstracts:
-            papers = europepmc_fill_abstracts(papers, sleep=sleep, logger=logger)
-        missing = [p for p in papers if not (p.abstract or "").strip()]
-        missing_df = pd.DataFrame([asdict(p) for p in missing], columns=columns)
-        missing_df.to_csv(out_dir / f"{out_prefix}.no_abstract.csv", index=False)
-        logger.info("Records without abstract saved separately: %d", len(missing))
-        papers = [p for p in papers if (p.abstract or "").strip()]
+    papers = europepmc_fill_abstracts(papers, sleep=sleep, logger=logger)
+    missing = [p for p in papers if not (p.abstract or "").strip()]
+    missing_df = pd.DataFrame([asdict(p) for p in missing], columns=columns)
+    missing_df.to_csv(out_dir / f"{out_prefix}.no_abstract.csv", index=False)
+    logger.info("Records without abstract saved separately: %d", len(missing))
+    papers = [p for p in papers if (p.abstract or "").strip()]
 
     df = pd.DataFrame([asdict(p) for p in papers], columns=columns)
 
     rejected_df: pd.DataFrame | None = None
-    if strands_filter:
+    if strands:
         if strands_session is None:
             raise RuntimeError("Strands session was not initialized")
 
         kept_rows: list[dict[str, object]] = []
         rejected_rows: list[dict[str, object]] = []
         error_count = 0
-        cache = ScoreCache(strands_cache) if strands_cache is not None else None
+        cache = ScoreCache(Path(strands_cfg.cache_csv)) if strands_cfg.cache_csv is not None else None
 
         progress = tqdm(
             df.to_dict(orient="records"),
@@ -390,7 +317,7 @@ def fetch(
         logger.info(f"Writing Strands rejected CSV: {rejected_csv_path}")
         rejected_df.to_csv(rejected_csv_path, index=False)
 
-    if strands_filter and rejected_df is not None:
+    if strands and rejected_df is not None:
         logger.info(
             "Done. Retained: %d, rejected out_of_scope: %d",
             len(df),

@@ -1,36 +1,17 @@
 {
-  // Strands Decider server started with:
-  // strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cuda --port 8012
-  // Send all questions in one request instead of sequentially.
-  "batch_questions": false,
+  // Server and request handling.
   "base_url": "http://127.0.0.1:8012",
-
-  // Input CSV column containing the abstract. Long abstracts are shortened.
-  "abstract_column": "abstract",
-  "max_abstract_chars": 6000,
-
-  // Output / logging
-  "out_csv": "results/strands_flagged.csv",
-  "log_file": "logs/strands_flagger.log",
-  "log_level": "INFO",
-
-  // Request handling
   "timeout": 120.0,
   "retries": 3,
-
-  // Thresholds were chosen on the calibration partition of the 200-paper human-labelled
-  // benchmark (docs/strands-decider-benchmark.md).
+  "batch_questions": false,
+  "max_abstract_chars": 6000,
+  // Score cache; null disables it.
+  "cache_csv": ".cache/strands_scores.csv",
+  // Calibrated on the human-labelled benchmark.
   "include_threshold": 0.45,
   "include_microbial_only_max": 0.35,
   "actual_use_threshold": 0.60,
   "exclude_threshold": 0.50,
   "exclude_actual_use_max": 0.50,
-  "exclude_method_relevance_max": 0.60,
-
-  // Batching / resume
-  "batch_size": null,
-  "batch_index": 0,
-  "limit": null,
-  "resume": true,
-  "dry_run": false
+  "exclude_method_relevance_max": 0.60
 }
