@@ -213,6 +213,7 @@ def fetch(
     strands_exclude_actual_use_max = 0.50
     strands_exclude_method_relevance_max = 0.60
     strands_max_abstract_chars: int | None = None
+    strands_session: requests.Session | None = None
 
     if strands_filter:
         config_path = strands_config
@@ -241,6 +242,21 @@ def fetch(
         )
         max_chars_value = coalesce(None, strands_cfg, "max_abstract_chars", None)
         strands_max_abstract_chars = int(max_chars_value) if max_chars_value is not None else None
+
+        strands_session = requests.Session()
+        try:
+            health_data = check_health(strands_session, strands_base, strands_timeout)
+        except Exception as exc:
+            raise typer.BadParameter(
+                f"could not connect to Strands Decider at {strands_base}: {exc}"
+            ) from exc
+        logger.info(
+            "Strands filter server status=%s model=%s device=%s max_length=%s",
+            health_data.get("status"),
+            health_data.get("model"),
+            health_data.get("device"),
+            health_data.get("max_length"),
+        )
 
     exclude_terms = exclude or []
     final_query = build_query_with_excludes(query, exclude_terms)
@@ -379,21 +395,8 @@ def fetch(
 
     rejected_df: pd.DataFrame | None = None
     if strands_filter:
-        session = requests.Session()
-        try:
-            health_data = check_health(session, strands_base, strands_timeout)
-        except Exception as exc:
-            raise typer.BadParameter(
-                f"could not connect to Strands Decider at {strands_base}: {exc}"
-            ) from exc
-
-        logger.info(
-            "Strands filter server status=%s model=%s device=%s max_length=%s",
-            health_data.get("status"),
-            health_data.get("model"),
-            health_data.get("device"),
-            health_data.get("max_length"),
-        )
+        if strands_session is None:
+            raise RuntimeError("Strands session was not initialized")
 
         kept_rows: list[dict[str, object]] = []
         rejected_rows: list[dict[str, object]] = []
@@ -436,7 +439,7 @@ def fetch(
                 try:
                     screened_row.update(
                         classify_abstract(
-                            session=session,
+                            session=strands_session,
                             abstract=prepared,
                             base_url=strands_base,
                             timeout=strands_timeout,
