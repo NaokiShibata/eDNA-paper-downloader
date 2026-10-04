@@ -5,8 +5,9 @@ import io
 import logging
 import re
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict
+from typing import Any
 
 import requests
 from Bio import Entrez
@@ -149,7 +150,7 @@ def _date_range_clause(since: str | None, until: str | None, datetype: str) -> s
     return f'("{start}"[{field}] : "{end}"[{field}])'
 
 
-def _entrez_read_handle(handle, logger: logging.Logger | None, context: str):
+def _entrez_read_handle(handle: Any, logger: logging.Logger | None, context: str) -> Any:
     raw = b""
     try:
         raw = handle.read()
@@ -172,7 +173,12 @@ def _entrez_read_handle(handle, logger: logging.Logger | None, context: str):
         raise
 
 
-def _entrez_request(read_fn, logger: logging.Logger | None, context: str, retries: int = 3):
+def _entrez_request(
+    read_fn: Callable[[], Any],
+    logger: logging.Logger | None,
+    context: str,
+    retries: int = 3,
+) -> Any:
     last_exc: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
@@ -239,9 +245,9 @@ def pubmed_search_all_pmids(
     sleep: float = 0.34,
     logger: logging.Logger | None = None,
 ) -> list[str]:
-    Entrez.email = email
+    setattr(Entrez, "email", email)
     if api_key:
-        Entrez.api_key = api_key
+        setattr(Entrez, "api_key", api_key)
 
     kwargs = {
         "db": "pubmed",
@@ -327,9 +333,9 @@ def pubmed_fetch_details(
     sleep: float = 0.34,
     logger: logging.Logger | None = None,
 ) -> list[Paper]:
-    Entrez.email = email
+    setattr(Entrez, "email", email)
     if api_key:
-        Entrez.api_key = api_key
+        setattr(Entrez, "api_key", api_key)
 
     pmids = list(pmids)
     papers: list[Paper] = []
@@ -478,7 +484,7 @@ def crossref_search_papers(
     out: list[Paper] = []
     preprint_skipped = 0
 
-    params: dict[str, object] = {
+    params: dict[str, Any] = {
         "query": _to_query_text(query),
         "rows": 200,
         "offset": 0,
