@@ -929,6 +929,31 @@ pixi run strands-screen \
 
 人手ラベルを先に付け、Strandsの確率を見ない状態でgoldを確定させることを推奨します。
 
+### 3) calibration partitionで除外閾値を調整
+
+現在の初期閾値はRecall重視のため、陰性を `unsure` に残しすぎる可能性があります。
+`benchmark-tune` は `calibration` partitionだけを使い、inclusion側の閾値を固定したまま、
+以下の除外条件を探索します。
+
+- `exclude_threshold`
+- `exclude_actual_use_max`
+- `exclude_method_relevance_max`
+
+デフォルトでは `hard_false_negative=0` を必須条件とし、その範囲で正しく自動除外できる
+`out_of_scope` 件数を最大化します。
+
+```bash
+pixi run benchmark-tune \
+  benchmark/strands_benchmark_80_gold.csv \
+  benchmark/strands_benchmark_80.strands.csv \
+  --manifest benchmark/strands_benchmark_80_manifest.csv \
+  --max-hard-fn 0 \
+  --out-json benchmark/strands_benchmark_80.thresholds.json
+```
+
+表示された推奨値を `config/strands_flagger.jsonc` に反映してから再判定します。
+最終的な性能確認には `test` partitionを使用します。
+
 ### 3) test partitionで最終評価
 
 ```bash
