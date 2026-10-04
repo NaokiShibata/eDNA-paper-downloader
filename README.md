@@ -791,11 +791,11 @@ cp config/strands_flagger.example.jsonc config/strands_flagger.jsonc
 | --- | ---: | --- |
 | `include_threshold` | `0.70` | `P(in_scope)` の自動採用閾値 |
 | `actual_use_threshold` | `0.60` | 自動採用時に必要な `actual_use` |
-| `exclude_threshold` | `0.90` | `P(out_of_scope)` の自動除外閾値 |
-| `exclude_actual_use_max` | `0.15` | 自動除外で許容する `actual_use` の上限 |
-| `exclude_method_relevance_max` | `0.30` | 自動除外で許容するMethod関連性の上限 |
+| `exclude_threshold` | `0.50` | `P(out_of_scope)` の自動除外閾値 |
+| `exclude_actual_use_max` | `0.50` | 自動除外で許容する `actual_use` の上限 |
+| `exclude_method_relevance_max` | `0.60` | 自動除外で許容するMethod関連性の上限 |
 
-初期値はPrecisionよりRecallを重視しています。まず手動判定済みデータでFalse Negativeを確認してから調整してください。
+現在のデフォルトは、Method系をやや安全側に残す方針で合成benchmarkを用いて調整した値です。曖昧な論文は引き続き `unsure` として人手確認に回します。
 
 ### 3) 少数件でテスト
 
@@ -977,6 +977,23 @@ pixi run benchmark-eval \
 - `brier_p_in_scope`: `P(in_scope)` の確率品質
 
 `natural` と `challenge`、challenge stratumごとの結果も別々に表示されます。
+
+### 合成80件benchmarkでの確認結果
+
+Method系を安全側に残す設定（`0.50 / 0.50 / 0.60`）を、閾値調整に使用していないtest partitionで確認した結果:
+
+| 指標 | 結果 |
+| --- | ---: |
+| binary gold | 46件 |
+| hard false negative | 0件 |
+| operational recall | 1.000 |
+| auto coverage | 0.674 |
+| manual review rate | 0.326 |
+| auto accuracy | 0.968 |
+| in-scope precision | 0.958 |
+
+Method-positive 7件、microbial-method-positive 3件、explicit-eDNA-method 2件はいずれも自動判定で正しく保持されました。
+このbenchmarkは合成データであり、実運用精度の保証ではありません。以後は通常運用で誤除外が見つかった場合に再検証する方針とします。
 
 閾値調整はまず `--partition calibration` で行い、最終的な性能確認には `test` partitionだけを使ってください。
 
