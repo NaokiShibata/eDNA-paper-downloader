@@ -39,9 +39,19 @@ def _repo_path(repo_root: Path, value: Path) -> Path:
     return value if value.is_absolute() else repo_root / value
 
 
+def _display_cmd(cmd: list[str]) -> str:
+    masked = cmd.copy()
+    for flag in ("--api-key", "--openalex-api-key"):
+        if flag in masked:
+            index = masked.index(flag)
+            if index + 1 < len(masked):
+                masked[index + 1] = "***"
+    return shlex.join(masked)
+
+
 def _run(cmd: list[str], *, cwd: Path) -> None:
     typer.echo("")
-    typer.echo(f"$ {shlex.join(cmd)}")
+    typer.echo(f"$ {_display_cmd(cmd)}")
     try:
         subprocess.run(cmd, cwd=cwd, check=True)
     except subprocess.CalledProcessError as exc:
