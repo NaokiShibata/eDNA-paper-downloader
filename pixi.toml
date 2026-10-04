@@ -25,8 +25,8 @@ strands-decider = "*"
 
 [tasks]
 cuda-check = """python -c "import torch; print('torch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA runtime:', torch.version.cuda); print('GPU count:', torch.cuda.device_count()); [print(f'GPU {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]" """
-cuda1-check = """python -c "import torch; print('torch:', torch.__version__); print('torch CUDA:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available()); print('visible GPUs:', torch.cuda.device_count()); [print(f'GPU {i}: {torch.cuda.get_device_name(i)}, capability={torch.cuda.get_device_capability(i)}') for i in range(torch.cuda.device_count())]" """
-strands-serve = "CUDA_VISIBLE_DEVICES=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cuda --host 127.0.0.1 --port 8012"
+strands-device-check = "python script/strands_serve_auto.py --check-only"
+strands-serve = "python script/strands_serve_auto.py"
 strands-health = """python -c "import requests; print(requests.get('http://127.0.0.1:8012/health', timeout=10).json())" """
 strands-screen = "python script/strands_flagger.py"
 e2e-latest14 = "python script/e2e_latest14.py"
