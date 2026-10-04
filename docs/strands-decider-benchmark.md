@@ -232,6 +232,13 @@ test partitionは質問文の比較途中で一度参照しています（タイ
 300文字未満の安全策は、このbenchmarkでは正しい自動除外7件を `unsure` に回しており、防いだ誤除外はありません。
 Recall優先の方針から残していますが、人手確認を減らしたい場合は外す候補です。
 
+v3で除外閾値の緩和案（`exclude_threshold=0.60`、`exclude_actual_use_max=0.60`、
+`exclude_method_relevance_max=0.40`）も検証しました。300文字未満の安全策を含めた比較で、
+calibrationでは自動除外が17件から23件に増えましたが、testでは36件から37件の1件増にとどまりました。
+また、gold `in_scope` のうちB0015（calibration）とB0051（test）は `P(out_of_scope)≈0.50`、
+`P(actual_use)=0.53〜0.55` で、現行の `exclude_actual_use_max=0.50` が誤除外を防いでいます。
+効果が小さく安全余裕を削るため、除外閾値は現行値のままとしています。
+
 最新14日E2E（141件）では、v2の `in_scope=59 / unsure=65 / out_of_scope=17` が
 v3で `in_scope=61 / unsure=40 / out_of_scope=40` になりました。
 
