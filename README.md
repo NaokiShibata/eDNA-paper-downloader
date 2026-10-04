@@ -133,6 +133,7 @@ conda-forgeではこのヘッダを `cuda-cudart-dev` から `targets/x86_64-lin
 | `pixi run e2e-latest14 ...` | 最新14日の文献取得→Strands判定→簡易検証を通し実行 |
 | `pixi run lint` | Ruff |
 | `pixi run typecheck` | mypy |
+| `pixi run test` | Strands判定閾値・除外ガードの単体テスト |
 
 ---
 
