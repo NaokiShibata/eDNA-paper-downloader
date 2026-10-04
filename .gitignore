@@ -1,7 +1,15 @@
-test/
 .vscode
 __pycache__/
 .pixi/
 .cache/pixi/
 tools/pixi/
 tmp/
+llama/
+logs/
+uv.lock
+config/strands_flagger.jsonc
+test/results/
+test/logs/
+test/config/
+benchmark/*.strands*.csv
+benchmark/*.errors.csv
