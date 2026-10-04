@@ -115,6 +115,7 @@ def tune(
         left_on="benchmark_record_id",
         right_on="flag_record_id",
         how="inner",
+        suffixes=("", "_pred"),
     ).merge(
         manifest[["benchmark_record_id", "benchmark_partition"]],
         on="benchmark_record_id",
