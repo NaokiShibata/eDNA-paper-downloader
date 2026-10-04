@@ -202,12 +202,13 @@ def tune(
 
     if out_json is not None:
         out_json.parent.mkdir(parents=True, exist_ok=True)
+        top = json.loads(result.head(max_results).to_json(orient="records", force_ascii=False, indent=2))
         payload = {
             "fixed_include_threshold": include_threshold,
             "fixed_actual_use_threshold": actual_use_threshold,
             "max_hard_fn": max_hard_fn,
-            "best": best,
-            "top": result.head(max_results).to_dict(orient="records"),
+            "best": top[0],
+            "top": top,
         }
         out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         typer.echo(f"Threshold search -> {out_json}")

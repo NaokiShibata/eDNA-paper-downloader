@@ -129,6 +129,15 @@ def flag(
         typer.echo("No rows to process.")
         return
 
+    if dry_run:
+        for _, row in df.iterrows():
+            meta = _row_to_meta(row)
+            abstract = prepare_abstract(meta.get(abstract_column, ""), cfg.max_abstract_chars)
+            if abstract:
+                typer.echo(json.dumps({"state": abstract, "questions": QUESTIONS}, indent=2, ensure_ascii=False))
+                break
+        return
+
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     processed = _existing_processed_ids(out_csv) if resume else set()
     fieldnames = list(df.columns) + [col for col in EXTRA_COLUMNS if col not in df.columns]
@@ -177,10 +186,6 @@ def flag(
                 skipped_count += 1
                 continue
 
-            abstract = prepare_abstract(meta.get(abstract_column, ""), cfg.max_abstract_chars)
-            if abstract and dry_run:
-                typer.echo(json.dumps({"state": abstract, "questions": QUESTIONS}, indent=2, ensure_ascii=False))
-                return
             out_row = meta | screen_row(session, meta, cfg, abstract_column)
             if out_row["flag_label"] == "process_error":
                 error_count += 1

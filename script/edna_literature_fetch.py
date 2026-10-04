@@ -14,11 +14,9 @@ from tqdm import tqdm
 from libs.cli_logging import log_run_header, setup_logger
 from libs.sources import (
     _date_range_clause,
-    _normalize_date_str,
     build_query_with_excludes,
     crossref_fill_missing_doi,
     crossref_search_papers,
-    keep_latest_per_doi_pubmed,
     merge_papers_by_doi_title,
     openalex_search_papers,
     pubmed_fetch_details,
@@ -153,8 +151,8 @@ def fetch(
         help="Override the Strands Decider server URL from config.",
     ),
     crossref: bool = typer.Option(False, help="Try filling missing DOI via Crossref (heuristic)."),
-    user_agent: str = typer.Option(
-        "edna-literature-fetch/1.0 (mailto:your_email@example.com)",
+    user_agent: str | None = typer.Option(
+        None,
         help="User-Agent header for Crossref requests.",
     ),
     sleep: float = typer.Option(0.34, min=0.0, help="Sleep seconds between Entrez requests."),
@@ -165,7 +163,7 @@ def fetch(
 ) -> None:
     """
     Fetch paper metadata from PubMed and export CSV/JSON.
-    If DOI duplicates occur, keeps the record with newest (year, PMID).
+    Merge duplicate records by DOI or title.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logger("edna_literature_fetch", log_level=log_level, log_file=log_file)
@@ -211,6 +209,9 @@ def fetch(
     date_clause = _date_range_clause(since, until, datetype)
     if date_clause:
         final_query = f"({final_query}) AND {date_clause}"
+
+    if user_agent is None:
+        user_agent = f"edna-literature-fetch/1.0 (mailto:{email})"
 
     params = {
         "email": email,
@@ -259,8 +260,6 @@ def fetch(
         fallback_command="python script/edna_literature_fetch.py",
     )
 
-    since_norm = _normalize_date_str(since)
-    until_norm = _normalize_date_str(until)
     if date_clause:
         logger.info(f"Date clause applied: {date_clause}")
 
@@ -271,9 +270,6 @@ def fetch(
             query=final_query,
             email=email,
             api_key=api_key,
-            mindate=since_norm,
-            maxdate=until_norm,
-            datetype=datetype,
             sort=sort,
             batch=pmid_batch,
             sleep=sleep,
@@ -325,13 +321,12 @@ def fetch(
         )
 
     if not all_papers:
-        logger.warning("No results from selected sources.")
-        raise typer.Exit(code=0)
+        logger.error("No results from selected sources.")
+        raise typer.Exit(code=1)
 
-    papers = merge_papers_by_doi_title(all_papers, logger=logger)
     if crossref:
-        papers = crossref_fill_missing_doi(papers, user_agent=user_agent, logger=logger)
-    papers = keep_latest_per_doi_pubmed(papers, logger=logger)
+        all_papers = crossref_fill_missing_doi(all_papers, user_agent=user_agent, logger=logger)
+    papers = merge_papers_by_doi_title(all_papers, logger=logger)
 
     if abstract:
         before_filter = len(papers)
@@ -409,10 +404,7 @@ def fetch(
     df.to_csv(csv_path, index=False)
 
     logger.info(f"Writing JSON: {json_path}")
-    json_path.write_text(
-        json.dumps(df.to_dict(orient="records"), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    df.to_json(json_path, orient="records", force_ascii=False, indent=2)
 
     if rejected_df is not None:
         rejected_csv_path = out_dir / f"{out_prefix}.rejected.csv"
@@ -420,10 +412,7 @@ def fetch(
         logger.info(f"Writing Strands rejected CSV: {rejected_csv_path}")
         rejected_df.to_csv(rejected_csv_path, index=False)
         logger.info(f"Writing Strands rejected JSON: {rejected_json_path}")
-        rejected_json_path.write_text(
-            json.dumps(rejected_df.to_dict(orient="records"), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        rejected_df.to_json(rejected_json_path, orient="records", force_ascii=False, indent=2)
 
     if run_biorxiv:
         if not biorxiv_from_date or not biorxiv_to_date:
