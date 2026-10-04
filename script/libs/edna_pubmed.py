@@ -245,9 +245,9 @@ def pubmed_search_all_pmids(
     sleep: float = 0.34,
     logger: logging.Logger | None = None,
 ) -> list[str]:
-    setattr(Entrez, "email", email)
+    Entrez.email = email  # type: ignore[assignment]
     if api_key:
-        setattr(Entrez, "api_key", api_key)
+        Entrez.api_key = api_key  # type: ignore[assignment]
 
     kwargs = {
         "db": "pubmed",
@@ -292,18 +292,24 @@ def pubmed_search_all_pmids(
             if maxdate:
                 kwargs_page["maxdate"] = maxdate
 
-        res2 = _entrez_request(
-            lambda retstart=retstart, kwargs_page=kwargs_page.copy(): Entrez.esearch(
+        page_retstart = retstart
+        page_kwargs = kwargs_page.copy()
+
+        def _read_page() -> Any:
+            return Entrez.esearch(
                 db="pubmed",
                 term=query,
                 retmode="xml",
-                retstart=retstart,
-                retmax=min(batch, count - retstart),
+                retstart=page_retstart,
+                retmax=min(batch, count - page_retstart),
                 webenv=webenv,
                 query_key=query_key,
                 sort=sort,
-                **kwargs_page,
-            ),
+                **page_kwargs,
+            )
+
+        res2 = _entrez_request(
+            _read_page,
             logger,
             f"esearch page retstart={retstart}",
         )
@@ -333,9 +339,9 @@ def pubmed_fetch_details(
     sleep: float = 0.34,
     logger: logging.Logger | None = None,
 ) -> list[Paper]:
-    setattr(Entrez, "email", email)
+    Entrez.email = email  # type: ignore[assignment]
     if api_key:
-        setattr(Entrez, "api_key", api_key)
+        Entrez.api_key = api_key  # type: ignore[assignment]
 
     pmids = list(pmids)
     papers: list[Paper] = []
@@ -346,8 +352,11 @@ def pubmed_fetch_details(
 
     for i in tqdm(range(0, len(pmids), chunk_size), desc="Fetching PubMed details"):
         chunk = pmids[i : i + chunk_size]
+        def _read_chunk() -> Any:
+            return Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml")
+
         records = _entrez_request(
-            lambda chunk=chunk: Entrez.efetch(db="pubmed", id=",".join(chunk), retmode="xml"),
+            _read_chunk,
             logger,
             f"efetch chunk start={i}",
         )
