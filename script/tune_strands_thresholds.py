@@ -7,36 +7,13 @@ from pathlib import Path
 import pandas as pd
 import typer
 
+from libs.strands_screening import decide_label
+
 app = typer.Typer(add_completion=False)
 
 
 def _safe_div(num: int, den: int) -> float:
     return num / den if den else 0.0
-
-
-def _label(
-    row: pd.Series,
-    *,
-    include_threshold: float,
-    actual_use_threshold: float,
-    exclude_threshold: float,
-    exclude_actual_use_max: float,
-    exclude_method_relevance_max: float,
-) -> str:
-    p_in = float(row["strands_p_in_scope"])
-    p_out = float(row["strands_p_out_of_scope"])
-    p_actual = float(row["strands_p_actual_use"])
-    p_method = float(row["strands_p_method_relevance"])
-
-    if p_in >= include_threshold and p_actual >= actual_use_threshold:
-        return "in_scope"
-    if (
-        p_out >= exclude_threshold
-        and p_actual <= exclude_actual_use_max
-        and p_method <= exclude_method_relevance_max
-    ):
-        return "out_of_scope"
-    return "unsure"
 
 
 def _metrics(frame: pd.DataFrame, labels: pd.Series) -> dict[str, float | int]:
@@ -156,7 +133,13 @@ def tune(
         exclude_thresholds, actual_max_values, method_max_values
     ):
         labels = frame.apply(
-            _label,
+            lambda row, **thresholds: decide_label(
+                float(row["strands_p_in_scope"]),
+                float(row["strands_p_out_of_scope"]),
+                float(row["strands_p_actual_use"]),
+                float(row["strands_p_method_relevance"]),
+                **thresholds,
+            ),
             axis=1,
             include_threshold=include_threshold,
             actual_use_threshold=actual_use_threshold,

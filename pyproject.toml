@@ -18,8 +18,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"script/biorxiv_search.py" = ["E402"]
-"script/edna_literature_fetch.py" = ["E402"]
 "test/*.py" = ["E402"]  # tests prepend script/ to sys.path before importing libs
 
 [tool.ruff.lint.isort]

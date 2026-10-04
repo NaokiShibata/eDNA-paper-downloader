@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,39 @@ from libs.text_normalize import clean_doi
 
 PROMPT_VERSION = "strands-v2"
 DEFAULT_BASE_URL = "http://127.0.0.1:8012"
+
+
+@dataclass(frozen=True)
+class ScreeningConfig:
+    base_url: str = DEFAULT_BASE_URL
+    timeout: float = 120.0
+    retries: int = 3
+    include_threshold: float = 0.70
+    actual_use_threshold: float = 0.60
+    exclude_threshold: float = 0.50
+    exclude_actual_use_max: float = 0.50
+    exclude_method_relevance_max: float = 0.60
+    max_abstract_chars: int | None = None
+    batch_questions: bool = False
+
+    @classmethod
+    def from_sources(cls, config: Mapping[str, Any], **overrides: Any) -> ScreeningConfig:
+        values: dict[str, Any] = {}
+        for field in fields(cls):
+            name = field.name
+            value = coalesce(overrides.get(name), config, name, field.default)
+            if value is not None:
+                if name == "base_url":
+                    value = str(value).rstrip("/")
+                elif name in ("retries", "max_abstract_chars"):
+                    value = int(value)
+                elif name == "batch_questions":
+                    value = bool(value)
+                else:
+                    value = float(value)
+            values[name] = value
+        return cls(**values)
+
 
 QUESTIONS: dict[str, dict[str, Any]] = {
     "scope": {
@@ -350,14 +385,7 @@ def decide_label(
     return "unsure"
 
 
-def parse_response(
-    data: dict[str, Any],
-    include_threshold: float,
-    actual_use_threshold: float,
-    exclude_threshold: float,
-    exclude_actual_use_max: float,
-    exclude_method_relevance_max: float,
-) -> dict[str, Any]:
+def extract_scores(data: dict[str, Any]) -> dict[str, Any]:
     answers = data.get("answers")
     if not isinstance(answers, dict):
         raise RuntimeError("response is missing answers")
@@ -386,32 +414,11 @@ def parse_response(
     p_microbial_only = float(microbial.get("noul", 0.0))
     p_method_relevance = float(method.get("noul", 0.0))
 
-    label = decide_label(
-        p_in_scope=p_in_scope,
-        p_out_of_scope=p_out_of_scope,
-        p_actual_use=p_actual_use,
-        p_method_relevance=p_method_relevance,
-        include_threshold=include_threshold,
-        actual_use_threshold=actual_use_threshold,
-        exclude_threshold=exclude_threshold,
-        exclude_actual_use_max=exclude_actual_use_max,
-        exclude_method_relevance_max=exclude_method_relevance_max,
-    )
-    reason = (
-        f"{label}: scope={scope.get('choice', '')}; "
-        f"p_in_scope={p_in_scope:.3f}; p_out_of_scope={p_out_of_scope:.3f}; p_unsure={p_unsure:.3f}; "
-        f"actual_use={p_actual_use:.3f}; microbial_only={p_microbial_only:.3f}; "
-        f"method_relevance={p_method_relevance:.3f}"
-    )
-
     usage_raw = data.get("usage")
     usage: dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}
     return {
-        "flag_label": label,
         "flag_confidence": round(float(scope.get("confidence", 0.0)), 6),
-        "flag_reason": reason,
         "flag_model_path": str(data.get("model", "strands-decider")),
-        "flag_prompt_version": PROMPT_VERSION,
         "strands_scope_choice": str(scope.get("choice", "")),
         "strands_p_in_scope": round(p_in_scope, 6),
         "strands_p_out_of_scope": round(p_out_of_scope, 6),
@@ -424,32 +431,79 @@ def parse_response(
     }
 
 
-def classify_abstract(
+def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[str, Any]:
+    p_in_scope = float(scores["strands_p_in_scope"])
+    p_out_of_scope = float(scores["strands_p_out_of_scope"])
+    p_unsure = float(scores["strands_p_unsure"])
+    p_actual_use = float(scores["strands_p_actual_use"])
+    p_microbial_only = float(scores["strands_p_microbial_only"])
+    p_method_relevance = float(scores["strands_p_method_relevance"])
+    label = decide_label(
+        p_in_scope=p_in_scope,
+        p_out_of_scope=p_out_of_scope,
+        p_actual_use=p_actual_use,
+        p_method_relevance=p_method_relevance,
+        include_threshold=cfg.include_threshold,
+        actual_use_threshold=cfg.actual_use_threshold,
+        exclude_threshold=cfg.exclude_threshold,
+        exclude_actual_use_max=cfg.exclude_actual_use_max,
+        exclude_method_relevance_max=cfg.exclude_method_relevance_max,
+    )
+    reason = (
+        f"{label}: scope={scores.get('strands_scope_choice', '')}; "
+        f"p_in_scope={p_in_scope:.3f}; p_out_of_scope={p_out_of_scope:.3f}; p_unsure={p_unsure:.3f}; "
+        f"actual_use={p_actual_use:.3f}; microbial_only={p_microbial_only:.3f}; "
+        f"method_relevance={p_method_relevance:.3f}"
+    )
+
+    return {"flag_label": label, "flag_reason": reason, "flag_prompt_version": PROMPT_VERSION}
+
+
+def classify_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
+    url = f"{cfg.base_url.rstrip('/')}/v1/systemone"
+    if cfg.batch_questions:
+        data = _post_with_retry(session, url, {"state": abstract, "questions": QUESTIONS}, cfg.timeout, cfg.retries)
+    else:
+        data = evaluate_questions_sequentially(session, url, abstract, QUESTIONS, cfg.timeout, cfg.retries)
+    scores = extract_scores(data)
+    return scores | apply_thresholds(scores, cfg)
+
+
+def screen_row(
     session: requests.Session,
-    abstract: str,
-    *,
-    base_url: str = DEFAULT_BASE_URL,
-    timeout: float = 120.0,
-    retries: int = 3,
-    include_threshold: float = 0.70,
-    actual_use_threshold: float = 0.60,
-    exclude_threshold: float = 0.50,
-    exclude_actual_use_max: float = 0.50,
-    exclude_method_relevance_max: float = 0.60,
+    meta: Mapping[str, str],
+    cfg: ScreeningConfig,
+    abstract_column: str = "abstract",
 ) -> dict[str, Any]:
-    data = evaluate_questions_sequentially(
-        session=session,
-        url=f"{base_url.rstrip('/')}/v1/systemone",
-        state=abstract,
-        questions=QUESTIONS,
-        timeout=timeout,
-        retries=retries,
-    )
-    return parse_response(
-        data=data,
-        include_threshold=include_threshold,
-        actual_use_threshold=actual_use_threshold,
-        exclude_threshold=exclude_threshold,
-        exclude_actual_use_max=exclude_actual_use_max,
-        exclude_method_relevance_max=exclude_method_relevance_max,
-    )
+    result: dict[str, Any] = {"flag_record_id": record_id(meta)}
+    abstract = prepare_abstract(meta.get(abstract_column, ""), cfg.max_abstract_chars)
+    if not abstract:
+        label, reason = "unsure", "unsure: abstract is empty"
+    else:
+        try:
+            return result | classify_abstract(session, abstract, cfg)
+        except Exception as exc:
+            label, reason = "process_error", str(exc)
+    return result | {
+        "flag_label": label,
+        "flag_confidence": "",
+        "flag_reason": reason,
+        "flag_model_path": "",
+        "flag_prompt_version": PROMPT_VERSION,
+    }
+
+
+def format_status(row: Mapping[str, Any], title: str) -> str:
+    label = str(row.get("flag_label", ""))
+    p_in = row.get("strands_p_in_scope")
+    p_out = row.get("strands_p_out_of_scope")
+    label_display = f"[{label:<13}]"
+    if isinstance(p_in, (int, float)) and isinstance(p_out, (int, float)):
+        message = f"{label_display} in={p_in:.2f} out={p_out:.2f} | {title}"
+    else:
+        message = f"{label_display} | {title}"
+    terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+    max_status_width = max(20, terminal_width - 1)
+    if len(message) > max_status_width:
+        message = message[: max_status_width - 3] + "..."
+    return message

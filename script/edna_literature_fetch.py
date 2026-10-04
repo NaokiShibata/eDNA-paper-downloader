@@ -1,36 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
-
-
-def _ensure_runtime(modules: tuple[str, ...]) -> None:
-    missing = None
-    for name in modules:
-        try:
-            __import__(name)
-        except ModuleNotFoundError:
-            missing = name
-            break
-    if missing is None:
-        return
-
-    venv_python = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python"
-    current = Path(sys.executable).resolve()
-    if venv_python.exists() and current != venv_python.resolve():
-        os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
-
-    raise ModuleNotFoundError(
-        f"Missing dependency '{missing}'. Install requirements or run with .venv/bin/python."
-    )
-
-
-_ensure_runtime(("pandas", "requests", "tqdm", "typer"))
 
 import pandas as pd
 import requests
@@ -38,7 +12,7 @@ import typer
 from tqdm import tqdm
 
 from libs.cli_logging import log_run_header, setup_logger
-from libs.edna_pubmed import (
+from libs.sources import (
     _date_range_clause,
     _normalize_date_str,
     build_query_with_excludes,
@@ -51,15 +25,12 @@ from libs.edna_pubmed import (
     pubmed_search_all_pmids,
 )
 from libs.strands_screening import (
-    DEFAULT_BASE_URL,
     EXTRA_COLUMNS,
-    PROMPT_VERSION,
+    ScreeningConfig,
     check_health,
-    classify_abstract,
-    coalesce,
+    format_status,
     load_config,
-    prepare_abstract,
-    record_id,
+    screen_row,
 )
 
 app = typer.Typer(add_completion=False)
@@ -203,17 +174,8 @@ def fetch(
         abstract = True
         logger.info("Strands filtering requires abstracts; enabling abstract retrieval.")
 
-    strands_cfg: dict[str, object] = {}
+    strands_cfg = ScreeningConfig()
     strands_config_path: Path | None = None
-    strands_base = DEFAULT_BASE_URL
-    strands_timeout = 120.0
-    strands_retries = 3
-    strands_include_threshold = 0.70
-    strands_actual_use_threshold = 0.60
-    strands_exclude_threshold = 0.50
-    strands_exclude_actual_use_max = 0.50
-    strands_exclude_method_relevance_max = 0.60
-    strands_max_abstract_chars: int | None = None
     strands_session: requests.Session | None = None
 
     if strands_filter:
@@ -225,38 +187,16 @@ def fetch(
                 / "strands_flagger.example.jsonc"
             )
         try:
-            strands_cfg = load_config(strands_config_path)
+            cfg_dict = load_config(strands_config_path)
         except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
             raise typer.BadParameter(f"invalid Strands config: {exc}") from exc
-        strands_base = str(
-            coalesce(strands_base_url, strands_cfg, "base_url", DEFAULT_BASE_URL)
-        ).rstrip("/")
-        strands_timeout = float(coalesce(None, strands_cfg, "timeout", 120.0))
-        strands_retries = int(coalesce(None, strands_cfg, "retries", 3))
-        strands_include_threshold = float(
-            coalesce(None, strands_cfg, "include_threshold", 0.70)
-        )
-        strands_actual_use_threshold = float(
-            coalesce(None, strands_cfg, "actual_use_threshold", 0.60)
-        )
-        strands_exclude_threshold = float(
-            coalesce(None, strands_cfg, "exclude_threshold", 0.50)
-        )
-        strands_exclude_actual_use_max = float(
-            coalesce(None, strands_cfg, "exclude_actual_use_max", 0.50)
-        )
-        strands_exclude_method_relevance_max = float(
-            coalesce(None, strands_cfg, "exclude_method_relevance_max", 0.60)
-        )
-        max_chars_value = coalesce(None, strands_cfg, "max_abstract_chars", None)
-        strands_max_abstract_chars = int(max_chars_value) if max_chars_value is not None else None
-
+        strands_cfg = ScreeningConfig.from_sources(cfg_dict, base_url=strands_base_url)
         strands_session = requests.Session()
         try:
-            health_data = check_health(strands_session, strands_base, strands_timeout)
+            health_data = check_health(strands_session, strands_cfg.base_url, strands_cfg.timeout)
         except Exception as exc:
             raise typer.BadParameter(
-                f"could not connect to Strands Decider at {strands_base}: {exc}"
+                f"could not connect to Strands Decider at {strands_cfg.base_url}: {exc}"
             ) from exc
         logger.info(
             "Strands filter server status=%s model=%s device=%s max_length=%s",
@@ -299,7 +239,7 @@ def fetch(
         "abstract": abstract,
         "strands_filter": strands_filter,
         "strands_config": str(strands_config_path) if strands_config_path else None,
-        "strands_base_url": strands_base if strands_filter else None,
+        "strands_base_url": strands_cfg.base_url if strands_filter else None,
         "crossref": crossref,
         "user_agent": user_agent,
         "sleep": sleep,
@@ -429,52 +369,14 @@ def fetch(
                 str(key): "" if pd.isna(value) else str(value)
                 for key, value in row.items()
             }
-            screened_row: dict[str, object] = dict(row)
-            screened_row["flag_record_id"] = record_id(meta)
-            prepared = prepare_abstract(meta.get("abstract", ""), strands_max_abstract_chars)
-
-            if not prepared:
-                screened_row.update(
-                    {
-                        "flag_label": "unsure",
-                        "flag_confidence": "",
-                        "flag_reason": "unsure: abstract is empty",
-                        "flag_model_path": "",
-                        "flag_prompt_version": PROMPT_VERSION,
-                    }
+            screened_row: dict[str, object] = dict(row) | screen_row(strands_session, meta, strands_cfg)
+            if screened_row["flag_label"] == "process_error":
+                error_count += 1
+                logger.warning(
+                    "Strands process_error record=%s error=%s",
+                    screened_row["flag_record_id"],
+                    screened_row["flag_reason"],
                 )
-            else:
-                try:
-                    screened_row.update(
-                        classify_abstract(
-                            session=strands_session,
-                            abstract=prepared,
-                            base_url=strands_base,
-                            timeout=strands_timeout,
-                            retries=strands_retries,
-                            include_threshold=strands_include_threshold,
-                            actual_use_threshold=strands_actual_use_threshold,
-                            exclude_threshold=strands_exclude_threshold,
-                            exclude_actual_use_max=strands_exclude_actual_use_max,
-                            exclude_method_relevance_max=strands_exclude_method_relevance_max,
-                        )
-                    )
-                except Exception as exc:
-                    error_count += 1
-                    logger.warning(
-                        "Strands process_error record=%s error=%s",
-                        screened_row["flag_record_id"],
-                        exc,
-                    )
-                    screened_row.update(
-                        {
-                            "flag_label": "process_error",
-                            "flag_confidence": "",
-                            "flag_reason": str(exc),
-                            "flag_model_path": "",
-                            "flag_prompt_version": PROMPT_VERSION,
-                        }
-                    )
 
             label = str(screened_row.get("flag_label", ""))
             if label == "out_of_scope":
@@ -482,20 +384,7 @@ def fetch(
             else:
                 kept_rows.append(screened_row)
 
-            p_in = screened_row.get("strands_p_in_scope")
-            p_out = screened_row.get("strands_p_out_of_scope")
-            label_display = f"[{label:<13}]"
-            title = meta.get("title", "")
-            if isinstance(p_in, (int, float)) and isinstance(p_out, (int, float)):
-                message = f"{label_display} in={p_in:.2f} out={p_out:.2f} | {title}"
-            else:
-                message = f"{label_display} | {title}"
-
-            terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
-            max_status_width = max(20, terminal_width - 1)
-            if len(message) > max_status_width:
-                message = message[: max_status_width - 3] + "..."
-            status.set_description_str(message, refresh=True)
+            status.set_description_str(format_status(screened_row, meta.get("title", "")), refresh=True)
 
         status.clear()
         status.close()

@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import html
 import json
 import logging
-import os
 import re
-import sys
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
@@ -13,36 +10,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-
-def _ensure_runtime(modules: tuple[str, ...]) -> None:
-    missing = None
-    for name in modules:
-        try:
-            __import__(name)
-        except ModuleNotFoundError:
-            missing = name
-            break
-    if missing is None:
-        return
-
-    venv_python = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python"
-    current = Path(sys.executable).resolve()
-    if venv_python.exists() and current != venv_python.resolve():
-        os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
-
-    raise ModuleNotFoundError(
-        f"Missing dependency '{missing}'. Install requirements or run with .venv/bin/python."
-    )
-
-
-_ensure_runtime(("pandas", "requests", "typer"))
-
 import pandas as pd
 import requests
 import typer
 
 from libs.cli_logging import log_run_header, setup_logger
 from libs.http_retry import make_retry_session
+from libs.text_normalize import clean_term, clean_text
 
 app = typer.Typer(add_completion=False)
 
@@ -71,12 +45,6 @@ class Preprint:
 # -------------------------
 # Helpers
 # -------------------------
-def _norm(s: str) -> str:
-    cleaned = html.unescape(s or "")
-    cleaned = re.sub(r"<[^>]+>", "", cleaned)
-    return re.sub(r"\s+", " ", cleaned.strip())
-
-
 def _parse_date(s: str) -> date:
     s_norm = s.strip()
     if not s_norm:
@@ -86,15 +54,6 @@ def _parse_date(s: str) -> date:
 
 def _fmt_date(d: date) -> str:
     return d.strftime("%Y-%m-%d")
-
-
-def _clean_term(term: str) -> str:
-    t = term.strip()
-    while t.startswith("(") and t.endswith(")") and len(t) > 2:
-        t = t[1:-1].strip()
-    if (t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'")):
-        t = t[1:-1].strip()
-    return t
 
 
 def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[dict]:
@@ -108,16 +67,16 @@ def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[di
     def hay(i: dict) -> str:
         return " ".join(
             [
-                _norm(i.get("title", "")),
-                _norm(i.get("abstract", "")),
-                _norm(i.get("category", "")),
-                _norm(i.get("authors", "")),
+                clean_text(i.get("title", "")),
+                clean_text(i.get("abstract", "")),
+                clean_text(i.get("category", "")),
+                clean_text(i.get("authors", "")),
             ]
         ).lower()
 
     or_terms = [t for t in re.split(r"\s+OR\s+", q, flags=re.IGNORECASE) if t.strip()]
     if len(or_terms) > 1:
-        or_terms_clean = [_clean_term(t).lower() for t in or_terms]
+        or_terms_clean = [clean_term(t).lower() for t in or_terms]
         or_terms_clean = [t for t in or_terms_clean if t]
         out = []
         for it in items:
@@ -129,7 +88,7 @@ def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[di
             out.append(it)
         return out
 
-    q_tokens = [_clean_term(t).lower() for t in re.split(r"\s+", q) if t.strip()]
+    q_tokens = [clean_term(t).lower() for t in re.split(r"\s+", q) if t.strip()]
     q_tokens = [t for t in q_tokens if t and t not in {"or", "and"}]
 
     out = []
@@ -152,15 +111,15 @@ def item_to_preprint(server: str, it: dict, retrieved_at: str) -> Preprint:
         if doi and ver_str
         else (f"https://www.biorxiv.org/content/{doi}" if doi else "")
     )
-    posted = _norm(it.get("date", "")) or None
+    posted = clean_text(it.get("date", "")) or None
     return Preprint(
         server=server,
         doi=doi,
-        title=_norm(it.get("title", "")),
-        authors=_norm(it.get("authors", "")),
-        date=_norm(it.get("date", "")),
-        category=_norm(it.get("category", "")),
-        abstract=_norm(it.get("abstract", "")) or None,
+        title=clean_text(it.get("title", "")),
+        authors=clean_text(it.get("authors", "")),
+        date=clean_text(it.get("date", "")),
+        category=clean_text(it.get("category", "")),
+        abstract=clean_text(it.get("abstract", "")) or None,
         version=ver_str,
         biorxiv_url=url,
         posted_date=posted,
