@@ -25,6 +25,7 @@ from libs.strands_screening import (
 
 app = typer.Typer(add_completion=False)
 
+
 def _row_to_meta(row: pd.Series) -> dict[str, str]:
     meta: dict[str, str] = {}
     for col in row.index:
