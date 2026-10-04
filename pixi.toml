@@ -20,7 +20,7 @@ upsetplot = ">=0.9"
 ruff = ">=0.6"
 mypy = ">=1.15,<3"
 pytorch-gpu = ">=2.7"
-cuda-driver-dev = ">=12.8,<13"
+cuda-cudart-dev = ">=12.8,<13"
 
 [pypi-dependencies]
 pyalex = "*"
