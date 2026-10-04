@@ -13,7 +13,9 @@ select = [
   "B",
 ]
 ignore = [
+  "E402",  # runtime dependency bootstrap intentionally precedes optional imports
   "E501",
+  "B008",  # Typer uses Option/Argument calls in function defaults by design
 ]
 
 [tool.ruff.lint.isort]
