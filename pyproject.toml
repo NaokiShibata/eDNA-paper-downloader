@@ -37,8 +37,5 @@ module = [
   "pandas.*",
   "requests.*",
   "tqdm.*",
-  "matplotlib.*",
-  "matplotlib_venn.*",
-  "upsetplot.*",
 ]
 ignore_missing_imports = true
