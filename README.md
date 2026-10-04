@@ -102,7 +102,7 @@ pixi run cuda-check
 ```
 
 Tritonは実行時にCUDA Driver API用の小さなC拡張をJITコンパイルするため、`cuda.h` も必要です。
-`pixi.toml` では `cuda-driver-dev` を依存に含めています。
+conda-forgeではこのヘッダは `cuda-cudart-dev` から `targets/x86_64-linux/include/` に配置されるため、`pixi.toml` に `cuda-cudart-dev` を含めています。
 
 ```bash
 pixi run cuda-header-check
