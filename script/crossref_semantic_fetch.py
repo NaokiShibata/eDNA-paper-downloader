@@ -161,7 +161,7 @@ def load_pubmed_index(csv_path: Path, logger: logging.Logger) -> tuple[set[str],
             years = df["year"].fillna("")
         else:
             years = ["" for _ in range(len(df))]
-        for title, year in zip(df["title"].fillna("").astype(str), years):
+        for title, year in zip(df["title"].fillna("").astype(str), years, strict=True):
             y = _norm_year_value(year)
             key = f"{_norm_title(title)}::{y}"
             if key != "::":
