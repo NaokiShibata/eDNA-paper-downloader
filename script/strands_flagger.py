@@ -173,14 +173,14 @@ def flag(
 
         for _, row in progress:
             meta = _row_to_meta(row)
-            record_id = record_id(meta)
-            if resume and record_id in processed:
+            rec_id = record_id(meta)
+            if resume and rec_id in processed:
                 skipped_count += 1
                 continue
 
             abstract = prepare_abstract(meta.get(abstract_column, ""), max_abstract_chars)
             out_row = meta.copy()
-            out_row["flag_record_id"] = record_id
+            out_row["flag_record_id"] = rec_id
 
             if not abstract:
                 out_row.update(
@@ -214,7 +214,7 @@ def flag(
                     )
                 except Exception as exc:
                     error_count += 1
-                    logger.warning("process_error record=%s error=%s", record_id, exc)
+                    logger.warning("process_error record=%s error=%s", rec_id, exc)
                     out_row.update(
                         {
                             "flag_label": "process_error",
