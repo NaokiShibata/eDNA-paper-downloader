@@ -101,6 +101,17 @@ pixi shell
 pixi run cuda-check
 ```
 
+Tritonは実行時にCUDA Driver API用の小さなC拡張をJITコンパイルするため、`cuda.h` も必要です。
+`pixi.toml` では `cuda-driver-dev` を依存に含めています。
+
+```bash
+pixi run cuda-header-check
+pixi run triton-driver-check
+```
+
+`cuda-header-check` が `exists: True`、`triton-driver-check` が `libcuda: ok` とGPU targetを表示すれば、
+TritonのCUDA初期化まで通っています。
+
 例えば以下のように表示され、`CUDA available: True` になればStrands DeciderをGPUで実行できます。
 
 ```text
