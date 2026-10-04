@@ -865,6 +865,98 @@ python script/llama_flagger_overlap.py \
 
 ---
 
+## Strands Deciderベンチマーク
+
+実運用データに対する性能と、境界例への強さを分けて確認するため、
+`script/make_strands_benchmark.py` でblind benchmarkを作成できます。
+
+デフォルトは200件です。
+
+- 120件: 元CSVからランダム抽出した `natural` subset
+- 80件: 微生物群集、環境試料だがeDNA/eRNA明記なし、組織/ゲノム、wastewater、Method系などを厚めにした `challenge` subset
+- 約40%: `calibration` partition
+- 約60%: `test` partition
+
+人手判定時のバイアスを避けるため、2ファイルに分けて出力します。
+
+- `*.review.csv`: 論文情報 + 空のgold label。人手判定に使用
+- `*.manifest.csv`: natural/challenge、stratum、calibration/test。人手判定中は見ない
+
+ラベル基準は `benchmark/LABELING_GUIDE.md` を参照してください。
+
+### 1) ベンチマークセット作成
+
+```bash
+pixi run benchmark-make \
+  test/results/edna_multisource20260228.csv \
+  --out-prefix benchmark/edna_strands_200 \
+  --n-total 200 \
+  --n-natural 120 \
+  --seed 3407
+```
+
+生成物:
+
+```text
+benchmark/edna_strands_200.review.csv
+benchmark/edna_strands_200.manifest.csv
+```
+
+`review.csv` の以下を人手で入力します。
+
+```text
+gold_label
+gold_actual_use
+gold_microbial_only
+gold_method_relevance
+gold_note
+```
+
+最重要の `gold_label` は次の3値です。
+
+- `in_scope`: 環境試料由来DNA/RNAを研究で実際に使用
+- `out_of_scope`: 実際には環境試料由来DNA/RNAを使用していない
+- `unsure`: Abstractだけでは判断不能
+
+### 2) 同じ200件をStrandsで判定
+
+```bash
+pixi run strands-screen \
+  benchmark/edna_strands_200.review.csv \
+  --config config/strands_flagger.jsonc \
+  --out-csv benchmark/edna_strands_200.strands.csv
+```
+
+人手ラベルを先に付け、Strandsの確率を見ない状態でgoldを確定させることを推奨します。
+
+### 3) test partitionで最終評価
+
+```bash
+pixi run benchmark-eval \
+  benchmark/edna_strands_200.review.csv \
+  benchmark/edna_strands_200.strands.csv \
+  --manifest benchmark/edna_strands_200.manifest.csv \
+  --partition test \
+  --out-errors benchmark/edna_strands_200.errors.csv \
+  --out-json benchmark/edna_strands_200.metrics.json
+```
+
+主な指標:
+
+- `hard_false_negative_rate`: gold=`in_scope` を自動で `out_of_scope` に落とした割合
+- `operational_recall_if_unsure_is_reviewed`: `unsure` を人間が確認する運用を前提にしたRecall
+- `manual_review_rate`: 人手確認へ回る割合
+- `auto_coverage`: 自動でin/out判定できた割合
+- `auto_accuracy`: 自動判定したものだけのaccuracy
+- `in_scope_precision`: 自動採用した論文のprecision
+- `brier_p_in_scope`: `P(in_scope)` の確率品質
+
+`natural` と `challenge`、challenge stratumごとの結果も別々に表示されます。
+
+閾値調整はまず `--partition calibration` で行い、最終的な性能確認には `test` partitionだけを使ってください。
+
+---
+
 ## 複数モデルの一致度チェック (llama_flagger_overlap.py)
 
 複数モデルのフラグ結果CSVから、ラベルの一致度合いを集計・可視化します。
