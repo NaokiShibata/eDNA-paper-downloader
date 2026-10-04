@@ -34,6 +34,7 @@ strands-health = """python -c "import requests; print(requests.get('http://127.0
 strands-screen = "python script/strands_flagger.py"
 benchmark-make = "python script/make_strands_benchmark.py"
 benchmark-eval = "python script/evaluate_strands_benchmark.py"
+benchmark-tune = "python script/tune_strands_thresholds.py"
 lint = "ruff check script"
 typecheck = "mypy script"
 triton-check = """python -c "import os, sys, torch, triton; print('python:', sys.version.split()[0]); print('torch:', torch.__version__); print('torch CUDA:', torch.version.cuda); print('triton:', triton.__version__); print('Python.h:', os.path.exists(os.path.join(sys.prefix, 'include', 'python3.12', 'Python.h'))); print('capability:', torch.cuda.get_device_capability(1) if torch.cuda.device_count() > 1 else torch.cuda.get_device_capability(0))" """
