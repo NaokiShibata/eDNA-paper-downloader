@@ -165,7 +165,7 @@ def run(
         help="Number of fetched papers to screen. 0 means all papers.",
     ),
     config: Path = typer.Option(
-        Path("config/strands_flagger.jsonc"),
+        Path("config/strands_flagger.example.jsonc"),
         "--config",
         help="Strands flagger config.",
     ),
