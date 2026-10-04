@@ -1,6 +1,8 @@
 {
   // Strands Decider server started with:
   // strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cuda --port 8012
+  // Send all questions in one request instead of sequentially.
+  "batch_questions": false,
   "base_url": "http://127.0.0.1:8012",
 
   // Input CSV column containing the abstract. Full abstract is used by default.

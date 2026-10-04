@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 import io
 import logging
 import re
@@ -15,7 +14,7 @@ from Bio import Entrez
 from tqdm import tqdm
 
 from .edna_models import Paper
-from .text_normalize import clean_doi
+from .text_normalize import clean_doi, clean_term, clean_text, norm_title
 
 
 def _safe_get(dct, *keys, default=None):
@@ -30,26 +29,10 @@ def _safe_get(dct, *keys, default=None):
     return cur if cur is not None else default
 
 
-def _clean_text(text: str) -> str:
-    s = html.unescape(text or "")
-    s = re.sub(r"<[^>]+>", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    while len(s) >= 2 and s[0] == '"' and s[-1] == '"':
-        s = s[1:-1].strip()
-    return s
-
-
 def _clean_abstract_text(text: str) -> str:
-    s = _clean_text(text)
+    s = clean_text(text)
     s = re.sub(r"^\s*abstract\s*[:\-]?\s*", "", s, flags=re.IGNORECASE).strip()
     return s
-
-
-def _norm_title(title: str) -> str:
-    t = title.lower().strip()
-    t = re.sub(r"\s+", " ", t)
-    t = re.sub(r"[^a-z0-9 ]+", "", t)
-    return t
 
 
 def _extract_doi(article: dict) -> str | None:
@@ -364,7 +347,7 @@ def pubmed_fetch_details(
 
         for art in records.get("PubmedArticle", []):
             pmid = str(_safe_get(art, "MedlineCitation", "PMID", default="")).strip()
-            title = _clean_text(str(_safe_get(art, "MedlineCitation", "Article", "ArticleTitle", default="")))
+            title = clean_text(str(_safe_get(art, "MedlineCitation", "Article", "ArticleTitle", default="")))
             journal = str(_safe_get(art, "MedlineCitation", "Article", "Journal", "Title", default="")).strip()
             year = _extract_year(art)
             authors = _extract_authors(art)
@@ -441,15 +424,6 @@ def _to_dash_date(value: str | None) -> str | None:
     return normalized.replace("/", "-") if normalized else None
 
 
-def _clean_term(term: str) -> str:
-    t = term.strip()
-    while t.startswith("(") and t.endswith(")") and len(t) > 2:
-        t = t[1:-1].strip()
-    if (t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'")):
-        t = t[1:-1].strip()
-    return t
-
-
 def _expand_exclude_terms(excludes: Sequence[str]) -> list[str]:
     terms: list[str] = []
     for raw in excludes:
@@ -457,7 +431,7 @@ def _expand_exclude_terms(excludes: Sequence[str]) -> list[str]:
             continue
         parts = re.split(r"\s+OR\s+", raw, flags=re.IGNORECASE)
         for part in parts:
-            term = _clean_term(part).strip().lower()
+            term = clean_term(part).strip().lower()
             if term:
                 terms.append(term)
     return terms
@@ -535,7 +509,7 @@ def crossref_search_papers(
                 continue
 
             title_list = item.get("title") or []
-            title = _clean_text(str(title_list[0] if title_list else ""))
+            title = clean_text(str(title_list[0] if title_list else ""))
             doi = clean_doi(item.get("DOI"))
             year_parts = (
                 _safe_get(item, "published-print", "date-parts", default=[])
@@ -560,7 +534,7 @@ def crossref_search_papers(
             journal = ""
             container = item.get("container-title") or []
             if container:
-                journal = _clean_text(str(container[0]))
+                journal = clean_text(str(container[0]))
 
             abstract = _clean_abstract_text(str(item.get("abstract") or "")) if include_abstract else None
             url = str(item.get("URL") or "")
@@ -653,7 +627,7 @@ def openalex_search_papers(
                     continue
 
                 doi = clean_doi(item.get("doi"))
-                title = _clean_text(str(item.get("display_name") or ""))
+                title = clean_text(str(item.get("display_name") or ""))
                 year = item.get("publication_year")
                 try:
                     year = int(year) if year is not None else None
@@ -661,7 +635,7 @@ def openalex_search_papers(
                     year = None
 
                 source = _safe_get(item, "primary_location", "source", "display_name", default="")
-                source_name = _clean_text(str(source or ""))
+                source_name = clean_text(str(source or ""))
 
                 authors = []
                 for auth in item.get("authorships", []) or []:
@@ -711,7 +685,7 @@ def merge_papers_by_doi_title(
         doi = clean_doi(p.doi)
         if doi:
             return f"doi:{doi}"
-        return f"title:{_norm_title(p.title)}::{p.year or ''}"
+        return f"title:{norm_title(p.title)}::{p.year or ''}"
 
     def score_of(p: Paper) -> tuple[int, int, int, int, int]:
         return (

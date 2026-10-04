@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import typer
 
-from libs.text_normalize import clean_doi
+from libs.strands_screening import record_id
 
 app = typer.Typer(add_completion=False)
 
@@ -30,17 +30,6 @@ STRATUM_ORDER = [
     "explicit_edna",
     "other",
 ]
-
-
-def _row_to_record_id(row: pd.Series) -> str:
-    doi = clean_doi(str(row.get("doi", "") or ""))
-    if doi:
-        return f"doi:{doi}"
-    title = str(row.get("title", "") or "").strip().lower()
-    year = str(row.get("year", "") or "").strip()
-    if title or year:
-        return f"title:{title}|year:{year}"
-    return f"row:{row.name}"
 
 
 def _contains(pattern: str, text: str) -> bool:
@@ -215,7 +204,12 @@ def make(
         )
 
     df = df.copy()
-    df["benchmark_record_id"] = df.apply(_row_to_record_id, axis=1)
+    record_ids: list[str] = []
+    for _, row in df.iterrows():
+        meta = {k: "" if pd.isna(v) else str(v) for k, v in row.items()}
+        rid = record_id(meta)
+        record_ids.append(f"row:{row.name}" if rid.startswith("{") else rid)
+    df["benchmark_record_id"] = record_ids
     df = df.loc[df[abstract_column].str.strip().ne("")].copy()
     df = df.drop_duplicates(subset=["benchmark_record_id"], keep="first").reset_index(drop=True)
 

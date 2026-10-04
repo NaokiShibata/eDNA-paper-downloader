@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import csv
 import json
-import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -11,16 +11,16 @@ from tqdm import tqdm
 
 from libs.cli_logging import setup_logger
 from libs.strands_screening import (
-    DEFAULT_BASE_URL,
     EXTRA_COLUMNS,
-    PROMPT_VERSION,
     QUESTIONS,
+    ScreeningConfig,
     check_health,
-    classify_abstract,
     coalesce,
+    format_status,
     load_config,
     prepare_abstract,
     record_id,
+    screen_row,
 )
 
 app = typer.Typer(add_completion=False)
@@ -78,32 +78,32 @@ def flag(
     log_level: str | None = typer.Option(None, "--log-level"),
 ) -> None:
     """Flag eDNA/eRNA papers in a CSV using a running Strands Decider server."""
-    cfg = load_config(config)
+    cfg_dict = load_config(config)
 
-    out_csv = Path(coalesce(out_csv, cfg, "out_csv", "results/strands_flagged.csv"))
-    base_url = str(coalesce(base_url, cfg, "base_url", DEFAULT_BASE_URL)).rstrip("/")
-    abstract_column = str(coalesce(abstract_column, cfg, "abstract_column", "abstract"))
-    timeout = float(coalesce(timeout, cfg, "timeout", 120.0))
-    retries = int(coalesce(retries, cfg, "retries", 3))
-    include_threshold = float(coalesce(include_threshold, cfg, "include_threshold", 0.70))
-    actual_use_threshold = float(coalesce(actual_use_threshold, cfg, "actual_use_threshold", 0.60))
-    exclude_threshold = float(coalesce(exclude_threshold, cfg, "exclude_threshold", 0.50))
-    exclude_actual_use_max = float(coalesce(exclude_actual_use_max, cfg, "exclude_actual_use_max", 0.50))
-    exclude_method_relevance_max = float(
-        coalesce(exclude_method_relevance_max, cfg, "exclude_method_relevance_max", 0.60)
+    out_csv = Path(coalesce(out_csv, cfg_dict, "out_csv", "results/strands_flagged.csv"))
+    cfg = ScreeningConfig.from_sources(
+        cfg_dict,
+        base_url=base_url,
+        timeout=timeout,
+        retries=retries,
+        include_threshold=include_threshold,
+        actual_use_threshold=actual_use_threshold,
+        exclude_threshold=exclude_threshold,
+        exclude_actual_use_max=exclude_actual_use_max,
+        exclude_method_relevance_max=exclude_method_relevance_max,
+        max_abstract_chars=max_abstract_chars,
     )
-    max_abstract_chars = coalesce(max_abstract_chars, cfg, "max_abstract_chars", None)
-    max_abstract_chars = int(max_abstract_chars) if max_abstract_chars is not None else None
-    batch_size = coalesce(batch_size, cfg, "batch_size", None)
+    abstract_column = str(coalesce(abstract_column, cfg_dict, "abstract_column", "abstract"))
+    batch_size = coalesce(batch_size, cfg_dict, "batch_size", None)
     batch_size = int(batch_size) if batch_size is not None else None
-    batch_index = int(coalesce(batch_index, cfg, "batch_index", 0))
-    limit = coalesce(limit, cfg, "limit", None)
+    batch_index = int(coalesce(batch_index, cfg_dict, "batch_index", 0))
+    limit = coalesce(limit, cfg_dict, "limit", None)
     limit = int(limit) if limit is not None else None
-    resume = bool(coalesce(resume, cfg, "resume", True))
-    dry_run = bool(coalesce(dry_run, cfg, "dry_run", False))
-    log_file_value = coalesce(log_file, cfg, "log_file", "logs/strands_flagger.log")
+    resume = bool(coalesce(resume, cfg_dict, "resume", True))
+    dry_run = bool(coalesce(dry_run, cfg_dict, "dry_run", False))
+    log_file_value = coalesce(log_file, cfg_dict, "log_file", "logs/strands_flagger.log")
     log_file = Path(log_file_value) if log_file_value else None
-    log_level = str(coalesce(log_level, cfg, "log_level", "INFO"))
+    log_level = str(coalesce(log_level, cfg_dict, "log_level", "INFO"))
 
     if batch_size is not None and limit is not None:
         raise typer.BadParameter("--batch-size and --limit cannot be used together")
@@ -135,7 +135,7 @@ def flag(
 
     session = requests.Session()
     try:
-        health_data = check_health(session, base_url, timeout)
+        health_data = check_health(session, cfg.base_url, cfg.timeout)
         logger.info(
             "server status=%s model=%s device=%s max_length=%s",
             health_data.get("status"),
@@ -144,7 +144,7 @@ def flag(
             health_data.get("max_length"),
         )
     except Exception as exc:
-        raise typer.BadParameter(f"could not connect to Strands Decider at {base_url}: {exc}") from exc
+        raise typer.BadParameter(f"could not connect to Strands Decider at {cfg.base_url}: {exc}") from exc
 
     write_header = not out_csv.exists() or out_csv.stat().st_size == 0
     processed_count = 0
@@ -152,8 +152,6 @@ def flag(
     error_count = 0
 
     with out_csv.open("a", encoding="utf-8", newline="") as handle:
-        import csv
-
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         if write_header:
             writer.writeheader()
@@ -179,74 +177,20 @@ def flag(
                 skipped_count += 1
                 continue
 
-            abstract = prepare_abstract(meta.get(abstract_column, ""), max_abstract_chars)
-            out_row = meta.copy()
-            out_row["flag_record_id"] = rec_id
-
-            if not abstract:
-                out_row.update(
-                    {
-                        "flag_label": "unsure",
-                        "flag_confidence": "",
-                        "flag_reason": "unsure: abstract is empty",
-                        "flag_model_path": "",
-                        "flag_prompt_version": PROMPT_VERSION,
-                    }
-                )
-            else:
-                payload = {"state": abstract, "questions": QUESTIONS}
-                if dry_run:
-                    typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
-                    return
-                try:
-                    out_row.update(
-                        classify_abstract(
-                            session=session,
-                            abstract=abstract,
-                            base_url=base_url,
-                            timeout=timeout,
-                            retries=retries,
-                            include_threshold=include_threshold,
-                            actual_use_threshold=actual_use_threshold,
-                            exclude_threshold=exclude_threshold,
-                            exclude_actual_use_max=exclude_actual_use_max,
-                            exclude_method_relevance_max=exclude_method_relevance_max,
-                        )
-                    )
-                except Exception as exc:
-                    error_count += 1
-                    logger.warning("process_error record=%s error=%s", rec_id, exc)
-                    out_row.update(
-                        {
-                            "flag_label": "process_error",
-                            "flag_confidence": "",
-                            "flag_reason": str(exc),
-                            "flag_model_path": "",
-                            "flag_prompt_version": PROMPT_VERSION,
-                        }
-                    )
+            abstract = prepare_abstract(meta.get(abstract_column, ""), cfg.max_abstract_chars)
+            if abstract and dry_run:
+                typer.echo(json.dumps({"state": abstract, "questions": QUESTIONS}, indent=2, ensure_ascii=False))
+                return
+            out_row = meta | screen_row(session, meta, cfg, abstract_column)
+            if out_row["flag_label"] == "process_error":
+                error_count += 1
+                logger.warning("process_error record=%s error=%s", rec_id, out_row["flag_reason"])
 
             writer.writerow(out_row)
             handle.flush()
             processed_count += 1
 
-            title = meta.get("title", "").strip()
-            label = str(out_row.get("flag_label", ""))
-            p_in = out_row.get("strands_p_in_scope")
-            p_out = out_row.get("strands_p_out_of_scope")
-            label_display = f"[{label:<13}]"
-
-            if isinstance(p_in, (int, float)) and isinstance(p_out, (int, float)):
-                message = f"{label_display} in={p_in:.2f} out={p_out:.2f} | {title}"
-            else:
-                message = f"{label_display} | {title}"
-
-            terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
-            max_status_width = max(20, terminal_width - 1)
-            if len(message) > max_status_width:
-                message = message[: max_status_width - 3] + "..."
-
-            status.set_description_str(message, refresh=True)
+            status.set_description_str(format_status(out_row, meta.get("title", "").strip()), refresh=True)
 
         status.clear()
         status.close()

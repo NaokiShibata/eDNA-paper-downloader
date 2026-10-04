@@ -12,6 +12,8 @@ import pandas as pd
 import requests
 import typer
 
+from libs.strands_screening import check_health
+
 app = typer.Typer(add_completion=False)
 
 DEFAULT_QUERY = (
@@ -55,23 +57,6 @@ def _run(cmd: list[str], *, cwd: Path) -> None:
         subprocess.run(cmd, cwd=cwd, check=True)
     except subprocess.CalledProcessError as exc:
         raise typer.Exit(code=exc.returncode or 1) from exc
-
-
-def _check_strands(base_url: str, timeout: float = 10.0) -> dict[str, object]:
-    url = f"{base_url.rstrip('/')}/health"
-    try:
-        response = requests.get(url, timeout=timeout)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        raise typer.BadParameter(
-            f"Strands Decider is not reachable at {url}: {exc}. "
-            "Start it first with: pixi run strands-serve"
-        ) from exc
-
-    if not isinstance(data, dict) or data.get("status") != "ok":
-        raise typer.BadParameter(f"unexpected Strands health response: {data!r}")
-    return data
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -223,7 +208,13 @@ def run(
     typer.echo(f"window       : {since.isoformat()} .. {until.isoformat()} ({days} days)")
     typer.echo(f"output dir   : {out_dir_path}")
 
-    health = _check_strands(base_url)
+    try:
+        health = check_health(requests.Session(), base_url, 10.0)
+    except Exception as exc:
+        raise typer.BadParameter(
+            f"Strands Decider is not reachable at {base_url.rstrip('/')}/health: {exc}. "
+            "Start it first with: pixi run strands-serve"
+        ) from exc
     typer.echo(
         "Strands      : "
         f"status={health.get('status')} "
