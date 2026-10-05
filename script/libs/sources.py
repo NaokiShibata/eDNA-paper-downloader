@@ -19,6 +19,8 @@ from .edna_models import Paper
 from .http_retry import make_retry_session
 from .text_normalize import clean_doi, clean_term, clean_text, norm_title
 
+OPENALEX_TYPES = "article|review|letter|book-chapter|conference-paper|report|dissertation|data-paper|editorial|book"
+
 
 def _safe_get(dct, *keys, default=None):
     cur = dct
@@ -423,6 +425,10 @@ def _paper_matches_excludes(paper: Paper, excludes: Sequence[str]) -> bool:
     return not any(term in hay for term in terms)
 
 
+def _matches_term(term: str, text: str) -> bool:
+    return re.search(rf"\b{re.escape(term)}\b", text, re.IGNORECASE) is not None
+
+
 def crossref_search_papers(
     query: str,
     user_agent: str,
@@ -481,7 +487,7 @@ def crossref_search_papers(
             title = clean_text(str(title_list[0] if title_list else ""))
             abstract = _clean_abstract_text(str(item.get("abstract") or ""))
             text = f"{title} {abstract or ''}"
-            if not any(re.search(rf"\b{re.escape(term)}\b", text, re.I) for term in terms):
+            if not any(_matches_term(term, text) for term in terms):
                 term_skipped += 1
                 continue
             term_matches += 1
@@ -589,9 +595,10 @@ def openalex_search_papers(
 
     out: list[Paper] = []
     per_page = 200
-    preprint_skipped = 0
+    type_skipped = 0
+    allowed_types = OPENALEX_TYPES.split("|")
 
-    works = Works().filter(title_and_abstract={"search": _to_openalex_query(query)}).filter(type="!preprint")
+    works = Works().filter(title_and_abstract={"search": _to_openalex_query(query)}).filter(type=OPENALEX_TYPES)
     from_dash = _to_dash_date(from_date)
     until_dash = _to_dash_date(until_date)
     if from_dash:
@@ -607,8 +614,8 @@ def openalex_search_papers(
 
             for item in items:
                 work_type = str(item.get("type") or "").strip().lower()
-                if work_type == "preprint":
-                    preprint_skipped += 1
+                if work_type not in allowed_types:
+                    type_skipped += 1
                     continue
 
                 doi = clean_doi(item.get("doi"))
@@ -657,7 +664,7 @@ def openalex_search_papers(
             logger.warning(f"OpenAlex fetch failed (pyalex): {exc}")
 
     if logger:
-        logger.info(f"OpenAlex preprint skipped (type=preprint): {preprint_skipped}")
+        logger.info(f"OpenAlex non-literature types skipped: {type_skipped}")
         logger.info(f"OpenAlex collected: {len(out)}")
         if len(out) >= max_items:
             logger.warning("OpenAlex results were truncated; raise --max-items")
@@ -683,17 +690,10 @@ def merge_papers_by_doi_title(
             p.year or 0,
         )
 
-    merged: dict[str, Paper] = {}
-    for p in papers:
-        k = key_of(p)
-        cur = merged.get(k)
-        if cur is None:
-            merged[k] = p
-            continue
-
+    def merge_pair(cur: Paper, p: Paper) -> Paper:
         best = p if score_of(p) > score_of(cur) else cur
         other = cur if best is p else p
-        merged[k] = Paper(
+        return Paper(
             pmid=best.pmid or other.pmid,
             title=best.title or other.title,
             journal=best.journal or other.journal,
@@ -704,7 +704,20 @@ def merge_papers_by_doi_title(
             pubmed_url=best.pubmed_url or other.pubmed_url,
         )
 
-    out = list(merged.values())
+    merged: dict[str, Paper] = {}
+    for i, p in enumerate(papers):
+        k = key_of(p) if clean_doi(p.doi) or norm_title(p.title) else f"empty:{i}"
+        cur = merged.get(k)
+        merged[k] = merge_pair(cur, p) if cur is not None else p
+
+    by_title: dict[tuple[str, int | None] | int, Paper] = {}
+    for i, p in enumerate(merged.values()):
+        title = norm_title(p.title)
+        title_key = (title, p.year) if title else i
+        cur = by_title.get(title_key)
+        by_title[title_key] = merge_pair(cur, p) if cur is not None else p
+
+    out = list(by_title.values())
     out.sort(key=lambda x: (x.year or 0, _pmid_key(x.pmid)), reverse=True)
     if logger:
         logger.info(f"Merged papers (doi/title): {len(papers)} -> {len(out)}")
@@ -724,8 +737,8 @@ def _fmt_date(d: datetime) -> str:
 
 def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[dict]:
     """
-    Local filter: require all tokens in query to appear in title/abstract/authors/category.
-    Exclude if any exclude-term appears.
+    Local filter: match whole words/phrases in title/abstract using OR or AND.
+    Exclude if any exclude-term matches.
     """
     q = query.strip()
     ex = [e.strip() for e in exclude if e and e.strip()]
@@ -735,8 +748,6 @@ def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[di
             [
                 clean_text(i.get("title", "")),
                 clean_text(i.get("abstract", "")),
-                clean_text(i.get("category", "")),
-                clean_text(i.get("authors", "")),
             ]
         ).lower()
 
@@ -747,9 +758,9 @@ def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[di
         out = []
         for it in items:
             h = hay(it)
-            if any(e.lower() in h for e in ex):
+            if any(_matches_term(e, h) for e in ex):
                 continue
-            if or_terms_clean and not any(t in h for t in or_terms_clean):
+            if or_terms_clean and not any(_matches_term(t, h) for t in or_terms_clean):
                 continue
             out.append(it)
         return out
@@ -760,9 +771,9 @@ def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[di
     out = []
     for it in items:
         h = hay(it)
-        if any(e.lower() in h for e in ex):
+        if any(_matches_term(e, h) for e in ex):
             continue
-        if q_tokens and not all(t in h for t in q_tokens):
+        if q_tokens and not all(_matches_term(t, h) for t in q_tokens):
             continue
         out.append(it)
     return out

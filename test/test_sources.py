@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "script"))
 import fetch
 from libs.edna_models import Paper
 from libs.sources import (
+    OPENALEX_TYPES,
     _openalex_abstract,
     _parse_europepmc,
     _query_terms,
@@ -27,6 +28,7 @@ from libs.sources import (
     fetch_range_stream,
     keyword_filter,
     merge_papers_by_doi_title,
+    openalex_search_papers,
 )
 
 
@@ -201,6 +203,21 @@ class SourcesTest(unittest.TestCase):
         self.assertIsNone(_openalex_abstract({}))
         self.assertIsNone(_openalex_abstract(None))
 
+    def test_openalex_skips_non_literature_types(self) -> None:
+        with patch("pyalex.Works") as works:
+            pager = works.return_value
+            pager.filter.return_value = pager
+            pager.paginate.return_value = iter([[
+                {"type": "article", "display_name": "eDNA study", "doi": "10.1000/article"},
+                {"type": "dataset", "display_name": "Occurrence Download", "doi": "10.1000/dataset"},
+            ]])
+            logger = Mock()
+            result = openalex_search_papers("eDNA", sleep=0, logger=logger)
+        pager.filter.assert_any_call(type=OPENALEX_TYPES)
+        self.assertEqual([paper.doi for paper in result], ["10.1000/article"])
+        logger.info.assert_any_call("OpenAlex non-literature types skipped: 1")
+        logger.warning.assert_not_called()
+
     def test_merge_doi_and_title_year(self) -> None:
         papers = [
             Paper("123", "Title", "J", 2026, "", "https://doi.org/10.1000/ABC", None, "url"),
@@ -215,11 +232,52 @@ class SourcesTest(unittest.TestCase):
                          ("123", "10.1000/abc", "Abstract", "Author"))
         self.assertEqual(merged[1].abstract, "Fallback abstract")
 
+    def test_merge_different_dois_by_title_year(self) -> None:
+        papers = [
+            Paper("123", "eDNA study!", "Zenodo", 2026, "", "10.5281/zenodo.21929549", None, "url"),
+            Paper("", "EDNA STUDY", "", 2026, "Author", "10.5281/zenodo.21929550", "Abstract", ""),
+        ]
+        logger = Mock()
+        merged = merge_papers_by_doi_title(papers, logger=logger)
+        self.assertEqual(merged, [Paper("123", "eDNA study!", "Zenodo", 2026, "Author",
+                                        "10.5281/zenodo.21929549", "Abstract", "url")])
+        logger.info.assert_called_once_with("Merged papers (doi/title): 2 -> 1")
+
+    def test_merge_same_title_different_years(self) -> None:
+        papers = [
+            Paper("", "eDNA study", "", 2026, "", "10.1000/new", None, ""),
+            Paper("", "eDNA study", "", 2025, "", "10.1000/old", None, ""),
+        ]
+        self.assertEqual(merge_papers_by_doi_title(papers), papers)
+
+    def test_merge_skips_empty_normalised_titles(self) -> None:
+        papers = [
+            Paper("", title, "", 2026, "", doi, None, "")
+            for title, doi in (("", "10.1000/a"), ("!!!", "10.1000/b"), ("", None), ("!!!", None))
+        ]
+        self.assertEqual(merge_papers_by_doi_title(papers), papers)
+
     def test_biorxiv_keyword_modes(self) -> None:
         items = [{"title": "eDNA fish"}, {"title": "RNA fish"}, {"title": "eDNA soil"}]
         self.assertEqual(keyword_filter(items, "eDNA OR RNA", []), items)
         self.assertEqual(keyword_filter(items, "eDNA AND fish", []), items[:1])
         self.assertEqual(keyword_filter(items, "eDNA OR RNA", ["soil"]), items[:2])
+
+    def test_biorxiv_keyword_whole_words(self) -> None:
+        items = [
+            {"title": "internal external maternal"},
+            {"title": "Unrelated study", "authors": "Edna Smith", "category": "eDNA"},
+            {"title": "eDNA metabarcoding"},
+            {"abstract": "Studying environmental DNA."},
+            {"title": "eRNA analysis"},
+        ]
+        self.assertEqual(keyword_filter(items, "erna", []), items[4:])
+        self.assertEqual(keyword_filter(items, "edna", []), items[2:3])
+        self.assertEqual(keyword_filter(items, '"environmental DNA" OR edna', []), items[2:4])
+        self.assertEqual(keyword_filter(items, "environmental AND DNA", []), items[3:4])
+        self.assertEqual(keyword_filter(items, "", ["ERNA"]), items[:4])
+        self.assertEqual(keyword_filter(items, "internal OR edna", ["ERNA"]), [items[0], items[2]])
+        self.assertEqual(keyword_filter(items, "", ["ENVIRONMENTAL DNA"]), items[:3] + items[4:])
 
     def test_biorxiv_pagination(self) -> None:
         for total in ("35", None, "invalid"):
