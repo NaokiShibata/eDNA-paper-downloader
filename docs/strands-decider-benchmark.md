@@ -283,7 +283,8 @@ pixi run benchmark eval benchmark/edna_strands_200.review.labeled.csv \
 未使用のholdoutセット `benchmark/edna_holdout_100.review.csv` を用意しています。
 
 - 2026-08-07〜2026-10-05の60日分を `pixi run fetch --days 60 --sources pubmed,crossref,openalex,biorxiv` で取得
-- Abstractあり、かつ200件benchmarkと重複しない404件から、seed 20261005で100件を無作為抽出（natural only）
+- Abstractあり、かつ200件benchmarkと重複しない論文から、seed 20261005で100件を無作為抽出（natural only）
+- Zenodo/Figshareのグレー文献は対象外とし、当初抽出に含まれたZenodo 7件はseed 20261006で再抽出した同条件の7件に置換（母集団375件）
 - manifestの `benchmark_partition` はすべて `holdout`
 - Strandsの予測はgold付与が終わるまで作成しない。閾値や質問文の調整には使わず、評価は一度だけ行う
 
