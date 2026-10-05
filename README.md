@@ -303,6 +303,7 @@ python3 script/fetch.py \
 - `pyalex.config.email` は `--email` の値を設定しています（OpenAlexの polite pool 利用を意図）。
 - OpenAlex APIキーは `--openalex-api-key` で設定できます（ログにはマスク表示）。
 - Crossrefはpreprintを除外し、OpenAlexは文献型（article、review、letter、book-chapter、conference-paper、report、dissertation、data-paper、editorial、book）のみ取得します。
+- 全ソースの取得結果から、Zenodo・FigshareのDOIを持つ文献は灰色文献として統合前に除外します。
 - 要旨補完後もabstractが空のレコードを `no_abstract` 側へ保存します。
 - Crossrefはcursor pagingで取得します。Crossrefはboolean検索に対応しないため、クエリ語 (例: `environmental DNA`, `eDNA`) をタイトルまたは要旨に含む論文だけを残し、一致が0件のページに達した時点で取得を打ち切ります。
 - Crossref/OpenAlexの取得件数が上限に達するとwarningを表示します。必要に応じて `--max-items` を増やしてください。

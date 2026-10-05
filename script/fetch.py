@@ -18,6 +18,7 @@ from libs.sources import (
     biorxiv_search_papers,
     build_query_with_excludes,
     crossref_search_papers,
+    drop_repository_records,
     europepmc_fill_abstracts,
     merge_papers_by_doi_title,
     openalex_search_papers,
@@ -233,6 +234,7 @@ def fetch(
         logger.error("No results from selected sources.")
         raise typer.Exit(code=1)
 
+    all_papers = drop_repository_records(all_papers, logger=logger)
     papers = merge_papers_by_doi_title(all_papers, logger=logger)
 
     columns = list(Paper.__dataclass_fields__)

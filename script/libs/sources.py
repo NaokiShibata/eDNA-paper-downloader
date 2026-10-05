@@ -20,6 +20,7 @@ from .http_retry import make_retry_session
 from .text_normalize import clean_doi, clean_term, clean_text, norm_title
 
 OPENALEX_TYPES = "article|review|letter|book-chapter|conference-paper|report|dissertation|data-paper|editorial|book"
+EXCLUDED_DOI_PREFIXES = ("10.5281/zenodo.", "10.6084/m9.figshare.")
 
 
 def _safe_get(dct, *keys, default=None):
@@ -669,6 +670,16 @@ def openalex_search_papers(
         if len(out) >= max_items:
             logger.warning("OpenAlex results were truncated; raise --max-items")
     return out
+
+
+def drop_repository_records(
+    papers: Sequence[Paper],
+    logger: logging.Logger | None = None,
+) -> list[Paper]:
+    kept = [paper for paper in papers if not clean_doi(paper.doi).startswith(EXCLUDED_DOI_PREFIXES)]
+    if logger:
+        logger.info("Repository records dropped (Zenodo/Figshare): %d", len(papers) - len(kept))
+    return kept
 
 
 def merge_papers_by_doi_title(

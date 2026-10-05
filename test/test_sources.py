@@ -24,6 +24,7 @@ from libs.sources import (
     _to_openalex_query,
     biorxiv_search_papers,
     crossref_search_papers,
+    drop_repository_records,
     europepmc_fill_abstracts,
     fetch_range_stream,
     keyword_filter,
@@ -217,6 +218,24 @@ class SourcesTest(unittest.TestCase):
         self.assertEqual([paper.doi for paper in result], ["10.1000/article"])
         logger.info.assert_any_call("OpenAlex non-literature types skipped: 1")
         logger.warning.assert_not_called()
+
+    def test_drop_repository_records(self) -> None:
+        papers = [
+            Paper("", "Study", "", 2026, "", doi, None, "")
+            for doi in (
+                "10.5281/zenodo.123",
+                " https://doi.org/10.5281/ZENODO.456 ",
+                "10.6084/m9.figshare.123.v1",
+                "doi:10.6084/M9.FIGSHARE.456",
+                "10.1000/article",
+                "10.5281/other",
+                None,
+                "",
+            )
+        ]
+        logger = Mock()
+        self.assertEqual(drop_repository_records(papers, logger=logger), papers[4:])
+        logger.info.assert_called_once_with("Repository records dropped (Zenodo/Figshare): %d", 4)
 
     def test_merge_doi_and_title_year(self) -> None:
         papers = [
