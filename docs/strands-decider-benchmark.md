@@ -293,5 +293,32 @@ pixi run screen benchmark/edna_holdout_100.review.csv \
   --out-csv benchmark/edna_holdout_100.strands.v4.csv
 pixi run benchmark eval benchmark/edna_holdout_100.review.labeled.csv \
   benchmark/edna_holdout_100.strands.v4.csv \
-  --manifest benchmark/edna_holdout_100.manifest.csv --partition holdout
+  --manifest benchmark/edna_holdout_100.manifest.csv --partition all
 ```
+
+### Holdout評価結果（strands-v4、一度のみ実施）
+
+goldは `benchmark/edna_holdout_100.review.labeled.csv`（in_scope 61 / out_of_scope 38 / unsure 1）。
+
+| 指標 | 結果 |
+| --- | ---: |
+| hard false negative | 1件 / 61件 |
+| operational recall | 0.984 |
+| false positive | 1件 |
+| 自動除外できたgold-negative | 31件 / 38件 |
+| manual review rate | 0.131 |
+| auto accuracy | 0.977 |
+| in-scope precision | 0.982 |
+
+同じスコアでreview規則を外した場合（v3相当）は、自動除外29件、manual review rate 0.152でした。
+gold `in_scope` の `P(review)` は最大0.044で、review規則による誤除外はありません。
+
+hard false negativeの1件（H084）は魚類回遊の数理モデル研究で、Abstract末尾の1文で
+「提案モデルのenvironmental DNAデータ解析への応用も検討した」と述べている論文です。
+v2から続く基本の除外条件（`P(out_of_scope)=0.57`、`P(actual_use)=0.38`、`P(method_relevance)=0.45`）で除外されました。
+「タイトル・AbstractにeDNA/eRNA関連語が明示されていれば基本条件で除外しない」安全策も検討しましたが、
+取得クエリ自体がこれらの語を含むことと、eRNA（enhancer RNA）やeDNA（extracellular DNA）の同綴語が多いことから、
+200件benchmarkで正しい自動除外が68件から59件に、holdoutで31件から9件に減るため採用していません。
+
+false positiveの1件（H002）は、魚の腸内microbiomeと食性の研究で、Abstractに
+「environmental DNA metabarcoding」と書かれているため `actual_use` が高く出たものです。
