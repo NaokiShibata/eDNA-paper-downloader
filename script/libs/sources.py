@@ -1,21 +1,26 @@
 from __future__ import annotations
 
-import html
 import io
 import logging
 import re
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import asdict
+from datetime import datetime
 from functools import partial
 from typing import Any
 
 import requests
+import typer
 from Bio import Entrez
 from tqdm import tqdm
 
 from .edna_models import Paper
-from .text_normalize import clean_doi
+from .http_retry import make_retry_session
+from .text_normalize import clean_doi, clean_term, clean_text, norm_title
+
+OPENALEX_TYPES = "article|review|letter|book-chapter|conference-paper|report|dissertation|data-paper|editorial|book"
+EXCLUDED_DOI_PREFIXES = ("10.5281/zenodo.", "10.6084/m9.figshare.")
 
 
 def _safe_get(dct, *keys, default=None):
@@ -30,26 +35,10 @@ def _safe_get(dct, *keys, default=None):
     return cur if cur is not None else default
 
 
-def _clean_text(text: str) -> str:
-    s = html.unescape(text or "")
-    s = re.sub(r"<[^>]+>", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    while len(s) >= 2 and s[0] == '"' and s[-1] == '"':
-        s = s[1:-1].strip()
-    return s
-
-
 def _clean_abstract_text(text: str) -> str:
-    s = _clean_text(text)
+    s = clean_text(text)
     s = re.sub(r"^\s*abstract\s*[:\-]?\s*", "", s, flags=re.IGNORECASE).strip()
     return s
-
-
-def _norm_title(title: str) -> str:
-    t = title.lower().strip()
-    t = re.sub(r"\s+", " ", t)
-    t = re.sub(r"[^a-z0-9 ]+", "", t)
-    return t
 
 
 def _extract_doi(article: dict) -> str | None:
@@ -144,8 +133,6 @@ def _date_range_clause(since: str | None, until: str | None, datetype: str) -> s
     if not since_norm and not until_norm:
         return None
     field = datetype.upper()
-    if field not in ("PDAT", "EDAT"):
-        field = field.upper()
     start = since_norm or "0001/01/01"
     end = until_norm or "3000/12/31"
     return f'("{start}"[{field}] : "{end}"[{field}])'
@@ -204,43 +191,10 @@ def _pmid_key(pmid: str) -> int:
         return 0
 
 
-def keep_latest_per_doi_pubmed(papers: list[Paper], logger: logging.Logger | None = None) -> list[Paper]:
-    best: dict[str, Paper] = {}
-    no_doi: list[Paper] = []
-
-    for p in papers:
-        doi = (p.doi or "").strip().lower()
-        if not doi:
-            no_doi.append(p)
-            continue
-
-        cur = best.get(doi)
-        if cur is None:
-            best[doi] = p
-            continue
-
-        p_key = (p.year or 0, _pmid_key(p.pmid))
-        c_key = (cur.year or 0, _pmid_key(cur.pmid))
-        if p_key > c_key:
-            best[doi] = p
-
-    out = list(best.values()) + no_doi
-    out.sort(
-        key=lambda x: (x.year or 0, _pmid_key(x.pmid)),
-        reverse=True,
-    )
-    if logger:
-        logger.info(f"DOI latest-select (PubMed): {len(papers)} -> {len(out)}")
-    return out
-
-
 def pubmed_search_all_pmids(
     query: str,
     email: str,
     api_key: str | None = None,
-    mindate: str | None = None,
-    maxdate: str | None = None,
-    datetype: str = "pdat",
     sort: str = "most+recent",
     batch: int = 10000,
     sleep: float = 0.34,
@@ -258,15 +212,8 @@ def pubmed_search_all_pmids(
         "retmax": 0,
         "sort": sort,
     }
-    if mindate or maxdate:
-        kwargs.update({"datetype": datetype})
-        if mindate:
-            kwargs["mindate"] = mindate
-        if maxdate:
-            kwargs["maxdate"] = maxdate
-
     if logger:
-        logger.info(f"Entrez.esearch initial (retmax=0) sort={sort} datetype={datetype}")
+        logger.info(f"Entrez.esearch initial (retmax=0) sort={sort}")
 
     res = _entrez_request(lambda: Entrez.esearch(**kwargs), logger, "esearch initial")
 
@@ -285,14 +232,6 @@ def pubmed_search_all_pmids(
         if logger and logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Paging PMIDs retstart={retstart} retmax={min(batch, count - retstart)}")
 
-        kwargs_page = {}
-        if mindate or maxdate:
-            kwargs_page.update({"datetype": datetype})
-            if mindate:
-                kwargs_page["mindate"] = mindate
-            if maxdate:
-                kwargs_page["maxdate"] = maxdate
-
         read_page: Callable[[], Any] = partial(
             Entrez.esearch,
             db="pubmed",
@@ -303,7 +242,6 @@ def pubmed_search_all_pmids(
             webenv=webenv,
             query_key=query_key,
             sort=sort,
-            **kwargs_page,
         )
 
         res2 = _entrez_request(
@@ -364,7 +302,7 @@ def pubmed_fetch_details(
 
         for art in records.get("PubmedArticle", []):
             pmid = str(_safe_get(art, "MedlineCitation", "PMID", default="")).strip()
-            title = _clean_text(str(_safe_get(art, "MedlineCitation", "Article", "ArticleTitle", default="")))
+            title = clean_text(str(_safe_get(art, "MedlineCitation", "Article", "ArticleTitle", default="")))
             journal = str(_safe_get(art, "MedlineCitation", "Article", "Journal", "Title", default="")).strip()
             year = _extract_year(art)
             authors = _extract_authors(art)
@@ -393,40 +331,52 @@ def pubmed_fetch_details(
     return papers
 
 
-def crossref_fill_missing_doi(
-    papers: list[Paper],
-    user_agent: str,
-    sleep: float = 0.2,
-    logger: logging.Logger | None = None,
-) -> list[Paper]:
-    sess = requests.Session()
-    headers = {"User-Agent": user_agent}
-    out: list[Paper] = []
-
-    if logger:
-        logger.info("Crossref DOI fill enabled (heuristic)")
-
-    for p in tqdm(papers, desc="Crossref DOI fill"):
-        if p.doi or not p.title:
-            out.append(p)
-            continue
-        params = {"query.title": p.title, "rows": 1}
-        try:
-            r = sess.get("https://api.crossref.org/works", params=params, headers=headers, timeout=20)
-            r.raise_for_status()
-            js = r.json()
-            items = js.get("message", {}).get("items", [])
-            doi = items[0].get("DOI") if items else None
-            out.append(Paper(**{**asdict(p), "doi": doi}))
-        except Exception as e:
-            if logger and logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Crossref lookup failed for title={p.title!r}: {e}")
-            out.append(p)
-
-        if sleep > 0:
-            time.sleep(sleep)
-
+def _parse_europepmc(js: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    out: dict[str, tuple[str, str]] = {}
+    for item in js.get("resultList", {}).get("result", []) or []:
+        doi = clean_doi(item.get("doi"))
+        abstract = _clean_abstract_text(str(item.get("abstractText") or ""))
+        if doi and abstract:
+            out[doi] = (abstract, str(item.get("pmid") or ""))
     return out
+
+
+def europepmc_fill_abstracts(
+    papers: list[Paper], sleep: float = 0.2, logger: logging.Logger | None = None,
+) -> list[Paper]:
+    dois = list(dict.fromkeys(clean_doi(p.doi) for p in papers if p.doi and not (p.abstract or "").strip()))
+    found: dict[str, tuple[str, str]] = {}
+    with make_retry_session() as sess:
+        for start in range(0, len(dois), 25):
+            params: dict[str, Any] = {
+                "query": " OR ".join(f'DOI:"{doi}"' for doi in dois[start : start + 25]),
+                "resultType": "core", "format": "json", "pageSize": 100,
+            }
+            try:
+                response = sess.get("https://www.ebi.ac.uk/europepmc/webservices/rest/search", params=params, timeout=30)
+                response.raise_for_status()
+                found.update(_parse_europepmc(response.json()))
+            except requests.RequestException as exc:
+                if logger:
+                    logger.warning("Europe PMC abstract fetch failed: %s", exc)
+            if sleep > 0:
+                time.sleep(sleep)
+    out: list[Paper] = []
+    filled = 0
+    for paper in papers:
+        hit = found.get(clean_doi(paper.doi))
+        if hit and not (paper.abstract or "").strip():
+            abstract, pmid = hit
+            paper = Paper(**{**asdict(paper), "abstract": abstract, "pmid": paper.pmid or pmid})
+            filled += 1
+        out.append(paper)
+    if logger:
+        logger.info("Europe PMC abstracts filled: %d", filled)
+    return out
+
+
+def _to_openalex_query(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"\[[^\]]+\]", "", value)).strip()
 
 
 def _to_query_text(value: str) -> str:
@@ -436,18 +386,16 @@ def _to_query_text(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _query_terms(query: str) -> list[str]:
+    text = re.sub(r"\[[^\]]+\]", "", query)
+    parts = re.split(r"\s+(?:OR|AND)\s+", text, flags=re.IGNORECASE)
+    terms = [clean_term(part.strip().strip("()")).lower() for part in parts]
+    return [term for term in terms if term]
+
+
 def _to_dash_date(value: str | None) -> str | None:
     normalized = _normalize_date_str(value)
     return normalized.replace("/", "-") if normalized else None
-
-
-def _clean_term(term: str) -> str:
-    t = term.strip()
-    while t.startswith("(") and t.endswith(")") and len(t) > 2:
-        t = t[1:-1].strip()
-    if (t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'")):
-        t = t[1:-1].strip()
-    return t
 
 
 def _expand_exclude_terms(excludes: Sequence[str]) -> list[str]:
@@ -457,7 +405,7 @@ def _expand_exclude_terms(excludes: Sequence[str]) -> list[str]:
             continue
         parts = re.split(r"\s+OR\s+", raw, flags=re.IGNORECASE)
         for part in parts:
-            term = _clean_term(part).strip().lower()
+            term = clean_term(part).strip().lower()
             if term:
                 terms.append(term)
     return terms
@@ -478,6 +426,10 @@ def _paper_matches_excludes(paper: Paper, excludes: Sequence[str]) -> bool:
     return not any(term in hay for term in terms)
 
 
+def _matches_term(term: str, text: str) -> bool:
+    return re.search(rf"\b{re.escape(term)}\b", text, re.IGNORECASE) is not None
+
+
 def crossref_search_papers(
     query: str,
     user_agent: str,
@@ -489,15 +441,17 @@ def crossref_search_papers(
     sleep: float = 0.2,
     logger: logging.Logger | None = None,
 ) -> list[Paper]:
-    sess = requests.Session()
+    sess = make_retry_session()
     headers = {"User-Agent": user_agent}
     out: list[Paper] = []
     preprint_skipped = 0
+    term_skipped = 0
+    terms = _query_terms(query)
 
     params: dict[str, Any] = {
         "query": _to_query_text(query),
         "rows": 200,
-        "offset": 0,
+        "cursor": "*",
     }
     filters: list[str] = []
     from_dash = _to_dash_date(from_date)
@@ -520,7 +474,7 @@ def crossref_search_papers(
             r.raise_for_status()
         except requests.RequestException as exc:
             if logger:
-                logger.warning(f"Crossref fetch failed (offset={params['offset']}): {exc}")
+                logger.warning(f"Crossref fetch failed (cursor={params['cursor']}): {exc}")
             break
 
         msg = r.json().get("message", {})
@@ -528,14 +482,21 @@ def crossref_search_papers(
         if not items:
             break
 
+        term_matches = 0
         for item in items:
+            title_list = item.get("title") or []
+            title = clean_text(str(title_list[0] if title_list else ""))
+            abstract = _clean_abstract_text(str(item.get("abstract") or ""))
+            text = f"{title} {abstract or ''}"
+            if not any(_matches_term(term, text) for term in terms):
+                term_skipped += 1
+                continue
+            term_matches += 1
             work_type = str(item.get("type") or "").strip().lower()
             if work_type == "posted-content":
                 preprint_skipped += 1
                 continue
 
-            title_list = item.get("title") or []
-            title = _clean_text(str(title_list[0] if title_list else ""))
             doi = clean_doi(item.get("DOI"))
             year_parts = (
                 _safe_get(item, "published-print", "date-parts", default=[])
@@ -560,9 +521,8 @@ def crossref_search_papers(
             journal = ""
             container = item.get("container-title") or []
             if container:
-                journal = _clean_text(str(container[0]))
+                journal = clean_text(str(container[0]))
 
-            abstract = _clean_abstract_text(str(item.get("abstract") or "")) if include_abstract else None
             url = str(item.get("URL") or "")
             paper = Paper(
                 pmid="",
@@ -571,7 +531,7 @@ def crossref_search_papers(
                 year=year,
                 authors=", ".join(authors),
                 doi=doi or None,
-                abstract=abstract or None,
+                abstract=(abstract or None) if include_abstract else None,
                 pubmed_url=url,
             )
             if _paper_matches_excludes(paper, excludes):
@@ -579,15 +539,21 @@ def crossref_search_papers(
             if len(out) >= max_items:
                 break
 
-        if len(items) < int(params["rows"]):
+        # ponytail: relevance-tail cutoff; page further if Crossref ranking proves unreliable
+        if len(items) == params["rows"] and term_matches == 0:
             break
-        params["offset"] = int(params["offset"]) + int(params["rows"])
+        if len(out) >= max_items or not msg.get("next-cursor"):
+            break
+        params["cursor"] = msg["next-cursor"]
         if sleep > 0:
             time.sleep(sleep)
 
     if logger:
         logger.info(f"Crossref preprint skipped (type=posted-content): {preprint_skipped}")
+        logger.info(f"Crossref term filter dropped: {term_skipped}")
         logger.info(f"Crossref collected: {len(out)}")
+        if len(out) >= max_items:
+            logger.warning("Crossref results were truncated; raise --max-items")
     return out
 
 
@@ -630,9 +596,10 @@ def openalex_search_papers(
 
     out: list[Paper] = []
     per_page = 200
-    preprint_skipped = 0
+    type_skipped = 0
+    allowed_types = OPENALEX_TYPES.split("|")
 
-    works = Works().search(_to_query_text(query)).filter(type="!preprint")
+    works = Works().filter(title_and_abstract={"search": _to_openalex_query(query)}).filter(type=OPENALEX_TYPES)
     from_dash = _to_dash_date(from_date)
     until_dash = _to_dash_date(until_date)
     if from_dash:
@@ -648,12 +615,12 @@ def openalex_search_papers(
 
             for item in items:
                 work_type = str(item.get("type") or "").strip().lower()
-                if work_type == "preprint":
-                    preprint_skipped += 1
+                if work_type not in allowed_types:
+                    type_skipped += 1
                     continue
 
                 doi = clean_doi(item.get("doi"))
-                title = _clean_text(str(item.get("display_name") or ""))
+                title = clean_text(str(item.get("display_name") or ""))
                 year = item.get("publication_year")
                 try:
                     year = int(year) if year is not None else None
@@ -661,7 +628,7 @@ def openalex_search_papers(
                     year = None
 
                 source = _safe_get(item, "primary_location", "source", "display_name", default="")
-                source_name = _clean_text(str(source or ""))
+                source_name = clean_text(str(source or ""))
 
                 authors = []
                 for auth in item.get("authorships", []) or []:
@@ -698,9 +665,21 @@ def openalex_search_papers(
             logger.warning(f"OpenAlex fetch failed (pyalex): {exc}")
 
     if logger:
-        logger.info(f"OpenAlex preprint skipped (type=preprint): {preprint_skipped}")
+        logger.info(f"OpenAlex non-literature types skipped: {type_skipped}")
         logger.info(f"OpenAlex collected: {len(out)}")
+        if len(out) >= max_items:
+            logger.warning("OpenAlex results were truncated; raise --max-items")
     return out
+
+
+def drop_repository_records(
+    papers: Sequence[Paper],
+    logger: logging.Logger | None = None,
+) -> list[Paper]:
+    kept = [paper for paper in papers if not clean_doi(paper.doi).startswith(EXCLUDED_DOI_PREFIXES)]
+    if logger:
+        logger.info("Repository records dropped (Zenodo/Figshare): %d", len(papers) - len(kept))
+    return kept
 
 
 def merge_papers_by_doi_title(
@@ -711,7 +690,7 @@ def merge_papers_by_doi_title(
         doi = clean_doi(p.doi)
         if doi:
             return f"doi:{doi}"
-        return f"title:{_norm_title(p.title)}::{p.year or ''}"
+        return f"title:{norm_title(p.title)}::{p.year or ''}"
 
     def score_of(p: Paper) -> tuple[int, int, int, int, int]:
         return (
@@ -722,17 +701,10 @@ def merge_papers_by_doi_title(
             p.year or 0,
         )
 
-    merged: dict[str, Paper] = {}
-    for p in papers:
-        k = key_of(p)
-        cur = merged.get(k)
-        if cur is None:
-            merged[k] = p
-            continue
-
+    def merge_pair(cur: Paper, p: Paper) -> Paper:
         best = p if score_of(p) > score_of(cur) else cur
         other = cur if best is p else p
-        merged[k] = Paper(
+        return Paper(
             pmid=best.pmid or other.pmid,
             title=best.title or other.title,
             journal=best.journal or other.journal,
@@ -743,8 +715,172 @@ def merge_papers_by_doi_title(
             pubmed_url=best.pubmed_url or other.pubmed_url,
         )
 
-    out = list(merged.values())
+    merged: dict[str, Paper] = {}
+    for i, p in enumerate(papers):
+        k = key_of(p) if clean_doi(p.doi) or norm_title(p.title) else f"empty:{i}"
+        cur = merged.get(k)
+        merged[k] = merge_pair(cur, p) if cur is not None else p
+
+    by_title: dict[tuple[str, int | None] | int, Paper] = {}
+    for i, p in enumerate(merged.values()):
+        title = norm_title(p.title)
+        title_key = (title, p.year) if title else i
+        cur = by_title.get(title_key)
+        by_title[title_key] = merge_pair(cur, p) if cur is not None else p
+
+    out = list(by_title.values())
     out.sort(key=lambda x: (x.year or 0, _pmid_key(x.pmid)), reverse=True)
     if logger:
         logger.info(f"Merged papers (doi/title): {len(papers)} -> {len(out)}")
     return out
+
+
+def _parse_date(s: str) -> datetime:
+    s_norm = s.strip()
+    if not s_norm:
+        raise ValueError("date is required (YYYY/MM/DD)")
+    return datetime.strptime(s_norm, "%Y/%m/%d")
+
+
+def _fmt_date(d: datetime) -> str:
+    return d.strftime("%Y-%m-%d")
+
+
+def keyword_filter(items: list[dict], query: str, exclude: list[str]) -> list[dict]:
+    """
+    Local filter: match whole words/phrases in title/abstract using OR or AND.
+    Exclude if any exclude-term matches.
+    """
+    q = query.strip()
+    ex = [e.strip() for e in exclude if e and e.strip()]
+
+    def hay(i: dict) -> str:
+        return " ".join(
+            [
+                clean_text(i.get("title", "")),
+                clean_text(i.get("abstract", "")),
+            ]
+        ).lower()
+
+    or_terms = [t for t in re.split(r"\s+OR\s+", q, flags=re.IGNORECASE) if t.strip()]
+    if len(or_terms) > 1:
+        or_terms_clean = [clean_term(t).lower() for t in or_terms]
+        or_terms_clean = [t for t in or_terms_clean if t]
+        out = []
+        for it in items:
+            h = hay(it)
+            if any(_matches_term(e, h) for e in ex):
+                continue
+            if or_terms_clean and not any(_matches_term(t, h) for t in or_terms_clean):
+                continue
+            out.append(it)
+        return out
+
+    q_tokens = [clean_term(t).lower() for t in re.split(r"\s+", q) if t.strip()]
+    q_tokens = [t for t in q_tokens if t and t not in {"or", "and"}]
+
+    out = []
+    for it in items:
+        h = hay(it)
+        if any(_matches_term(e, h) for e in ex):
+            continue
+        if q_tokens and not all(_matches_term(t, h) for t in q_tokens):
+            continue
+        out.append(it)
+    return out
+
+
+def _to_int_version(v: object | None) -> int:
+    if v is None:
+        return -1
+    if isinstance(v, bool):
+        return -1
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v) if v.is_integer() else -1
+    s = str(v).strip()
+    if not s:
+        return -1
+    if s.isdigit():
+        return int(s)
+    if re.fullmatch(r"\d+\.0+", s):
+        return int(float(s))
+    return -1
+
+
+def fetch_range_stream(
+    server: str,
+    from_date: str,
+    to_date: str,
+    sleep: float,
+    logger: logging.Logger,
+    sess: requests.Session,
+) -> Iterator[tuple[int, list[dict[str, Any]], list[Any]]]:
+    cursor = 0
+    while True:
+        url = f"https://api.biorxiv.org/details/{server}/{from_date}/{to_date}/{cursor}"
+        logger.debug(f"GET {url}")
+        try:
+            r = sess.get(url, timeout=(10, 60))
+            r.raise_for_status()
+        except requests.RequestException as e:
+            logger.warning(f"Request failed (cursor={cursor}, range={from_date}..{to_date}): {e}. Sleep 5s then retry.")
+            time.sleep(5)
+            continue
+
+        js = r.json()
+        col = js.get("collection", []) or []
+        messages = js.get("messages", []) or []
+        yield cursor, col, messages
+
+        try:
+            total = int(messages[0]["total"])
+        except (IndexError, KeyError, TypeError, ValueError):
+            total = None
+        cursor += len(col)
+        if not col or (total is not None and cursor >= total):
+            break
+        if sleep > 0:
+            time.sleep(sleep)
+
+
+def biorxiv_search_papers(
+    server: str, from_date: str, to_date: str, query: str, excludes: list[str],
+    sleep: float, logger: logging.Logger, include_abstract: bool = False,
+) -> list[Paper]:
+    if server not in {"biorxiv", "medrxiv"}:
+        raise typer.BadParameter("server must be biorxiv or medrxiv")
+    start = _parse_date(from_date.replace("-", "/"))
+    end = _parse_date(to_date.replace("-", "/"))
+    if start > end:
+        raise typer.BadParameter("bioRxiv start date must not be after end date")
+    best: dict[str, tuple[tuple[int, str], Paper]] = {}
+    exclude_terms = [clean_term(term) for value in excludes for term in re.split(r"\s+OR\s+", value, flags=re.IGNORECASE)]
+    with make_retry_session() as sess:
+        for _, items, _ in fetch_range_stream(server, _fmt_date(start), _fmt_date(end), sleep, logger, sess):
+            for item in keyword_filter(items, query, exclude_terms):
+                doi = item.get("doi", "") or ""
+                version = item.get("version")
+                version_str = str(version) if version is not None else None
+                url = f"https://www.{server}.org/content/{doi}" if doi else ""
+                if doi and version_str:
+                    url += f"v{version_str}"
+                title = clean_text(item.get("title", ""))
+                posted = clean_text(item.get("date", ""))
+                key = doi.strip().lower() or f"__no_doi__::{url}::{title}".lower()
+                rank = (_to_int_version(version_str), posted or "0000-00-00")
+                if key in best and rank <= best[key][0]:
+                    continue
+                best[key] = (rank, Paper(
+                    pmid="", title=title, journal="bioRxiv" if server == "biorxiv" else "medRxiv",
+                    year=int(posted[:4]) if posted else None, authors=clean_text(item.get("authors", "")),
+                    doi=doi or None,
+                    abstract=(clean_text(item.get("abstract", "")) or None) if include_abstract else None,
+                    pubmed_url=url,
+                ))
+    papers = [paper for rank, paper in sorted(
+        best.values(), key=lambda row: (row[0][1], row[1].doi or ""), reverse=True,
+    )]
+    logger.info("%s collected: %d", server, len(papers))
+    return papers

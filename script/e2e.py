@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import shlex
-import subprocess
-import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -12,12 +9,11 @@ import pandas as pd
 import requests
 import typer
 
+from fetch import DEFAULT_QUERY, fetch
+from libs.strands_screening import ScreeningConfig, check_health, default_config_path, load_config
+
 app = typer.Typer(add_completion=False)
 
-DEFAULT_QUERY = (
-    '("environmental DNA"[Title/Abstract] OR eDNA[Title/Abstract] '
-    'OR "environmental RNA"[Title/Abstract] OR eRNA[Title/Abstract])'
-)
 VALID_RETAINED_LABELS = {"in_scope", "unsure", "process_error"}
 
 
@@ -36,42 +32,6 @@ def _parse_date(value: str | None) -> date:
 
 def _repo_path(repo_root: Path, value: Path) -> Path:
     return value if value.is_absolute() else repo_root / value
-
-
-def _display_cmd(cmd: list[str]) -> str:
-    masked = cmd.copy()
-    for flag in ("--api-key", "--openalex-api-key"):
-        if flag in masked:
-            index = masked.index(flag)
-            if index + 1 < len(masked):
-                masked[index + 1] = "***"
-    return shlex.join(masked)
-
-
-def _run(cmd: list[str], *, cwd: Path) -> None:
-    typer.echo("")
-    typer.echo(f"$ {_display_cmd(cmd)}")
-    try:
-        subprocess.run(cmd, cwd=cwd, check=True)
-    except subprocess.CalledProcessError as exc:
-        raise typer.Exit(code=exc.returncode or 1) from exc
-
-
-def _check_strands(base_url: str, timeout: float = 10.0) -> dict[str, object]:
-    url = f"{base_url.rstrip('/')}/health"
-    try:
-        response = requests.get(url, timeout=timeout)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        raise typer.BadParameter(
-            f"Strands Decider is not reachable at {url}: {exc}. "
-            "Start it first with: pixi run strands-serve"
-        ) from exc
-
-    if not isinstance(data, dict) or data.get("status") != "ok":
-        raise typer.BadParameter(f"unexpected Strands health response: {data!r}")
-    return data
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -168,19 +128,6 @@ def run(
         "--until-date",
         help="Window end date. Defaults to the current local date.",
     ),
-    query: str = typer.Option(DEFAULT_QUERY, "--query"),
-    crossref_max_items: int = typer.Option(300, "--crossref-max-items", min=1),
-    openalex_max_items: int = typer.Option(300, "--openalex-max-items", min=1),
-    config: Path = typer.Option(
-        Path("config/strands_flagger.example.jsonc"),
-        "--config",
-        help="Strands screening config.",
-    ),
-    base_url: str = typer.Option(
-        "http://127.0.0.1:8012",
-        "--base-url",
-        help="Running Strands Decider server.",
-    ),
     out_dir: Path = typer.Option(
         Path("test/results"),
         "--out-dir",
@@ -189,7 +136,7 @@ def run(
     prefix: str | None = typer.Option(
         None,
         "--prefix",
-        help="Output prefix. Defaults to e2e_latest14_<YYYYMMDD>.",
+        help="Output prefix. Defaults to e2e_latest<days>_<YYYYMMDD>.",
     ),
 ) -> None:
     """Run latest literature retrieval with integrated Strands filtering."""
@@ -199,11 +146,8 @@ def run(
         )
 
     repo_root = Path(__file__).resolve().parents[1]
-    config_path = _repo_path(repo_root, config)
+    cfg = ScreeningConfig.from_sources(load_config(default_config_path()))
     out_dir_path = _repo_path(repo_root, out_dir)
-    if not config_path.exists():
-        raise typer.BadParameter(f"Strands config not found: {config_path}")
-
     until = _parse_date(until_date)
     since = until - timedelta(days=days - 1)
     prefix = prefix or f"e2e_latest{days}_{until:%Y%m%d}"
@@ -213,9 +157,7 @@ def run(
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     retained_csv = out_dir_path / f"{prefix}.csv"
-    retained_json = out_dir_path / f"{prefix}.json"
     rejected_csv = out_dir_path / f"{prefix}.rejected.csv"
-    rejected_json = out_dir_path / f"{prefix}.rejected.json"
     summary_json = out_dir_path / f"{prefix}_summary.json"
     fetch_log = logs_dir / f"{prefix}.fetch.log"
 
@@ -223,7 +165,13 @@ def run(
     typer.echo(f"window       : {since.isoformat()} .. {until.isoformat()} ({days} days)")
     typer.echo(f"output dir   : {out_dir_path}")
 
-    health = _check_strands(base_url)
+    try:
+        health = check_health(requests.Session(), cfg.base_url, cfg.timeout)
+    except Exception as exc:
+        raise typer.BadParameter(
+            f"Strands Decider is not reachable at {cfg.base_url.rstrip('/')}/health: {exc}. "
+            "Start it first with: pixi run serve"
+        ) from exc
     typer.echo(
         "Strands      : "
         f"status={health.get('status')} "
@@ -231,47 +179,25 @@ def run(
         f"device={health.get('device')}"
     )
 
-    for path in (retained_csv, retained_json, rejected_csv, rejected_json):
+    for path in (retained_csv, rejected_csv):
         if path.exists():
             path.unlink()
 
-    fetch_cmd = [
-        sys.executable,
-        str(repo_root / "script" / "edna_literature_fetch.py"),
-        "--email",
-        email,
-        "--query",
-        query,
-        "--since",
-        since.strftime("%Y/%m/%d"),
-        "--until",
-        until.strftime("%Y/%m/%d"),
-        "--abstract",
-        "--strands-filter",
-        "--strands-config",
-        str(config_path),
-        "--strands-base-url",
-        base_url,
-        "--crossref-max-items",
-        str(crossref_max_items),
-        "--openalex-max-items",
-        str(openalex_max_items),
-        "--user-agent",
-        f"eDNA-paper-downloader-e2e/1.0 (mailto:{email})",
-        "--out-dir",
-        str(out_dir_path),
-        "--out-prefix",
-        prefix,
-        "--log-file",
-        str(fetch_log),
-    ]
-    if api_key:
-        fetch_cmd.extend(["--api-key", api_key])
-    if openalex_api_key:
-        fetch_cmd.extend(["--openalex-api-key", openalex_api_key])
-
     started = time.monotonic()
-    _run(fetch_cmd, cwd=repo_root)
+    try:
+        fetch(
+            email=email, api_key=api_key, openalex_api_key=openalex_api_key,
+            query=DEFAULT_QUERY, exclude=None, since=None,
+            until=until.strftime("%Y/%m/%d"), days=days,
+            datetype="pdat", sources="pubmed,crossref,openalex", max_items=1000,
+            strands=True, sleep=0.34, out_prefix=prefix, out_dir=out_dir_path,
+            log_level="INFO", log_file=fetch_log,
+        )
+    except typer.Exit as exc:
+        raise typer.Exit(code=exc.exit_code or 1) from exc
+    except Exception as exc:
+        typer.echo(f"E2E fetch failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     elapsed = time.monotonic() - started
 
     retained, rejected, counts = _validate_filtered_outputs(
@@ -285,7 +211,7 @@ def run(
             "until": until.isoformat(),
             "days": days,
         },
-        "query": query,
+        "query": DEFAULT_QUERY,
         "retrieved_with_abstract": int(len(retained) + len(rejected)),
         "retained_rows": int(len(retained)),
         "rejected_rows": int(len(rejected)),
@@ -295,9 +221,7 @@ def run(
         },
         "artifacts": {
             "retained_csv": str(retained_csv),
-            "retained_json": str(retained_json),
             "rejected_csv": str(rejected_csv),
-            "rejected_json": str(rejected_json),
             "fetch_log": str(fetch_log),
         },
     }

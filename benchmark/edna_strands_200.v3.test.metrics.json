@@ -1,0 +1,26 @@
+{
+  "partition": "test",
+  "metrics": {
+    "n_binary_gold": 107,
+    "gold_in_scope": 49,
+    "gold_out_of_scope": 58,
+    "tp": 42,
+    "tn": 36,
+    "false_positive": 2,
+    "hard_false_negative": 0,
+    "positive_sent_to_review": 7,
+    "negative_sent_to_review": 20,
+    "auto_decided": 80,
+    "manual_review": 27,
+    "auto_coverage": 0.7476635514018691,
+    "manual_review_rate": 0.2523364485981308,
+    "auto_accuracy": 0.975,
+    "in_scope_precision": 0.9545454545454546,
+    "raw_recall_if_review_counts_as_miss": 0.8571428571428571,
+    "operational_recall_if_unsure_is_reviewed": 1.0,
+    "hard_false_negative_rate": 0.0,
+    "auto_false_positive_rate": 0.034482758620689655,
+    "brier_p_in_scope": 0.1126766259813084
+  },
+  "auxiliary": {}
+}

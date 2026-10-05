@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import csv
 import json
+import shutil
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -10,45 +13,92 @@ import requests
 
 from libs.text_normalize import clean_doi
 
-PROMPT_VERSION = "strands-v2"
+PROMPT_VERSION = "strands-v4"
+MIN_ABSTRACT_CHARS_FOR_EXCLUSION = 300
 DEFAULT_BASE_URL = "http://127.0.0.1:8012"
+
+
+@dataclass(frozen=True)
+class ScreeningConfig:
+    base_url: str = DEFAULT_BASE_URL
+    timeout: float = 120.0
+    retries: int = 3
+    include_threshold: float = 0.45
+    include_microbial_only_max: float = 0.35
+    actual_use_threshold: float = 0.60
+    exclude_threshold: float = 0.50
+    exclude_actual_use_max: float = 0.50
+    exclude_method_relevance_max: float = 0.60
+    exclude_review_min: float = 0.60
+    exclude_review_out_min: float = 0.40
+    max_abstract_chars: int | None = 6000
+    batch_questions: bool = False
+    cache_csv: str | None = ".cache/strands_scores.csv"
+
+    @classmethod
+    def from_sources(cls, config: Mapping[str, Any], **overrides: Any) -> ScreeningConfig:
+        unknown = (set(config) | set(overrides)) - {field.name for field in fields(cls)}
+        if unknown:
+            raise ValueError(f"Unknown screening config keys: {', '.join(sorted(unknown))}")
+        values: dict[str, Any] = {}
+        for field in fields(cls):
+            name = field.name
+            value = coalesce(overrides.get(name), config, name, field.default)
+            if value is not None:
+                if name == "base_url":
+                    value = str(value).rstrip("/")
+                elif name == "cache_csv":
+                    value = str(value)
+                elif name in ("retries", "max_abstract_chars"):
+                    value = int(value)
+                elif name == "batch_questions":
+                    value = bool(value)
+                else:
+                    value = float(value)
+            values[name] = value
+        return cls(**values)
+
 
 QUESTIONS: dict[str, dict[str, Any]] = {
     "scope": {
         "type": "choice",
         "instructions": (
-            "Classify whether this scientific abstract should be retained as environmental DNA (eDNA) "
-            "or environmental RNA (eRNA) research. Judge what the study actually does, not whether the "
-            "terms eDNA, eRNA, environmental DNA, or environmental RNA literally appear."
+            "Classify whether this scientific abstract should be retained as environmental DNA (eDNA) or "
+            "environmental RNA (eRNA) research. Judge what the study actually does, not whether the terms eDNA, "
+            "eRNA, environmental DNA, or environmental RNA literally appear."
         ),
         "criteria": {
             "in_scope": (
-                "The study actually collects, detects, quantifies, sequences, analyzes, validates, compares, "
-                "or models DNA or RNA obtained directly from an environmental sample or environmental matrix. "
-                "Examples include water, seawater, freshwater, sediment, soil, air, snow, ice, wastewater, "
-                "biofilms, passive samplers, environmental swabs, dust, or similar material. Include studies "
-                "using these nucleic acids to detect or characterize organisms, taxa, populations, communities, "
-                "biodiversity, biological signals, pathogens, or ecological patterns. The eDNA/eRNA terminology "
-                "does not need to be explicit."
+                "The study actually collects, detects, quantifies, sequences, analyzes, validates, compares, or "
+                "models DNA or RNA obtained directly from an environmental sample or environmental matrix. Examples "
+                "include water, seawater, freshwater, sediment, soil, air, snow, ice, wastewater, biofilms, passive "
+                "samplers, environmental swabs, dust, or similar material. Include studies using these nucleic acids "
+                "to detect or characterize organisms, taxa, populations, communities, biodiversity, biological "
+                "signals, pathogens, or ecological patterns. The eDNA/eRNA terminology does not need to be explicit. "
+                "The study must report its own primary data from such environmental samples."
             ),
             "out_of_scope": (
-                "The study does not actually analyze environmentally obtained DNA or RNA. This includes studies "
-                "based only on tissue, blood, isolated organisms, cultured strains, museum specimens, individual "
-                "genomes, ordinary transcriptomics, or studies that mention eDNA/eRNA only in the background, "
+                "The study does not itself analyze environmentally obtained DNA or RNA. This includes reviews, "
+                "systematic reviews, meta-analyses of published studies, perspectives, opinion pieces, editorials, "
+                "book chapters, and conference reports, even when eDNA/eRNA is their main subject; studies based only"
+                " on tissue, blood, isolated organisms, cultured strains, museum specimens, individual genomes, "
+                "ordinary transcriptomics, diet or gut-content DNA, or host-associated microbiomes (gut, skin, plant "
+                "or fruit surfaces); generic profiling of microbial communities (bacteria, archaea, fungi, "
+                "microalgae, protists, viruses) or metagenomics/metatranscriptomics without an eDNA/eRNA detection, "
+                "monitoring, or methodological purpose; and studies that mention eDNA/eRNA only in the background, "
                 "discussion, comparison, citation, or future work."
             ),
             "unsure": (
-                "The abstract does not provide enough information to determine whether environmentally obtained "
-                "DNA or RNA was actually collected or analyzed. Prefer unsure over guessing when evidence is "
-                "ambiguous."
+                "The abstract does not provide enough information to determine whether environmentally obtained DNA "
+                "or RNA was actually collected or analyzed. Prefer unsure over guessing when evidence is ambiguous."
             ),
         },
     },
     "actual_use": {
         "type": "noul",
         "instructions": (
-            "Does the study actually collect or analyze DNA or RNA obtained directly from an environmental "
-            "sample or environmental matrix as part of its methods or results?"
+            "Does the study actually collect or analyze DNA or RNA obtained directly from an environmental sample"
+            " or environmental matrix as part of its methods or results?"
         ),
         "criteria": {
             "true": (
@@ -56,23 +106,27 @@ QUESTIONS: dict[str, dict[str, Any]] = {
                 "sequenced, analyzed, compared, validated, or modeled."
             ),
             "false": (
-                "No environmental nucleic-acid analysis is actually performed, or it is only mentioned as "
-                "background, comparison, or future work."
+                "No environmental nucleic-acid analysis is performed by the authors in this study. Reviews, meta-"
+                "analyses of published studies, perspectives, editorials, book chapters, and conference reports are "
+                "false even if they discuss eDNA/eRNA methods in depth. Also false when eDNA/eRNA is only background,"
+                " comparison, or future work."
             ),
         },
     },
     "microbial_only": {
         "type": "noul",
         "instructions": (
-            "Is this primarily a conventional microbiome, microbial-community, metagenomic, or metatranscriptomic "
-            "study in which environmental DNA/RNA is simply source material, without a specific eDNA/eRNA "
-            "detection, monitoring, sampling, quantification, validation, or ecological-inference focus?"
+            "Is this primarily a study of microbial communities (bacteria, archaea, fungi, microalgae, protists, "
+            "or viruses) or of microbiomes, metagenomes, or metatranscriptomes, where nucleic acids are simply "
+            "the source material and the study is not framed as eDNA/eRNA detection, monitoring, sampling, or "
+            "method development?"
         ),
         "criteria": {
             "true": (
-                "The main goal is general microbial community profiling, microbiome composition, shotgun "
-                "metagenomics, MAG reconstruction, resistome/virome profiling, or similar work, without a clear "
-                "eDNA/eRNA-oriented detection, monitoring, or methodological contribution."
+                "The main goal is to describe microbial community composition, diversity, function, or responses to "
+                "environmental factors (e.g. soil fungal diversity, harmful algal assemblages, bacterial communities "
+                "in water or sediment, MAGs, resistomes, viromes), without an explicit eDNA/eRNA detection, "
+                "monitoring, or methodological contribution."
             ),
             "false": (
                 "The study is not merely generic microbial profiling, or it has a meaningful eDNA/eRNA detection, "
@@ -84,16 +138,37 @@ QUESTIONS: dict[str, dict[str, Any]] = {
     "method_relevance": {
         "type": "noul",
         "instructions": (
-            "Even if the study focuses on microorganisms or an adjacent field, does it evaluate a sampling, "
-            "preservation, extraction, detection, amplification, sequencing, quantification, bioinformatic, "
-            "modeling, or monitoring approach that could be directly useful for eDNA/eRNA research?"
+            "Does the study itself develop, evaluate, compare, or validate a sampling, preservation, extraction, "
+            "detection, amplification, sequencing, quantification, bioinformatic, or modeling method for DNA or "
+            "RNA recovered from environmental samples (water, sediment, soil, air, wastewater, biofilm, swabs, or"
+            " similar), using its own data?"
         ),
         "criteria": {
             "true": (
-                "The methodological findings are directly transferable or informative for environmental DNA/RNA "
-                "sampling, preservation, detection, quantification, sequencing, analysis, modeling, or monitoring."
+                "The paper's own experiments or field data directly test or validate such a method on environmental "
+                "DNA/RNA."
             ),
-            "false": "There is no clear methodological relevance to eDNA/eRNA work.",
+            "false": (
+                "No such method is tested with the paper's own data. Reviews, perspectives, editorials, clinical or "
+                "diagnostic assays on patient material, tissue or specimen analyses, phylogenetics, and environmental"
+                " policy, chemistry, or ecology without environmental nucleic-acid methods are false."
+            ),
+        },
+    },
+    "study_type": {
+        "type": "choice",
+        "instructions": "Classify the type of publication described by this title and abstract.",
+        "criteria": {
+            "primary_research": (
+                "Reports the authors' own new empirical data: field sampling, laboratory experiments, assay development "
+                "and validation, surveys, mesocosms, case studies, datasets, or new analyses of samples they collected or obtained."
+            ),
+            "review": (
+                "Summarizes or discusses existing work without new empirical data of its own: narrative or systematic reviews, "
+                "meta-analyses of published studies, perspectives, opinion pieces, commentaries, editorials, book or chapter "
+                "introductions, conference reports, and correction notices."
+            ),
+            "other": "Anything else, including policy, social-science, or theoretical work not based on new empirical data.",
         },
     },
 }
@@ -112,9 +187,55 @@ EXTRA_COLUMNS = [
     "strands_p_actual_use",
     "strands_p_microbial_only",
     "strands_p_method_relevance",
+    "strands_p_review",
     "strands_latency_ms",
     "strands_input_tokens",
 ]
+
+
+SCORE_COLUMNS = [col for col in EXTRA_COLUMNS if col not in {
+    "flag_record_id", "flag_label", "flag_reason", "flag_prompt_version",
+}]
+
+
+class ScoreCache:
+    def __init__(self, path: Path):
+        path = path.with_name(f"{path.stem}.{PROMPT_VERSION}{path.suffix}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.rows: dict[str, dict[str, str]] = {}
+        self.hits = 0
+        self.misses = 0
+        self._incompatible_header = False
+        if path.exists():
+            with path.open(newline="", encoding="utf-8") as stream:
+                reader = csv.DictReader(stream)
+                self._incompatible_header = not set(["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS]).issubset(reader.fieldnames or [])
+                if self._incompatible_header:
+                    return
+                for row in reader:
+                    if row.get("flag_prompt_version") == PROMPT_VERSION:
+                        self.rows[row["flag_record_id"]] = {col: row[col] for col in SCORE_COLUMNS}
+
+    def get(self, rec_id: str) -> dict[str, str] | None:
+        scores = self.rows.get(rec_id)
+        if scores is None:
+            self.misses += 1
+        else:
+            self.hits += 1
+        return scores
+
+    def put(self, rec_id: str, scores: Mapping[str, Any]) -> None:
+        row = {col: str(scores.get(col, "")) for col in SCORE_COLUMNS}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w" if self._incompatible_header else "a", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS])
+            if stream.tell() == 0:
+                writer.writeheader()
+            writer.writerow({"flag_record_id": rec_id, "flag_prompt_version": PROMPT_VERSION, **row})
+            stream.flush()
+        self._incompatible_header = False
+        self.rows[rec_id] = row
 
 
 def _strip_jsonc(text: str) -> str:
@@ -198,6 +319,12 @@ def _remove_trailing_commas(text: str) -> str:
     return "".join(out)
 
 
+def default_config_path() -> Path:
+    config_dir = Path(__file__).resolve().parents[2] / "config"
+    local = config_dir / "strands_flagger.jsonc"
+    return local if local.exists() else config_dir / "strands_flagger.example.jsonc"
+
+
 def load_config(path: Path | None) -> dict[str, Any]:
     if not path:
         return {}
@@ -235,6 +362,12 @@ def prepare_abstract(value: str, max_chars: int | None) -> str:
     head_len = max(1, int(max_chars * 0.75))
     tail_len = max_chars - head_len
     return f"{text[:head_len].rstrip()} ... {text[-tail_len:].lstrip()}"
+
+
+def build_state(meta: Mapping[str, str], cfg: ScreeningConfig, abstract_column: str = "abstract") -> str:
+    abstract = prepare_abstract(meta.get(abstract_column, ""), cfg.max_abstract_chars)
+    title = (meta.get("title") or "").strip()
+    return f"Title: {title}\nAbstract: {abstract}" if title else abstract
 
 
 def check_health(
@@ -333,31 +466,33 @@ def decide_label(
     p_out_of_scope: float,
     p_actual_use: float,
     p_method_relevance: float,
+    p_microbial_only: float,
+    p_review: float,
     include_threshold: float,
+    include_microbial_only_max: float,
     actual_use_threshold: float,
     exclude_threshold: float,
     exclude_actual_use_max: float,
     exclude_method_relevance_max: float,
+    exclude_review_min: float,
+    exclude_review_out_min: float,
 ) -> str:
-    if p_in_scope >= include_threshold and p_actual_use >= actual_use_threshold:
+    if (
+        p_in_scope >= include_threshold
+        and p_actual_use >= actual_use_threshold
+        and p_microbial_only < include_microbial_only_max
+    ):
         return "in_scope"
     if (
         p_out_of_scope >= exclude_threshold
         and p_actual_use <= exclude_actual_use_max
         and p_method_relevance <= exclude_method_relevance_max
-    ):
+    ) or (p_review >= exclude_review_min and p_out_of_scope >= exclude_review_out_min):
         return "out_of_scope"
     return "unsure"
 
 
-def parse_response(
-    data: dict[str, Any],
-    include_threshold: float,
-    actual_use_threshold: float,
-    exclude_threshold: float,
-    exclude_actual_use_max: float,
-    exclude_method_relevance_max: float,
-) -> dict[str, Any]:
+def extract_scores(data: dict[str, Any]) -> dict[str, Any]:
     answers = data.get("answers")
     if not isinstance(answers, dict):
         raise RuntimeError("response is missing answers")
@@ -375,6 +510,13 @@ def parse_response(
     if not isinstance(method, dict):
         raise RuntimeError("response is missing method_relevance answer")
 
+    study_type = answers.get("study_type")
+    if not isinstance(study_type, dict):
+        raise RuntimeError("response is missing study_type answer")
+    study_probabilities = study_type.get("probabilities")
+    if not isinstance(study_probabilities, dict):
+        raise RuntimeError("study_type answer is missing probabilities")
+
     probabilities = scope.get("probabilities")
     if not isinstance(probabilities, dict):
         raise RuntimeError("scope answer is missing probabilities")
@@ -385,33 +527,13 @@ def parse_response(
     p_actual_use = float(actual.get("noul", 0.0))
     p_microbial_only = float(microbial.get("noul", 0.0))
     p_method_relevance = float(method.get("noul", 0.0))
-
-    label = decide_label(
-        p_in_scope=p_in_scope,
-        p_out_of_scope=p_out_of_scope,
-        p_actual_use=p_actual_use,
-        p_method_relevance=p_method_relevance,
-        include_threshold=include_threshold,
-        actual_use_threshold=actual_use_threshold,
-        exclude_threshold=exclude_threshold,
-        exclude_actual_use_max=exclude_actual_use_max,
-        exclude_method_relevance_max=exclude_method_relevance_max,
-    )
-    reason = (
-        f"{label}: scope={scope.get('choice', '')}; "
-        f"p_in_scope={p_in_scope:.3f}; p_out_of_scope={p_out_of_scope:.3f}; p_unsure={p_unsure:.3f}; "
-        f"actual_use={p_actual_use:.3f}; microbial_only={p_microbial_only:.3f}; "
-        f"method_relevance={p_method_relevance:.3f}"
-    )
+    p_review = float(study_probabilities.get("review", 0.0))
 
     usage_raw = data.get("usage")
     usage: dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}
     return {
-        "flag_label": label,
         "flag_confidence": round(float(scope.get("confidence", 0.0)), 6),
-        "flag_reason": reason,
         "flag_model_path": str(data.get("model", "strands-decider")),
-        "flag_prompt_version": PROMPT_VERSION,
         "strands_scope_choice": str(scope.get("choice", "")),
         "strands_p_in_scope": round(p_in_scope, 6),
         "strands_p_out_of_scope": round(p_out_of_scope, 6),
@@ -419,37 +541,107 @@ def parse_response(
         "strands_p_actual_use": round(p_actual_use, 6),
         "strands_p_microbial_only": round(p_microbial_only, 6),
         "strands_p_method_relevance": round(p_method_relevance, 6),
+        "strands_p_review": round(p_review, 6),
         "strands_latency_ms": data.get("latency_ms", ""),
         "strands_input_tokens": usage.get("input_tokens", ""),
     }
 
 
-def classify_abstract(
+def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[str, Any]:
+    p_in_scope = float(scores["strands_p_in_scope"])
+    p_out_of_scope = float(scores["strands_p_out_of_scope"])
+    p_unsure = float(scores["strands_p_unsure"])
+    p_actual_use = float(scores["strands_p_actual_use"])
+    p_microbial_only = float(scores["strands_p_microbial_only"])
+    p_method_relevance = float(scores["strands_p_method_relevance"])
+    p_review = float(scores["strands_p_review"])
+    label = decide_label(
+        p_in_scope=p_in_scope,
+        p_out_of_scope=p_out_of_scope,
+        p_actual_use=p_actual_use,
+        p_method_relevance=p_method_relevance,
+        p_microbial_only=p_microbial_only,
+        p_review=p_review,
+        include_threshold=cfg.include_threshold,
+        include_microbial_only_max=cfg.include_microbial_only_max,
+        actual_use_threshold=cfg.actual_use_threshold,
+        exclude_threshold=cfg.exclude_threshold,
+        exclude_actual_use_max=cfg.exclude_actual_use_max,
+        exclude_method_relevance_max=cfg.exclude_method_relevance_max,
+        exclude_review_min=cfg.exclude_review_min,
+        exclude_review_out_min=cfg.exclude_review_out_min,
+    )
+    reason = (
+        f"{label}: scope={scores.get('strands_scope_choice', '')}; "
+        f"p_in_scope={p_in_scope:.3f}; p_out_of_scope={p_out_of_scope:.3f}; p_unsure={p_unsure:.3f}; "
+        f"actual_use={p_actual_use:.3f}; microbial_only={p_microbial_only:.3f}; "
+        f"method_relevance={p_method_relevance:.3f}; review={p_review:.3f}"
+    )
+
+    return {"flag_label": label, "flag_reason": reason, "flag_prompt_version": PROMPT_VERSION}
+
+
+def evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
+    url = f"{cfg.base_url.rstrip('/')}/v1/systemone"
+    if cfg.batch_questions:
+        data = _post_with_retry(session, url, {"state": abstract, "questions": QUESTIONS}, cfg.timeout, cfg.retries)
+    else:
+        data = evaluate_questions_sequentially(session, url, abstract, QUESTIONS, cfg.timeout, cfg.retries)
+    return extract_scores(data)
+
+
+def classify_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
+    scores = evaluate_abstract(session, abstract, cfg)
+    return scores | apply_thresholds(scores, cfg)
+
+
+def screen_row(
     session: requests.Session,
-    abstract: str,
-    *,
-    base_url: str = DEFAULT_BASE_URL,
-    timeout: float = 120.0,
-    retries: int = 3,
-    include_threshold: float = 0.70,
-    actual_use_threshold: float = 0.60,
-    exclude_threshold: float = 0.50,
-    exclude_actual_use_max: float = 0.50,
-    exclude_method_relevance_max: float = 0.60,
+    meta: Mapping[str, str],
+    cfg: ScreeningConfig,
+    abstract_column: str = "abstract",
+    cache: ScoreCache | None = None,
 ) -> dict[str, Any]:
-    data = evaluate_questions_sequentially(
-        session=session,
-        url=f"{base_url.rstrip('/')}/v1/systemone",
-        state=abstract,
-        questions=QUESTIONS,
-        timeout=timeout,
-        retries=retries,
-    )
-    return parse_response(
-        data=data,
-        include_threshold=include_threshold,
-        actual_use_threshold=actual_use_threshold,
-        exclude_threshold=exclude_threshold,
-        exclude_actual_use_max=exclude_actual_use_max,
-        exclude_method_relevance_max=exclude_method_relevance_max,
-    )
+    result: dict[str, Any] = {"flag_record_id": record_id(meta)}
+    abstract = prepare_abstract(meta.get(abstract_column, ""), cfg.max_abstract_chars)
+    if not abstract:
+        label, reason = "unsure", "unsure: abstract is empty"
+    else:
+        try:
+            scores = cache.get(result["flag_record_id"]) if cache is not None else None
+            if scores is None:
+                scores = evaluate_abstract(session, build_state(meta, cfg, abstract_column), cfg)
+                labels = apply_thresholds(scores, cfg)
+                if cache is not None:
+                    cache.put(result["flag_record_id"], scores)
+            else:
+                labels = apply_thresholds(scores, cfg)
+            if len(abstract) < MIN_ABSTRACT_CHARS_FOR_EXCLUSION and labels["flag_label"] == "out_of_scope":
+                labels["flag_label"] = "unsure"
+                labels["flag_reason"] = "unsure: abstract too short to exclude; " + labels["flag_reason"]
+            return result | scores | labels
+        except Exception as exc:
+            label, reason = "process_error", str(exc)
+    return result | {
+        "flag_label": label,
+        "flag_confidence": "",
+        "flag_reason": reason,
+        "flag_model_path": "",
+        "flag_prompt_version": PROMPT_VERSION,
+    }
+
+
+def format_status(row: Mapping[str, Any], title: str) -> str:
+    label = str(row.get("flag_label", ""))
+    p_in = row.get("strands_p_in_scope")
+    p_out = row.get("strands_p_out_of_scope")
+    label_display = f"[{label:<13}]"
+    if isinstance(p_in, (int, float)) and isinstance(p_out, (int, float)):
+        message = f"{label_display} in={p_in:.2f} out={p_out:.2f} | {title}"
+    else:
+        message = f"{label_display} | {title}"
+    terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+    max_status_width = max(20, terminal_width - 1)
+    if len(message) > max_status_width:
+        message = message[: max_status_width - 3] + "..."
+    return message

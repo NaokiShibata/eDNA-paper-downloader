@@ -1,32 +1,40 @@
 # Strands Decider benchmark
 
-このドキュメントでは、`script/strands_flagger.py` のeDNA/eRNA論文スクリーニングを検証するための
+このドキュメントでは、`script/screen.py` のeDNA/eRNA論文スクリーニングを検証するための
 benchmark作成、gold label付与、閾値調整、評価手順をまとめます。
 
 現在の論文判定はStrands Deciderに統一しています。
 
 ## 現在の判定閾値
 
-Method系の関連論文を誤って除外しにくいことを優先し、現在は以下をデフォルトとしています。
+`PROMPT_VERSION = "strands-v4"` では、実データ200件benchmarkのcalibration partitionで選んだ以下をデフォルトとしています。
 
 ```json
 {
-  "include_threshold": 0.70,
+  "include_threshold": 0.45,
+  "include_microbial_only_max": 0.35,
   "actual_use_threshold": 0.60,
   "exclude_threshold": 0.50,
   "exclude_actual_use_max": 0.50,
-  "exclude_method_relevance_max": 0.60
+  "exclude_method_relevance_max": 0.60,
+  "exclude_review_min": 0.60,
+  "exclude_review_out_min": 0.40,
+  "max_abstract_chars": 6000
 }
 ```
 
 判定は次の方針です。
 
-- `in_scope`: `P(in_scope) >= 0.70` かつ `P(actual_use) >= 0.60`
+- モデルへの入力は `Title: ...` と `Abstract: ...` の両方（gold付与と同じ情報）
+- `in_scope`: `P(in_scope) >= 0.45`、`P(actual_use) >= 0.60`、`P(microbial_only) < 0.35` をすべて満たす
 - `out_of_scope`: `P(out_of_scope) >= 0.50`、`P(actual_use) <= 0.50`、
-  `P(method_relevance) <= 0.60` をすべて満たす
+  `P(method_relevance) <= 0.60` をすべて満たす。ただしAbstractが300文字未満の場合は自動除外しない
+- `out_of_scope`: study_type質問で `P(review) >= 0.60`、`P(out_of_scope) >= 0.40` を満たす場合も除外。ただし `in_scope` の条件を優先し、Abstractが300文字未満の場合は自動除外しない
 - それ以外: `unsure` として人手確認
 
-`microbial_only` は診断値として保存しますが、現時点では最終ラベルの条件には使用しません。
+`include_microbial_only_max` は感度が高く、0.25に下げると人手確認率がほぼ倍になります。
+`max_abstract_chars` を外すと、非常に長いAbstractでサーバの最大長（4096 token）を超え、
+CUDA device-side assertでサーバが使用不能になることがあります。
 
 ## Benchmarkの考え方
 
@@ -49,7 +57,7 @@ False Negative、特に本来 `in_scope` の論文を自動で `out_of_scope` �
 実データからblind benchmarkを作る場合:
 
 ```bash
-pixi run benchmark-make \
+pixi run benchmark make \
   test/results/edna_multisource20260228.csv \
   --out-prefix benchmark/edna_strands_200 \
   --n-total 200 \
@@ -146,25 +154,29 @@ eDNA/eRNA研究へ直接応用可能なMethod上の知見があるか。
 
 ## Strandsで判定
 
+設定は `config/strands_flagger.jsonc`、なければexampleを読み込みます。
+出力CSVは毎回書き直し、設定の `cache_csv` に保存したスコアを再利用します。
+閾値を変更してもキャッシュから現在の閾値でラベルを計算します。
+
 ```bash
-pixi run strands-screen \
+pixi run screen \
   benchmark/edna_strands_200.review.csv \
-  --config config/strands_flagger.jsonc \
   --out-csv benchmark/edna_strands_200.strands.csv
 ```
 
 ## Calibrationで除外閾値を調整
 
 ```bash
-pixi run benchmark-tune \
-  benchmark/strands_benchmark_80_gold.csv \
-  benchmark/strands_benchmark_80.strands.csv \
-  --manifest benchmark/strands_benchmark_80_manifest.csv \
+pixi run benchmark tune \
+  benchmark/edna_strands_200.review.labeled.csv \
+  benchmark/edna_strands_200.strands.v4.csv \
+  --manifest benchmark/edna_strands_200.manifest.csv \
   --max-hard-fn 0 \
-  --out-json benchmark/strands_benchmark_80.thresholds.json
+  --out-json benchmark/edna_strands_200.thresholds.json
 ```
 
-`benchmark-tune` はinclusion側の閾値を固定し、以下を探索します。
+`pixi run benchmark tune` は共通のStrands設定からinclusion側の閾値を読み込み、固定したまま以下を探索します。
+`--config` で設定ファイルを指定できます。
 
 - `exclude_threshold`
 - `exclude_actual_use_max`
@@ -175,38 +187,138 @@ pixi run benchmark-tune \
 ## Test partitionで評価
 
 ```bash
-pixi run benchmark-eval \
-  benchmark/strands_benchmark_80_gold.csv \
-  benchmark/strands_benchmark_80.strands.methodsafe.csv \
-  --manifest benchmark/strands_benchmark_80_manifest.csv \
+pixi run benchmark eval \
+  benchmark/edna_strands_200.review.labeled.csv \
+  benchmark/edna_strands_200.strands.v4.csv \
+  --manifest benchmark/edna_strands_200.manifest.csv \
   --partition test \
-  --out-errors benchmark/strands_benchmark_80.methodsafe.errors.csv \
-  --out-json benchmark/strands_benchmark_80.methodsafe.metrics.json
+  --out-errors benchmark/edna_strands_200.v3.test.errors.csv \
+  --out-json benchmark/edna_strands_200.v3.test.metrics.json
 ```
 
-## 合成80件benchmarkでの確認結果
+## 実データ200件benchmarkでの確認結果
 
-Method系を安全側に残す設定
-`exclude_threshold=0.50`、`exclude_actual_use_max=0.50`、
-`exclude_method_relevance_max=0.60` をtest partitionで確認した結果:
+`benchmark/edna_strands_200.review.labeled.csv`（natural 120件 + challenge 80件、人手gold）で評価しました。
+
+### Gold labelの修正
+
+当初のgoldでは、eDNAが主題のレビュー・展望・書籍・論説・会議報告24件が `in_scope` になっていましたが、
+上記の基準（自ら環境DNA/RNAを解析していない研究は `out_of_scope`）に合わせて `out_of_scope` へ修正しました
+（calibration 10件、test 14件）。該当行の `gold_note` に理由を記録しています。
+
+### strands-v2からstrands-v3への変更
+
+calibration partitionだけで質問文と閾値を比較し、以下を採用しました。
+
+- scope: レビュー類、host-associated microbiome、消化管内容物DNA、汎用的な微生物群集解析を `out_of_scope` と明記
+- actual_use: レビュー類は自らの解析がないため `false` と明記
+- microbial_only: 微生物群集の記述が主目的かを直接問う形に変更し、`in_scope` の追加条件に使用
+- method_relevance: 論文自身のデータで手法を検証しているかを問う形に変更
+- 入力にタイトルを追加。Abstractが途中で切れた論文（B0162）が、v3の質問文でもAbstractだけでは自動除外されていたため
+- 300文字未満のAbstractは自動除外しない安全策を追加
+
+### Test partitionの結果（修正後gold、107件）
+
+| 指標 | strands-v2 + 旧閾値 | strands-v3 |
+| --- | ---: | ---: |
+| hard false negative | 0件 | 0件 |
+| false positive | 12件 | 2件 |
+| 自動除外できたgold-negative | 19件 / 58件 | 36件 / 58件 |
+| manual review rate | 0.374 | 0.252 |
+| auto accuracy | 0.821 | 0.975 |
+| in-scope precision | 0.750 | 0.955 |
+| operational recall | 1.000 | 1.000 |
+
+test partitionは質問文の比較途中で一度参照しています（タイトル追加の前後）。
+タイトル追加は入力の不一致の修正であり閾値はすべてcalibrationで決めていますが、test結果はやや楽観的な可能性があります。
+
+300文字未満の安全策は、このbenchmarkでは正しい自動除外7件を `unsure` に回しており、防いだ誤除外はありません。
+Recall優先の方針から残していますが、人手確認を減らしたい場合は外す候補です。
+
+v3で除外閾値の緩和案（`exclude_threshold=0.60`、`exclude_actual_use_max=0.60`、
+`exclude_method_relevance_max=0.40`）も検証しました。300文字未満の安全策を含めた比較で、
+calibrationでは自動除外が17件から23件に増えましたが、testでは36件から37件の1件増にとどまりました。
+また、gold `in_scope` のうちB0015（calibration）とB0051（test）は `P(out_of_scope)≈0.50`、
+`P(actual_use)=0.53〜0.55` で、現行の `exclude_actual_use_max=0.50` が誤除外を防いでいます。
+効果が小さく安全余裕を削るため、除外閾値は現行値のままとしています。
+
+最新14日E2E（141件）では、v2の `in_scope=59 / unsure=65 / out_of_scope=17` が
+v3で `in_scope=61 / unsure=40 / out_of_scope=40` になりました。
+
+### strands-v4: 論文種別の質問を追加
+
+v3で `unsure` に残ったcalibration 30件を分析すると、最大の群はeDNAが主題のレビュー・展望（7件、gold `out_of_scope`）でした。
+`P(out_of_scope)` は高いものの `P(actual_use)` が0.51〜0.79に留まり、`exclude_actual_use_max=0.50` で除外できていませんでした。
+そこで論文種別を問う `study_type` 質問（一次研究 / レビュー等 / その他）を追加し、
+`P(review) >= 0.60` かつ `P(out_of_scope) >= 0.40` の論文も自動除外するようにしました。
+gold `in_scope` の `P(review)` は最大でもcalibration 0.099、test 0.039で、閾値0.5〜0.8の範囲で結果は変わりません。
+
+| 指標（修正後gold） | v3 calibration | v4 calibration | v3 test | v4 test |
+| --- | ---: | ---: | ---: | ---: |
+| hard false negative | 0 | 0 | 0 | 0 |
+| false positive | 0 | 0 | 2 | 2 |
+| 自動除外できたgold-negative | 17 / 39 | 25 / 39 | 36 / 58 | 43 / 58 |
+| manual review rate | 0.326 | 0.233 | 0.252 | 0.187 |
+
+新たに除外されたのはすべてgold `out_of_scope`（レビュー、書籍、ハンドブック、展望、会議報告など）でした。
+残る `unsure` の主な群は、`microbial_only` がgold `in_scope` と重なる微生物群集研究と、
+`P(in_scope)` が低めに出る一次eDNA研究で、閾値では分離できないため今回は対象外としています。
+質問が1つ増えたため、1論文あたりのリクエストは4回から5回になります。
+
+再現手順:
+
+```bash
+pixi run screen benchmark/edna_strands_200.review.csv \
+  --config config/strands_flagger.example.jsonc \
+  --out-csv benchmark/edna_strands_200.strands.v3.csv
+pixi run benchmark eval benchmark/edna_strands_200.review.labeled.csv \
+  benchmark/edna_strands_200.strands.v3.csv \
+  --manifest benchmark/edna_strands_200.manifest.csv --partition test \
+  --out-json benchmark/edna_strands_200.v3.test.metrics.json
+```
+
+## Holdout 100件benchmark
+
+200件benchmarkのtest partitionは質問文・閾値の検討中に複数回参照したため、汎化性能の確認用に
+未使用のholdoutセット `benchmark/edna_holdout_100.review.csv` を用意しています。
+
+- 2026-08-07〜2026-10-05の60日分を `pixi run fetch --days 60 --sources pubmed,crossref,openalex,biorxiv` で取得
+- Abstractあり、かつ200件benchmarkと重複しない論文から、seed 20261005で100件を無作為抽出（natural only）
+- Zenodo/Figshareのグレー文献は対象外とし、当初抽出に含まれたZenodo 7件はseed 20261006で再抽出した同条件の7件に置換（母集団375件）
+- manifestの `benchmark_partition` はすべて `holdout`
+- Strandsの予測はgold付与が終わるまで作成しない。閾値や質問文の調整には使わず、評価は一度だけ行う
+
+```bash
+pixi run screen benchmark/edna_holdout_100.review.csv \
+  --out-csv benchmark/edna_holdout_100.strands.v4.csv
+pixi run benchmark eval benchmark/edna_holdout_100.review.labeled.csv \
+  benchmark/edna_holdout_100.strands.v4.csv \
+  --manifest benchmark/edna_holdout_100.manifest.csv --partition all
+```
+
+### Holdout評価結果（strands-v4、一度のみ実施）
+
+goldは `benchmark/edna_holdout_100.review.labeled.csv`（in_scope 61 / out_of_scope 38 / unsure 1）。
 
 | 指標 | 結果 |
 | --- | ---: |
-| binary gold | 46件 |
-| gold in_scope | 24件 |
-| gold out_of_scope | 22件 |
-| hard false negative | 0件 |
-| operational recall | 1.000 |
-| auto coverage | 0.674 |
-| manual review rate | 0.326 |
-| auto accuracy | 0.968 |
-| in-scope precision | 0.958 |
+| hard false negative | 1件 / 61件 |
+| operational recall | 0.984 |
+| false positive | 1件 |
+| 自動除外できたgold-negative | 31件 / 38件 |
+| manual review rate | 0.131 |
+| auto accuracy | 0.977 |
+| in-scope precision | 0.982 |
 
-Method-positive 7件、microbial-method-positive 3件、explicit-eDNA-method 2件はいずれも正しく保持されました。
+同じスコアでreview規則を外した場合（v3相当）は、自動除外29件、manual review rate 0.152でした。
+gold `in_scope` の `P(review)` は最大0.044で、review規則による誤除外はありません。
 
-一方、genericなmicrobial/metatranscriptomics研究を `in_scope` とするFalse Positiveが1件ありました。
-これは必要論文を捨てるFalse Negativeではなく余分な人手確認につながる誤差なので、
-今回のRecall重視の運用では追加ルールを増やさず許容しています。
+hard false negativeの1件（H084）は魚類回遊の数理モデル研究で、Abstract末尾の1文で
+「提案モデルのenvironmental DNAデータ解析への応用も検討した」と述べている論文です。
+v2から続く基本の除外条件（`P(out_of_scope)=0.57`、`P(actual_use)=0.38`、`P(method_relevance)=0.45`）で除外されました。
+「タイトル・AbstractにeDNA/eRNA関連語が明示されていれば基本条件で除外しない」安全策も検討しましたが、
+取得クエリ自体がこれらの語を含むことと、eRNA（enhancer RNA）やeDNA（extracellular DNA）の同綴語が多いことから、
+200件benchmarkで正しい自動除外が68件から59件に、holdoutで31件から9件に減るため採用していません。
 
-この80件は合成benchmarkであり、実運用精度の保証ではありません。
-以後は通常運用で明らかな誤除外が見つかった場合に再検証する方針とします。
+false positiveの1件（H002）は、魚の腸内microbiomeと食性の研究で、Abstractに
+「environmental DNA metabarcoding」と書かれているため `actual_use` が高く出たものです。
