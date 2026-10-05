@@ -276,3 +276,21 @@ pixi run benchmark eval benchmark/edna_strands_200.review.labeled.csv \
   --manifest benchmark/edna_strands_200.manifest.csv --partition test \
   --out-json benchmark/edna_strands_200.v3.test.metrics.json
 ```
+
+## Holdout 100件benchmark
+
+200件benchmarkのtest partitionは質問文・閾値の検討中に複数回参照したため、汎化性能の確認用に
+未使用のholdoutセット `benchmark/edna_holdout_100.review.csv` を用意しています。
+
+- 2026-08-07〜2026-10-05の60日分を `pixi run fetch --days 60 --sources pubmed,crossref,openalex,biorxiv` で取得
+- Abstractあり、かつ200件benchmarkと重複しない404件から、seed 20261005で100件を無作為抽出（natural only）
+- manifestの `benchmark_partition` はすべて `holdout`
+- Strandsの予測はgold付与が終わるまで作成しない。閾値や質問文の調整には使わず、評価は一度だけ行う
+
+```bash
+pixi run screen benchmark/edna_holdout_100.review.csv \
+  --out-csv benchmark/edna_holdout_100.strands.v4.csv
+pixi run benchmark eval benchmark/edna_holdout_100.review.labeled.csv \
+  benchmark/edna_holdout_100.strands.v4.csv \
+  --manifest benchmark/edna_holdout_100.manifest.csv --partition holdout
+```
