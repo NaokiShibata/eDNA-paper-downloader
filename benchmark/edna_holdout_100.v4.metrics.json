@@ -1,0 +1,57 @@
+{
+  "partition": "all",
+  "metrics": {
+    "n_binary_gold": 99,
+    "gold_in_scope": 61,
+    "gold_out_of_scope": 38,
+    "tp": 53,
+    "tn": 31,
+    "false_positive": 1,
+    "hard_false_negative": 1,
+    "positive_sent_to_review": 7,
+    "negative_sent_to_review": 6,
+    "auto_decided": 86,
+    "manual_review": 13,
+    "auto_coverage": 0.8686868686868687,
+    "manual_review_rate": 0.13131313131313133,
+    "auto_accuracy": 0.9767441860465116,
+    "in_scope_precision": 0.9814814814814815,
+    "raw_recall_if_review_counts_as_miss": 0.8688524590163934,
+    "operational_recall_if_unsure_is_reviewed": 0.9836065573770492,
+    "hard_false_negative_rate": 0.01639344262295082,
+    "auto_false_positive_rate": 0.02631578947368421,
+    "brier_p_in_scope": 0.12911979969696968
+  },
+  "auxiliary": {
+    "gold_actual_use": {
+      "n": 99,
+      "accuracy": 0.9090909090909091,
+      "precision": 0.921875,
+      "recall": 0.9365079365079365,
+      "tp": 59,
+      "tn": 31,
+      "fp": 5,
+      "fn": 4
+    },
+    "gold_microbial_only": {
+      "n": 100,
+      "accuracy": 0.94,
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "tn": 94,
+      "fp": 0,
+      "fn": 6
+    },
+    "gold_method_relevance": {
+      "n": 99,
+      "accuracy": 0.6767676767676768,
+      "precision": 0.6461538461538462,
+      "recall": 0.8235294117647058,
+      "tp": 42,
+      "tn": 25,
+      "fp": 23,
+      "fn": 9
+    }
+  }
+}
