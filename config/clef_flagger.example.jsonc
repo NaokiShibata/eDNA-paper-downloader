@@ -1,0 +1,7 @@
+{
+  // Opt-in local Clef evaluation; uses the existing Strands v4 thresholds.
+  "base_url": "http://127.0.0.1:8014",
+  "batch_questions": true,
+  // Prevent sharing Strands scores with a different model.
+  "cache_csv": null
+}
