@@ -16,3 +16,4 @@ benchmark/*.errors.csv
 results/
 
 .cache/
+/benchmark/clef/
