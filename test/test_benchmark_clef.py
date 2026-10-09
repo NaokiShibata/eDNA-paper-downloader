@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "script"))
 
-from benchmark_clef import infer, validate_answers  # noqa: E402
+from benchmark_clef import MODELS, infer, validate_answers  # noqa: E402
 from libs.strands_screening import QUESTIONS  # noqa: E402
 
 
@@ -48,7 +49,7 @@ class ClefValidationTest(unittest.TestCase):
             source, model, output = root / "input.csv", root / "model.gguf", root / "out.csv"
             source.write_text("benchmark_record_id,abstract\nB1,River water sampled for fish DNA\n")
             model.write_bytes(b"model")
-            with (patch("benchmark_clef.MODEL_SHA256", hashlib.sha256(b"model").hexdigest()),
+            with (patch.dict(MODELS, {"flash": MODELS["flash"] | {"sha256": hashlib.sha256(b"model").hexdigest()}}),
                   patch("benchmark_clef.check_health"),
                   patch("benchmark_clef.requests.Session") as session):
                 response = session.return_value.__enter__.return_value.post.return_value
@@ -56,3 +57,20 @@ class ClefValidationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "model alias"):
                     infer(source, output, "http://localhost:8014", model)
             self.assertFalse(output.exists())
+
+    def test_27b_identity_and_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, model, output = root / "input.csv", root / "model.gguf", root / "out.csv"
+            source.write_text("benchmark_record_id,abstract\nB1,River water sampled for fish DNA\n")
+            model.write_bytes(b"model")
+            with (patch.dict(MODELS, {"27b": MODELS["27b"] | {"sha256": hashlib.sha256(b"model").hexdigest()}}),
+                  patch("benchmark_clef.check_health"),
+                  patch("benchmark_clef.requests.Session") as session):
+                post = session.return_value.__enter__.return_value.post
+                post.return_value.json.return_value = self.data | {"model": "clef-27b-q8"}
+                infer(source, output, "http://localhost:8014", model, "27b")
+                self.assertEqual(post.call_args.kwargs["json"]["model"], "clef-27b-q8")
+            provenance = json.loads(output.with_suffix(".run.json").read_text())
+            self.assertEqual(provenance["model"], "ggml-org/Clef-GGUF:Q8_0")
+            self.assertEqual(provenance["revision"], MODELS["27b"]["revision"])

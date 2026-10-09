@@ -25,8 +25,22 @@ from libs.strands_screening import (
     prepare_abstract,
 )
 
-MODEL_REVISION = "4a192915ef971886004b5b13294f2b4c7a7fc39d"
-MODEL_SHA256 = "d7c352faf1bdd9ea24d0b9347e8eb1eb4bbadeff6c02383bf750215a74f2f1f1"
+MODELS = {
+    "flash": {
+        "model": "ggml-org/Clef-Flash-GGUF:Q8_0",
+        "revision": "4a192915ef971886004b5b13294f2b4c7a7fc39d",
+        "sha256": "d7c352faf1bdd9ea24d0b9347e8eb1eb4bbadeff6c02383bf750215a74f2f1f1",
+        "alias": "clef-flash-q8",
+        "file": "Clef-Flash-Q8_0.gguf",
+    },
+    "27b": {
+        "model": "ggml-org/Clef-GGUF:Q8_0",
+        "revision": "63840a1a68cb7084c88610cffc328509356b04cb",
+        "sha256": "07c6410af7011e0e56873a3b0b3f4ad9e31fb176f0ca80d6fd1525fe6f036548",
+        "alias": "clef-27b-q8",
+        "file": "Clef-Q8_0.gguf",
+    },
+}
 
 
 def validate_answers(data: dict[str, Any]) -> None:
@@ -45,7 +59,8 @@ def validate_answers(data: dict[str, Any]) -> None:
             raise ValueError(f"{key}: invalid probability")
 
 
-def infer(source: Path, target: Path, base_url: str, model_file: Path) -> None:
+def infer(source: Path, target: Path, base_url: str, model_file: Path, model_name: str = "flash") -> None:
+    model_spec = MODELS[model_name]
     cfg = ScreeningConfig(base_url=base_url, cache_csv=None, batch_questions=True, retries=1)
     source_bytes = source.read_bytes()
     with source.open(newline="", encoding="utf-8") as stream:
@@ -57,7 +72,7 @@ def infer(source: Path, target: Path, base_url: str, model_file: Path) -> None:
         raise FileExistsError(f"Refusing to overwrite run: {target}")
     with model_file.open("rb") as model_stream:
         model_hash = hashlib.file_digest(model_stream, "sha256").hexdigest()
-    if model_hash != MODEL_SHA256:
+    if model_hash != model_spec["sha256"]:
         raise ValueError("Model file does not match the pinned official Q8_0 artifact")
     with requests.Session() as session:
         check_health(session, base_url, cfg.timeout)
@@ -65,12 +80,12 @@ def infer(source: Path, target: Path, base_url: str, model_file: Path) -> None:
         def predict(state: str) -> dict[str, Any]:
             started = time.perf_counter()
             response = session.post(f"{base_url.rstrip('/')}/v1/systemone",
-                                    json={"model": "clef-flash-q8", "state": state, "questions": QUESTIONS},
+                                    json={"model": model_spec["alias"], "state": state, "questions": QUESTIONS},
                                     timeout=cfg.timeout)
             response.raise_for_status()
             data = response.json()
-            if data.get("model") != "clef-flash-q8":
-                raise ValueError("Server must use the clef-flash-q8 model alias")
+            if data.get("model") != model_spec["alias"]:
+                raise ValueError(f"Server must use the {model_spec['alias']} model alias")
             validate_answers(data)
             data["latency_ms"] = (time.perf_counter() - started) * 1000
             return extract_scores(data)
@@ -97,7 +112,7 @@ def infer(source: Path, target: Path, base_url: str, model_file: Path) -> None:
                 if index % 10 == 0 or index == len(records):
                     print(f"{index}/{len(records)}", flush=True)
     provenance = {
-        "model": "ggml-org/Clef-Flash-GGUF:Q8_0", "revision": MODEL_REVISION,
+        "model": model_spec["model"], "revision": model_spec["revision"],
         "model_file_sha256": model_hash, "input_sha256": hashlib.sha256(source_bytes).hexdigest(),
         "prompt_version": PROMPT_VERSION, "config": asdict(cfg),
         "questions_sha256": hashlib.sha256(json.dumps(QUESTIONS, sort_keys=True).encode()).hexdigest(),
@@ -111,9 +126,11 @@ def main() -> None:
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--base-url", default="http://127.0.0.1:8014")
-    parser.add_argument("--model-file", type=Path, default=Path(".cache/clef/Clef-Flash-Q8_0.gguf"))
+    parser.add_argument("--model", choices=list(MODELS), default="flash")
+    parser.add_argument("--model-file", type=Path)
     args = parser.parse_args()
-    infer(args.input, args.output, args.base_url, args.model_file)
+    model_file = args.model_file or Path(".cache/clef") / MODELS[args.model]["file"]
+    infer(args.input, args.output, args.base_url, model_file, args.model)
 
 
 if __name__ == "__main__":
