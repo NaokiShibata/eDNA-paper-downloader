@@ -4,6 +4,7 @@
 
 Strands Deciderで一次判定し、`in_scope` と `out_of_scope` を確定する。
 Strandsは5問を順次送信し、27Bは5問を一括送信する。
+[RTX 5060 Tiでの5問一括処理の比較](strands-batch-5060.md)では、40件平均で一括が約7%遅かったため、Strandsの順次送信を維持する。
 最終ラベルが `unsure` の論文だけGPU 0のClef 27B Q8_0へ渡す。一次推論のエラー・不正な確率は例外として27Bへ回す。
 両モデルで同じ `edna-macrofauna-v6` の質問と判定規則を使う。
 
