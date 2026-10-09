@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -10,6 +11,7 @@ import typer
 from tqdm import tqdm
 
 from libs.cli_logging import setup_logger
+from libs.screen_servers import screening_servers
 from libs.strands_screening import (
     EXTRA_COLUMNS,
     QUESTIONS,
@@ -47,10 +49,12 @@ def flag(
     abstract_column: str = typer.Option("abstract", "--abstract-column"),
     limit: int | None = typer.Option(None, "--limit", min=1),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    auto_server: bool = typer.Option(True, "--auto-server/--no-auto-server", help="Start missing local model servers and stop owned servers on exit."),
+    server_startup_timeout: float = typer.Option(180, "--server-startup-timeout", min=1, help="Maximum seconds to wait for each automatically started server."),
     log_file: Path = typer.Option(Path("logs/screen.log"), "--log-file"),
     log_level: str = typer.Option("INFO", "--log-level"),
 ) -> None:
-    """Flag eDNA/eRNA papers in a CSV using a running Strands Decider server."""
+    """Flag eDNA/eRNA papers, reusing or automatically starting model servers."""
     config = config or default_config_path()
     out_csv = out_csv or input_csv.with_name(f"{input_csv.stem}.strands.csv")
     logger = setup_logger("screen", log_level=log_level, log_file=log_file)
@@ -77,11 +81,23 @@ def flag(
                 break
         return
 
+    with requests.Session() as session:
+        try:
+            with screening_servers(cfg, session, logger, log_file.parent, enabled=auto_server,
+                                   startup_timeout=server_startup_timeout) as running_cfg:
+                _screen(df, out_csv, abstract_column, running_cfg, session, logger)
+        except RuntimeError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+
+
+def _screen(
+    df: pd.DataFrame, out_csv: Path, abstract_column: str, cfg: ScreeningConfig,
+    session: requests.Session, logger: logging.Logger,
+) -> None:
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     cache = ScoreCache(Path(cfg.cache_csv)) if cfg.cache_csv is not None else None
     fieldnames = list(dict.fromkeys(output_column(col) for col in list(df.columns) + EXTRA_COLUMNS))
 
-    session = requests.Session()
     try:
         health_data = check_health(session, cfg.base_url, cfg.timeout, cfg.first_stage_base_url)
         logger.info(

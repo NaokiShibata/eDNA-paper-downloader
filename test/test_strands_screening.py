@@ -193,7 +193,7 @@ class StrandsScreeningTest(unittest.TestCase):
             config = root / "config.json"
             config.write_text(json.dumps({"cache_csv": str(root / "cache/scores.csv")}), encoding="utf-8")
             output = root / "papers.strands.csv"
-            args = [str(input_csv), "--log-file", str(root / "flagger.log")]
+            args = [str(input_csv), "--no-auto-server", "--log-file", str(root / "flagger.log")]
             with patch("screen.default_config_path", return_value=config), \
                     patch("screen.check_health", return_value={}), \
                     patch("libs.strands_screening.evaluate_abstract", return_value=scores) as evaluate:

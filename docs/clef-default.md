@@ -12,7 +12,7 @@ eDNA/eRNAや真菌検出手法の開発であっても対象外であり、真�
 microbial-only確率が `exclude_microbial_only_min`（既定0.80）以上で、対象動物に関わる手法関連性が `exclude_method_relevance_max`（既定0.60）以下なら除外する。
 0.80は保守的な初期値で、独立した評価データで調整した値ではない。抄録が300文字未満なら自動除外せず要確認にする。
 
-## モデル取得と起動
+## モデル取得
 
 Clef対応のCUDA版 `llama-server` をPATHに配置する。
 検証環境はllama.cpp build 11510（`c35b66744`）、RTX 8000 48 GiBの物理GPU 0だった。
@@ -24,10 +24,10 @@ Clef対応のCUDA版 `llama-server` をPATHに配置する。
 mkdir -p .cache/clef
 curl -fL --retry 2 https://huggingface.co/ggml-org/Clef-GGUF/resolve/63840a1a68cb7084c88610cffc328509356b04cb/Clef-Q8_0.gguf -o .cache/clef/Clef-Q8_0.gguf
 printf '%s  %s\n' 07c6410af7011e0e56873a3b0b3f4ad9e31fb176f0ca80d6fd1525fe6f036548 .cache/clef/Clef-Q8_0.gguf | sha256sum -c -
-pixi run serve
 ```
 
-`pixi run serve` は物理GPU 0を選び、port 8014で `clef-27b-q8` を起動する。
+通常の`screen`は必要なサーバーを自動起動するため、取得後に手動で起動する必要はない。
+手動で常駐させる場合、`pixi run serve` は物理GPU 0を選び、port 8014で `clef-27b-q8` を起動する。
 入力全体を物理バッチに収めるため `-c 8192 -b 8192 -ub 8192` を指定している。
 別のGPUを使う場合は次のコマンドの `CUDA_VISIBLE_DEVICES` を変更する。
 
@@ -35,9 +35,10 @@ pixi run serve
 CUDA_VISIBLE_DEVICES=0 llama-server -m .cache/clef/Clef-Q8_0.gguf --alias clef-27b-q8 --host 127.0.0.1 --port 8014 -ngl 99 -c 8192 -b 8192 -ub 8192 -np 1
 ```
 
-## Strandsの一次判定サーバーを起動する
+## 手動でサーバーを常駐させる場合
 
-別ターミナルでStrands（port 8012）を起動する。
+`fetch --strands`や`screen --no-auto-server`では事前に両サーバーを起動する。
+Clefは`pixi run serve`、Strands（port 8012）は別ターミナルで次のように起動する。
 GPU 1がFlashで使用中のこの環境では、空きメモリのあるGPU 0に27Bと同居させる。
 
 ```bash
@@ -48,16 +49,37 @@ pixi run serve-strands --preferred-gpu 0
 
 ## CSVを判定する
 
-別ターミナルで実行する。
+取得済みの入力CSVを指定して実行する。
+通常実行では稼働中のサーバーを再利用し、不足するサーバーを自動起動する。
 
 ```bash
-pixi run clef-health
-pixi run screen results/edna_multisource_2020plus.csv --out-csv results/edna_multisource_2020plus.clef.csv --limit 20
+pixi run screen results/edna_latest.csv --out-csv results/edna_latest.clef.csv --limit 20
 # 全件を判定する場合は --limit を外す
-pixi run screen results/edna_multisource_2020plus.csv --out-csv results/edna_multisource_2020plus.clef.csv
+pixi run screen results/edna_latest.csv --out-csv results/edna_latest.clef.csv
 ```
 
 出力先は毎回書き直す。
+GPUの空きメモリを調べ、不足する両モデルを同じGPUに配置する。
+既存のローカルサーバーのGPUを特定できる場合は、そのGPUに追加する。
+既存サーバーのGPUを特定できない場合は、別GPUへ自動配置せず、手動起動を案内する。
+必要容量はStrands約6 GiB、ClefはGGUFファイルの容量に約3 GiBを足した値で見積もる。
+十分な空き容量がなければ、既存プロセスを停止せずエラーにする。
+設定ポートが他のプロセスに使用されていれば、空きポートを選び、その実行中だけ接続先を切り替える。
+終了・Ctrl+C・SIGTERM・起動失敗時は、この`screen`が起動したサーバーだけ停止する。
+既存サーバーと設定ファイルは変更しない。
+接続先URLが変わると、現在のキャッシュキーでは別の推論として扱う。
+起動先・GPU・ログファイルは`screen`のログに記録する。
+各サーバーの起動待ちは既定180秒で、`--server-startup-timeout 300`のように変更できる。
+強制終了のSIGKILLでは後片付けを実行できない。
+
+自動起動はローカルHTTPのStrandsと既定のClef 27B / Flashモデルに対応する。
+モデルの取得や別マシンへの配置は自動化しない。
+手動管理や別モデル・リモートサーバーを使う場合は、次のように指定する。
+
+```bash
+pixi run screen results/edna_latest.csv --no-auto-server --out-csv results/edna_latest.clef.csv
+```
+
 `--config` は不要で、既定のClef設定を読み込む。
 取得と判定をまとめる例は次のとおり。
 
@@ -76,9 +98,7 @@ benchmarkのeval/tuneは旧 `strands_*` 列と新列の両方を読み込める�
 ## Strands単独を明示的に使う
 
 ```bash
-pixi run serve-strands
-# 別ターミナル
-pixi run screen results/edna_multisource_2020plus.csv --config config/strands_flagger.example.jsonc --out-csv results/edna_multisource_2020plus.strands.csv
+pixi run screen results/edna_latest.csv --config config/strands_flagger.example.jsonc --out-csv results/edna_latest.strands.csv
 ```
 
 精度・速度・評価の限界は[27B比較資料](clef-27b-q8-comparison.md)を参照。

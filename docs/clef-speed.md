@@ -24,9 +24,11 @@ CSVの `evaluation_stage` は `first` がStrandsのみ、`second` が27Bで再�
 
 ## 起動・実行例
 
-Strandsと27Bのサーバーが必要である。
+通常の`screen`は不足するStrandsと27Bのサーバーを自動起動し、終了時に自分が起動したものだけ停止する。
+GPUの空き容量を調べ、両モデルを同じGPUに配置する。
+サーバーの手動起動は`fetch --strands`や`screen --no-auto-server`で必要となる。
 27Bの取得は[実行手順](clef-default.md)を参照。
-Strandsは次のコマンドでport 8012へ起動する。
+手動で常駐させる場合、Strandsは次のコマンドでport 8012へ起動する。
 
 ```bash
 pixi run serve-strands
