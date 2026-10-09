@@ -170,7 +170,7 @@ def run(
     except Exception as exc:
         raise typer.BadParameter(
             f"Strands Decider is not reachable at {cfg.base_url.rstrip('/')}/health: {exc}. "
-            "Start it first with: pixi run serve"
+            "Start Clef with: pixi run serve (or start the server for your selected config)"
         ) from exc
     typer.echo(
         "Strands      : "

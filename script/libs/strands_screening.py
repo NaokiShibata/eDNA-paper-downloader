@@ -321,8 +321,8 @@ def _remove_trailing_commas(text: str) -> str:
 
 def default_config_path() -> Path:
     config_dir = Path(__file__).resolve().parents[2] / "config"
-    local = config_dir / "strands_flagger.jsonc"
-    return local if local.exists() else config_dir / "strands_flagger.example.jsonc"
+    local = config_dir / "clef_flagger.jsonc"
+    return local if local.exists() else config_dir / "clef_flagger.example.jsonc"
 
 
 def load_config(path: Path | None) -> dict[str, Any]:

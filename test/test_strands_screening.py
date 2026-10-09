@@ -105,8 +105,9 @@ class StrandsScreeningTest(unittest.TestCase):
             config_dir = root / "config"
             config_dir.mkdir()
             with patch("libs.strands_screening.__file__", str(root / "script/libs/strands_screening.py")):
-                self.assertEqual(default_config_path(), config_dir / "strands_flagger.example.jsonc")
-                local = config_dir / "strands_flagger.jsonc"
+                (config_dir / "strands_flagger.jsonc").touch()
+                self.assertEqual(default_config_path(), config_dir / "clef_flagger.example.jsonc")
+                local = config_dir / "clef_flagger.jsonc"
                 local.touch()
                 self.assertEqual(default_config_path(), local)
 

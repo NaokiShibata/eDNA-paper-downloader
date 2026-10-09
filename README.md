@@ -1,5 +1,9 @@
 # eDNA-paper-downloader
 
+デフォルトの判定モデルは **Clef 27B Q8_0** です。`screen` と `fetch --strands` が使用します。
+モデル取得・起動・実行例は [Clefの実行手順](docs/clef-default.md) を参照してください。
+`--strands` というオプション名とCSV列名は互換性のため維持しています。
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python: 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-lightgrey.svg)](#動作環境)
@@ -111,7 +115,9 @@ conda-forgeではこのヘッダを `cuda-cudart-dev` から `targets/x86_64-lin
 | タスク | 内容 |
 | --- | --- |
 | `pixi run serve-check` | Strands Deciderが選択するGPU/CPUを表示 |
-| `pixi run serve` | GPU 1 → GPU 0 → CPUの順で自動選択し、port 8012にStrands Deciderを起動 |
+| `pixi run serve` | GPU 0でClef 27B Q8_0を起動（port 8014） |
+| `pixi run clef-health` | Clef APIの稼働確認 |
+| `pixi run serve-strands` | 旧Strands Deciderを起動（port 8012） |
 | `pixi run strands-health` | 起動中のStrands Decider APIを確認 |
 | `pixi run fetch ...` | `script/fetch.py` を実行 |
 | `pixi run benchmark make\|eval\|tune ...` | benchmarkの作成、評価、除外閾値の調整 |
@@ -263,10 +269,10 @@ results/edna_latest.no_abstract.csv
 `--strands` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
 
 fetchとscreenは設定の `cache_csv` を共用し、判定スコアをCSVに保存して再利用します。
-設定のデフォルトは `.cache/strands_scores.csv` で、実際にはプロンプトのバージョンを付けた `.cache/strands_scores.strands-v4.csv` に保存します。`null` にすると無効になります。
+Clefの既定設定は `cache_csv: null` でキャッシュを無効にします。旧Strands設定では `.cache/strands_scores.strands-v4.csv` に保存します。
 キャッシュは論文IDとプロンプトのバージョンで照合し、判定ラベルは毎回現在の閾値で計算します。
 判定エラーと要旨なしは保存せず、終了時にヒット数とミス数を表示します。
-設定キー `batch_questions` はデフォルトで `false` です。
+Clef設定の `batch_questions` は `true` で、旧Strands設定では `false` です。
 `true` にすると4質問を1リクエストにまとめますが、GPUメモリの使用量が増えます。
 
 
@@ -348,10 +354,11 @@ python3 script/fetch.py \
 ## Strands DeciderでのAbstract判定 (screen.py)
 
 `script/screen.py` は、Strands DeciderのHTTP APIを使ってCSVの `abstract` 列を判定します。
-現在の論文スクリーニング実装はStrands Deciderに統一しています。
+既定はClef 27B Q8_0です。旧Strandsも同じHTTP APIで利用できます。
 
-判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を評価します。RTX 5060 TiなどVRAMが限られるGPUでも安定させるため、現在は4質問を1 HTTP requestにまとめず、1質問ずつ順番に送信します。
+判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を評価します。Clefの既定設定は5問を1 HTTP requestにまとめて送信します。
 
+- `study_type`: 原著・レビュー・その他の分類
 - `scope`: `in_scope` / `out_of_scope` / `unsure`
 - `actual_use`: 環境試料由来DNA/RNAをMethods/Resultsで実際に扱っているか
 - `microbial_only`: 一般的な微生物群集・microbiome・metagenomics解析に留まるか
@@ -360,7 +367,9 @@ python3 script/fetch.py \
 タイトルやAbstract中に `eDNA` / `eRNA` の語がなくても、研究内容そのものから判定します。
 取りこぼしを減らすため、判断が曖昧な場合は `out_of_scope` に落とさず `unsure` に残します。
 
-### 1) Strands Deciderを起動
+### 1) 旧Strands Deciderを起動（任意）
+
+既定のClefを起動する場合は [Clefの実行手順](docs/clef-default.md) を参照してください。
 
 起動前に、どの計算デバイスが選ばれるか確認できます。
 
@@ -386,7 +395,7 @@ CPUへ切り替える場合は黙ってフォールバックせず、起動前�
 起動:
 
 ```bash
-pixi run serve
+pixi run serve-strands
 ```
 
 GPU環境では `--device cuda`、GPUがない環境では `--device cpu` を明示してStrands Deciderを起動します。古いStrands Decider CLIとの互換性を保つため、`--max-batch` など新しいサーバオプションには依存しません。
@@ -402,13 +411,15 @@ pixi run strands-health
 `causal_conv1d` や `flash-linear-attention` が未導入というwarningが出る場合でも、
 最適化カーネルを使わないPyTorch実装へフォールバックします。まず判定精度の検証を優先してください。
 
+この節の旧Strandsを使う場合は、以下のClef設定ではなく `--config config/strands_flagger.example.jsonc` を指定してください。
+
 ### 2) 設定ファイルを準備
 
 ```bash
-cp config/strands_flagger.example.jsonc config/strands_flagger.jsonc
+cp config/clef_flagger.example.jsonc config/clef_flagger.jsonc
 ```
 
-設定は `config/strands_flagger.jsonc` があれば読み込み、なければ `config/strands_flagger.example.jsonc` を使います。
+設定は `config/clef_flagger.jsonc` があれば読み込み、なければ `config/clef_flagger.example.jsonc` を使います。
 使用したパスをログに表示します。
 設定には判定パラメータと `cache_csv` だけを指定し、未知のキーがあればエラーになります。
 flaggerでは `--config` で別のファイルも指定できます。
@@ -437,7 +448,6 @@ flaggerでは `--config` で別のファイルも指定できます。
 ```bash
 pixi run screen \
   results/edna_multisource_2020plus.csv \
-  --config config/strands_flagger.jsonc \
   --out-csv results/edna_multisource_2020plus.strands.csv \
   --limit 20
 ```
@@ -447,7 +457,6 @@ pixi run screen \
 ```bash
 pixi run screen \
   results/edna_multisource_2020plus.csv \
-  --config config/strands_flagger.jsonc \
   --out-csv results/edna_multisource_2020plus.strands.csv
 ```
 
@@ -487,7 +496,7 @@ Strands固有の診断列:
 
 `script/e2e.py` は、実行日を終点とする最新14日間（`--days` で変更可能）について、文献取得から取得処理内のStrandsフィルタまでを通しで確認します。
 
-Strands Deciderを別ターミナルで起動します。
+Clefを別ターミナルで起動します。
 
 ```bash
 pixi run serve
