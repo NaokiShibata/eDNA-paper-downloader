@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import math
 import shutil
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,10 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8012"
 @dataclass(frozen=True)
 class ScreeningConfig:
     base_url: str = DEFAULT_BASE_URL
+    expected_model: str | None = None
+    first_stage_base_url: str | None = None
+    first_stage_model: str | None = None
+    first_stage_min_probability: float = 0.90
     timeout: float = 120.0
     retries: int = 3
     include_threshold: float = 0.45
@@ -46,9 +52,9 @@ class ScreeningConfig:
             name = field.name
             value = coalesce(overrides.get(name), config, name, field.default)
             if value is not None:
-                if name == "base_url":
+                if name in ("base_url", "first_stage_base_url"):
                     value = str(value).rstrip("/")
-                elif name == "cache_csv":
+                elif name in ("cache_csv", "expected_model", "first_stage_model"):
                     value = str(value)
                 elif name in ("retries", "max_abstract_chars"):
                     value = int(value)
@@ -57,7 +63,10 @@ class ScreeningConfig:
                 else:
                     value = float(value)
             values[name] = value
-        return cls(**values)
+        cfg = cls(**values)
+        if not math.isfinite(cfg.first_stage_min_probability) or not 0.5 < cfg.first_stage_min_probability <= 1:
+            raise ValueError("first_stage_min_probability must be > 0.5 and <= 1")
+        return cfg
 
 
 QUESTIONS: dict[str, dict[str, Any]] = {
@@ -192,6 +201,14 @@ EXTRA_COLUMNS = [
     "flag_reason",
     "flag_model_path",
     "flag_prompt_version",
+    "evaluation_stage",
+    "first_stage_model",
+    "first_stage_label",
+    "first_stage_p_in_scope",
+    "first_stage_p_out_of_scope",
+    "first_stage_confidence",
+    "first_stage_latency_ms",
+    "first_stage_error",
     "strands_scope_choice",
     "strands_p_in_scope",
     "strands_p_out_of_scope",
@@ -398,7 +415,10 @@ def check_health(
     session: requests.Session,
     base_url: str,
     timeout: float,
+    first_stage_base_url: str | None = None,
 ) -> dict[str, Any]:
+    if first_stage_base_url is not None:
+        check_health(session, first_stage_base_url, timeout)
     url = f"{base_url.rstrip('/')}/health"
     response = session.get(url, timeout=min(timeout, 15.0))
     response.raise_for_status()
@@ -610,11 +630,51 @@ def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[st
 
 
 def evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
+    if cfg.first_stage_base_url is None:
+        return _evaluate_abstract(session, abstract, cfg) | {"evaluation_stage": "single"}
+    fast_cfg = replace(cfg, base_url=cfg.first_stage_base_url, expected_model=cfg.first_stage_model,
+                       first_stage_base_url=None, batch_questions=True)
+    started = time.perf_counter()
+    try:
+        fast = _evaluate_abstract(session, abstract, fast_cfg)
+        label = apply_thresholds(fast, cfg)["flag_label"]
+        metadata = {
+            "first_stage_model": fast["flag_model_path"], "first_stage_label": label,
+            "first_stage_p_in_scope": fast["strands_p_in_scope"],
+            "first_stage_p_out_of_scope": fast["strands_p_out_of_scope"],
+            "first_stage_latency_ms": fast["strands_latency_ms"], "first_stage_error": "",
+        }
+        probabilities = [float(fast[f"strands_p_{name}"]) for name in ("in_scope", "out_of_scope", "unsure")]
+        checks = probabilities + [float(fast[f"strands_p_{name}"]) for name in
+                                  ("actual_use", "microbial_only", "method_relevance", "review")]
+        valid = all(math.isfinite(p) and 0 <= p <= 1 for p in checks) and math.isclose(sum(probabilities), 1, abs_tol=0.001)
+        confidence = float(fast["strands_p_in_scope"]) if label == "in_scope" else float(fast["strands_p_out_of_scope"])
+        if label == "out_of_scope":
+            if float(fast["strands_p_method_relevance"]) <= cfg.exclude_method_relevance_max:
+                confidence = max(confidence, float(fast["strands_p_microbial_only"]))
+            if float(fast["strands_p_out_of_scope"]) >= cfg.exclude_review_out_min:
+                confidence = max(confidence, float(fast["strands_p_review"]))
+        metadata["first_stage_confidence"] = confidence
+        if label in ("in_scope", "out_of_scope") and valid and confidence >= cfg.first_stage_min_probability:
+            return fast | metadata | {"evaluation_stage": "first"}
+    except Exception as exc:
+        metadata = {"first_stage_model": cfg.first_stage_model or "", "first_stage_label": "process_error",
+                    "first_stage_error": str(exc), "first_stage_latency_ms": (time.perf_counter() - started) * 1000}
+    final = _evaluate_abstract(session, abstract, cfg)
+    final["strands_latency_ms"] = (time.perf_counter() - started) * 1000
+    return final | metadata | {"evaluation_stage": "second"}
+
+
+def _evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
     url = f"{cfg.base_url.rstrip('/')}/v1/systemone"
+    started = time.perf_counter()
     if cfg.batch_questions:
         data = _post_with_retry(session, url, {"state": abstract, "questions": QUESTIONS}, cfg.timeout, cfg.retries)
     else:
         data = evaluate_questions_sequentially(session, url, abstract, QUESTIONS, cfg.timeout, cfg.retries)
+    if cfg.expected_model is not None and data.get("model") != cfg.expected_model:
+        raise RuntimeError(f"expected model {cfg.expected_model!r}, got {data.get('model')!r}")
+    data["latency_ms"] = (time.perf_counter() - started) * 1000
     return extract_scores(data)
 
 
@@ -636,12 +696,22 @@ def screen_row(
         label, reason = "unsure", "unsure: abstract is empty"
     else:
         try:
-            scores = cache.get(result["flag_record_id"]) if cache is not None else None
+            state = build_state(meta, cfg, abstract_column)
+            cache_key = result["flag_record_id"] + ":" + hashlib.sha256(json.dumps({
+                "state": state, "questions": QUESTIONS, "server": cfg.base_url,
+                "model": cfg.expected_model, "batch_questions": cfg.batch_questions,
+                "first_stage_server": cfg.first_stage_base_url, "first_stage_model": cfg.first_stage_model,
+                "first_stage_min_probability": cfg.first_stage_min_probability,
+                "routing_policy": {field.name: getattr(cfg, field.name) for field in fields(cfg)
+                                   if field.name.startswith(("include_", "exclude_", "actual_use_"))}
+                                   if cfg.first_stage_base_url is not None else None,
+            }, sort_keys=True).encode()).hexdigest()
+            scores = cache.get(cache_key) if cache is not None else None
             if scores is None:
-                scores = evaluate_abstract(session, build_state(meta, cfg, abstract_column), cfg)
+                scores = evaluate_abstract(session, state, cfg)
                 labels = apply_thresholds(scores, cfg)
                 if cache is not None:
-                    cache.put(result["flag_record_id"], scores)
+                    cache.put(cache_key, scores)
             else:
                 labels = apply_thresholds(scores, cfg)
             if len(abstract) < MIN_ABSTRACT_CHARS_FOR_EXCLUSION and labels["flag_label"] == "out_of_scope":

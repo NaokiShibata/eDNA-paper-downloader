@@ -3,7 +3,8 @@
 既定の判定モデルはCloudflare Clefの27B版（ggml-org Q8_0）である。
 `screen` と `fetch --strands` は `config/clef_flagger.jsonc` があれば読み込み、なければ `config/clef_flagger.example.jsonc` を使う。
 旧 `config/strands_flagger.jsonc` は自動選択しない。
-質問は `edna-macrofauna-v5` を使用し、スコアキャッシュは無効にする。
+質問は `edna-macrofauna-v5` を使用し、同一入力・質問・モデル名のスコアキャッシュを有効にする。
+速度改善の二段階判定とキャッシュの詳細は[速度改善の手順](clef-speed.md)を参照。
 微生物・microbiomeだけの研究は対象外とする。例外は、大型脊椎動物・無脊椎動物の検出・監視に直接関わる手法の検討である。
 微生物のみの検出、群集解析、活性測定はeDNAを使っていてもこの例外に含めない。
 microbial-only確率が `exclude_microbial_only_min`（既定0.80）以上で、対象動物に関わる手法関連性が `exclude_method_relevance_max`（既定0.60）以下なら除外する。

@@ -111,7 +111,7 @@ def fetch(
             raise typer.BadParameter(f"invalid Strands config: {exc}") from exc
         strands_session = requests.Session()
         try:
-            health_data = check_health(strands_session, strands_cfg.base_url, strands_cfg.timeout)
+            health_data = check_health(strands_session, strands_cfg.base_url, strands_cfg.timeout, strands_cfg.first_stage_base_url)
         except Exception as exc:
             raise typer.BadParameter(
                 f"could not connect to Strands Decider at {strands_cfg.base_url}: {exc}"

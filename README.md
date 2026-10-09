@@ -269,8 +269,9 @@ results/edna_latest.no_abstract.csv
 `--strands` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
 
 fetchとscreenは設定の `cache_csv` を共用し、判定スコアをCSVに保存して再利用します。
-Clefの既定設定は `cache_csv: null` でキャッシュを無効にします。旧Strands設定では `.cache/strands_scores.strands-v4.csv` に保存します。
-キャッシュは論文IDとプロンプトのバージョンで照合し、判定ラベルは毎回現在の閾値で計算します。
+Clefの既定設定は `.cache/clef_27b_scores.csv` のスコアキャッシュを使用します。旧Strands設定では `.cache/strands_scores.strands-v4.csv` に保存します。
+キャッシュは論文ID・入力・質問・モデル名・サーバー設定で照合し、判定ラベルは毎回現在の閾値で計算します。
+軽量モデルから27Bへの二段階判定、起動・実行例、時間測定は [速度改善の手順](docs/clef-speed.md) を参照してください。
 判定エラーと要旨なしは保存せず、終了時にヒット数とミス数を表示します。
 Clef設定の `batch_questions` は `true` で、旧Strands設定では `false` です。
 `true` にすると4質問を1リクエストにまとめますが、GPUメモリの使用量が増えます。

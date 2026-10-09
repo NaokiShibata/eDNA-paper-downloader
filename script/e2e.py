@@ -166,7 +166,7 @@ def run(
     typer.echo(f"output dir   : {out_dir_path}")
 
     try:
-        health = check_health(requests.Session(), cfg.base_url, cfg.timeout)
+        health = check_health(requests.Session(), cfg.base_url, cfg.timeout, cfg.first_stage_base_url)
     except Exception as exc:
         raise typer.BadParameter(
             f"Strands Decider is not reachable at {cfg.base_url.rstrip('/')}/health: {exc}. "

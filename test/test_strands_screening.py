@@ -101,6 +101,40 @@ class StrandsScreeningTest(unittest.TestCase):
             screen_row(Mock(), meta | {"doi": "10.1000/empty", "abstract": ""}, ScreeningConfig(), cache=cache)
             self.assertIsNone(cache.get("doi:10.1000/empty"))
 
+    def test_cache_invalidates_changed_input_and_model(self) -> None:
+        scores = {"strands_p_in_scope": 0.82, "strands_p_out_of_scope": 0.1, "strands_p_unsure": 0.08,
+                  "strands_p_actual_use": 0.75, "strands_p_microbial_only": 0.2,
+                  "strands_p_method_relevance": 0.4, "strands_p_review": 0.1}
+        meta = {"doi": "10.1000/abc", "abstract": "Original abstract"}
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ScoreCache(Path(directory) / "scores.csv")
+            with patch("libs.strands_screening.evaluate_abstract", return_value=scores) as evaluate:
+                screen_row(Mock(), meta, ScreeningConfig(), cache=cache)
+                screen_row(Mock(), meta | {"abstract": "Changed abstract"}, ScreeningConfig(), cache=cache)
+                screen_row(Mock(), meta, ScreeningConfig(expected_model="different-model"), cache=cache)
+                screen_row(Mock(), meta, ScreeningConfig(), cache=cache)
+                self.assertEqual(evaluate.call_count, 3)
+
+    def test_cascade_routes_uncertain_results_and_first_stage_failure(self) -> None:
+        from libs.strands_screening import evaluate_abstract
+        cfg = ScreeningConfig(first_stage_base_url="http://fast", first_stage_model="fast", first_stage_min_probability=0.95)
+        fast = {"flag_model_path": "fast", "strands_latency_ms": 1,
+                "strands_p_in_scope": 0.96, "strands_p_out_of_scope": 0.02, "strands_p_unsure": 0.02,
+                "strands_p_actual_use": 0.8, "strands_p_microbial_only": 0.1,
+                "strands_p_method_relevance": 0.4, "strands_p_review": 0.1}
+        for probability, actual_use, expected in [(0.96, 0.8, "first"), (0.94, 0.8, "second"),
+                                                 (0.96, 0.2, "second")]:
+            candidate = fast | {"strands_p_in_scope": probability, "strands_p_unsure": 0.98 - probability,
+                                "strands_p_actual_use": actual_use}
+            with patch("libs.strands_screening._evaluate_abstract", side_effect=[candidate, fast]) as infer:
+                result = evaluate_abstract(Mock(), "abstract", cfg)
+                self.assertEqual(result["evaluation_stage"], expected)
+                self.assertEqual(infer.call_count, 1 if expected == "first" else 2)
+        with patch("libs.strands_screening._evaluate_abstract", side_effect=[RuntimeError("offline"), fast]):
+            result = evaluate_abstract(Mock(), "abstract", cfg)
+            self.assertEqual(result["evaluation_stage"], "second")
+            self.assertEqual(result["first_stage_error"], "offline")
+
     def test_default_config_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -227,6 +261,12 @@ class StrandsScreeningTest(unittest.TestCase):
             json={"state": "abstract", "questions": QUESTIONS}, timeout=120.0,
         )
         self.assertEqual(result["flag_label"], "in_scope")
+
+    def test_expected_model_is_checked_before_reusing_scores(self) -> None:
+        from libs.strands_screening import evaluate_abstract
+        with patch("libs.strands_screening._post_with_retry", return_value={"model": "wrong-model"}):
+            with self.assertRaisesRegex(RuntimeError, "expected model"):
+                evaluate_abstract(Mock(), "abstract", ScreeningConfig(batch_questions=True, expected_model="correct-model"))
 
     def test_screen_row_empty_and_error(self) -> None:
         session = Mock()

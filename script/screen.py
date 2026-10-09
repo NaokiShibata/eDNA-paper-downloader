@@ -83,7 +83,7 @@ def flag(
 
     session = requests.Session()
     try:
-        health_data = check_health(session, cfg.base_url, cfg.timeout)
+        health_data = check_health(session, cfg.base_url, cfg.timeout, cfg.first_stage_base_url)
         logger.info(
             "server status=%s model=%s device=%s max_length=%s",
             health_data.get("status"),
