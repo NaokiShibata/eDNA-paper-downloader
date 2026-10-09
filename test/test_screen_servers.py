@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -22,6 +23,7 @@ from libs.screen_servers import (
     _ready,
     _stop,
     _terminate,
+    gpu_progress,
     screening_servers,
 )
 from libs.strands_screening import ScreeningConfig
@@ -34,12 +36,12 @@ class ScreenServersTests(unittest.TestCase):
         self.logger = Mock(spec=logging.Logger)
 
     def test_gpu_status_reports_gpu_total_for_selected_device(self):
-        with patch("libs.screen_servers.subprocess.run", return_value=Mock(stdout="0, GPU-A, RTX 8000, 24576, 49152\n")):
+        with patch("libs.screen_servers.subprocess.run", return_value=Mock(stdout="0, GPU-A, RTX 8000, 24576, 49152, 72\n")):
             status = _gpu_status(self.cfg.base_url, 0)
-        self.assertEqual(status, "gpu=0 gpu_name=RTX 8000 vram=24576/49152 MiB (50.0%, GPU total)")
+        self.assertEqual(status, "gpu=0 gpu_name=RTX 8000 gpu_util=72% vram=24576/49152 MiB (50.0%, GPU total)")
 
     def test_reused_server_gpu_is_identified_by_process_port(self):
-        results = [Mock(stdout="0, GPU-A, RTX 8000, 24576, 49152\n1, GPU-B, RTX 5060 Ti, 2048, 16384\n"),
+        results = [Mock(stdout="0, GPU-A, RTX 8000, 24576, 49152, 72\n1, GPU-B, RTX 5060 Ti, 2048, 16384, 5\n"),
                    Mock(stdout="123, GPU-A\n")]
         with patch("libs.screen_servers.subprocess.run", side_effect=results), \
                 patch("libs.screen_servers.Path.read_bytes", return_value=b"llama-server\0--port\08014\0"):
@@ -51,6 +53,21 @@ class ScreenServersTests(unittest.TestCase):
         with patch("libs.screen_servers.subprocess.run") as query:
             self.assertIn("remote server", _gpu_status("https://example.com:8014"))
             query.assert_not_called()
+
+    def test_gpu_progress_updates_during_inference_and_stops(self):
+        updated_twice = threading.Event()
+        samples = []
+
+        def update(value):
+            samples.append(value)
+            if len(samples) >= 2:
+                updated_twice.set()
+
+        with patch("libs.screen_servers._gpu_status", return_value="gpu_util=90%"):
+            with gpu_progress([self.cfg.base_url], update):
+                self.assertTrue(updated_twice.wait(3), "GPU status must update while the main thread waits")
+        self.assertEqual(samples, ["gpu_util=90%", "gpu_util=90%"])
+        self.assertFalse(any(t.name == "screen-gpu-status" for t in threading.enumerate()))
 
     def test_existing_servers_are_never_started_or_stopped(self):
         with patch("libs.screen_servers._ready", return_value=True), \

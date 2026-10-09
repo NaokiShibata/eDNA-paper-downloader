@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -11,7 +12,7 @@ import typer
 from tqdm import tqdm
 
 from libs.cli_logging import setup_logger
-from libs.screen_servers import screening_servers
+from libs.screen_servers import gpu_progress, screening_servers
 from libs.strands_screening import (
     EXTRA_COLUMNS,
     QUESTIONS,
@@ -120,7 +121,8 @@ def _screen(
         progress = tqdm(
             df.iterrows(),
             total=len(df),
-            desc="Strands screening",
+            desc="Screening",
+            file=sys.stdout,
             position=0,
             dynamic_ncols=True,
         )
@@ -129,32 +131,33 @@ def _screen(
             position=1,
             bar_format="{desc}",
             leave=False,
+            file=sys.stdout,
         )
 
-        for _, row in progress:
-            meta = _row_to_meta(row)
-            out_row = meta | screen_row(session, meta, cfg, abstract_column, cache=cache)
-            if out_row["flag_label"] == "process_error":
-                error_count += 1
-                logger.warning("process_error record=%s error=%s", out_row["flag_record_id"], out_row["flag_reason"])
+        urls = [cfg.base_url] + ([cfg.first_stage_base_url] if cfg.first_stage_base_url else [])
+        try:
+            with gpu_progress(urls, lambda value: progress.set_postfix_str(value, refresh=True)):
+                for _, row in progress:
+                    meta = _row_to_meta(row)
+                    out_row = meta | screen_row(session, meta, cfg, abstract_column, cache=cache)
+                    if out_row["flag_label"] == "process_error":
+                        error_count += 1
+                        logger.warning("process_error record=%s error=%s", out_row["flag_record_id"], out_row["flag_reason"])
 
-            writer.writerow(output_row(out_row))
-            handle.flush()
-            processed_count += 1
+                    writer.writerow(output_row(out_row))
+                    handle.flush()
+                    processed_count += 1
 
-            status.set_description_str(format_status(out_row, meta.get("title", "").strip()), refresh=True)
-
-        status.clear()
-        status.close()
-        progress.refresh()
+                    status.set_description_str(format_status(out_row, meta.get("title", "").strip()), refresh=True)
+        finally:
+            status.clear()
+            status.close()
+            progress.close()
 
     if cache is not None:
         logger.info("Strands cache hits=%d misses=%d", cache.hits, cache.misses)
 
-    typer.echo(
-        f"Finished: processed={processed_count} errors={error_count} output={out_csv}"
-    )
-
+    typer.echo(f"Finished: processed={processed_count} errors={error_count} output={out_csv}")
 
 if __name__ == "__main__":
     app()

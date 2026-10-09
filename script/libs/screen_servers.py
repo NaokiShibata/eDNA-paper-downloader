@@ -11,7 +11,7 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -75,7 +75,7 @@ def _command(model: str | None, url: str) -> tuple[list[str], int]:
 def _server_gpu_uuids(urls: list[str], device_uuids: set[str]) -> set[str]:
     processes = subprocess.run(
         ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader,nounits"],
-        capture_output=True, text=True, check=True, timeout=10,
+        capture_output=True, text=True, check=True, timeout=2,
     )
     pinned = set()
     ports = {str(urlsplit(url).port) for url in urls if urlsplit(url).hostname in ("localhost", "127.0.0.1")}
@@ -91,24 +91,47 @@ def _server_gpu_uuids(urls: list[str], device_uuids: set[str]) -> set[str]:
     return pinned
 
 
-def _gpu_status(url: str, gpu: int | None = None) -> str:
-    if urlsplit(url).hostname not in ("localhost", "127.0.0.1"):
+def _gpu_status(url: str | list[str], gpu: int | None = None) -> str:
+    urls = [url] if isinstance(url, str) else url
+    local = [value for value in urls if urlsplit(value).hostname in ("localhost", "127.0.0.1")]
+    if not local:
         return "gpu=unknown vram=unavailable (remote server)"
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,uuid,name,memory.used,memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, check=True, timeout=10,
+            ["nvidia-smi", "--query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, check=True, timeout=2,
         )
         rows = [[value.strip() for value in row] for row in csv.reader(result.stdout.splitlines())]
-        uuids = _server_gpu_uuids([url], {row[1] for row in rows}) if gpu is None else set()
+        uuids = _server_gpu_uuids(local, {row[1] for row in rows}) if gpu is None else set()
         statuses = []
-        for index, uuid, name, used, total in rows:
+        for index, uuid, name, used, total, utilization in rows:
             if (gpu is not None and int(index) == gpu) or (gpu is None and uuid in uuids):
                 percentage = 100 * int(used) / int(total)
-                statuses.append(f"gpu={index} gpu_name={name} vram={used}/{total} MiB ({percentage:.1f}%, GPU total)")
+                statuses.append(f"gpu={index} gpu_name={name} gpu_util={utilization}% vram={used}/{total} MiB ({percentage:.1f}%, GPU total)")
         return "; ".join(statuses) or "gpu=unknown vram=unavailable"
     except (OSError, subprocess.SubprocessError, ValueError, IndexError, ZeroDivisionError):
         return "gpu=unknown vram=unavailable"
+
+
+@contextmanager
+def gpu_progress(urls: list[str], update: Callable[[str], None]) -> Iterator[None]:
+    """Refresh independently of slow HTTP inference, without querying per row."""
+    stop = threading.Event()
+
+    def refresh() -> None:
+        while not stop.is_set():
+            status = _gpu_status(urls)
+            if not stop.is_set():
+                update(status)
+            stop.wait(1)
+
+    worker = threading.Thread(target=refresh, daemon=True, name="screen-gpu-status")
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join(timeout=5)
 
 
 def _gpu(required_mib: int, reused_urls: list[str]) -> int:
