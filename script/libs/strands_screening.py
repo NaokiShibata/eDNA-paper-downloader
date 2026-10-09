@@ -15,7 +15,7 @@ import requests
 
 from libs.text_normalize import clean_doi
 
-PROMPT_VERSION = "edna-macrofauna-v5"
+PROMPT_VERSION = "edna-macrofauna-v6"
 MIN_ABSTRACT_CHARS_FOR_EXCLUSION = 300
 DEFAULT_BASE_URL = "http://127.0.0.1:8012"
 
@@ -74,7 +74,12 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "type": "choice",
         "instructions": (
             "Classify whether this scientific abstract should be retained as environmental DNA (eDNA) or "
-            "environmental RNA (eRNA) research. Microbiome-only and microbial-only studies are out of scope, "
+            "environmental RNA (eRNA) research. Studies targeting the detection, identification, monitoring, "
+            "distribution or diversity of fungi (including yeasts, molds, mushrooms and fungal pathogens) are "
+            "out of scope, even when they use environmental DNA/RNA or develop fungal detection methods. "
+            "Fungi are not vertebrates or invertebrates. A passing mention of fungi does not exclude a study "
+            "whose actual environmental DNA/RNA detection target is macroscopic vertebrates or invertebrates. "
+            "Microbiome-only and microbial-only studies are out of scope, "
             "even if described as eDNA/eRNA detection, monitoring, or method development, unless the study directly "
             "evaluates methods for detecting or monitoring macroscopic vertebrates or invertebrates. Judge what the study "
             "actually does, not whether the terms eDNA, "
@@ -93,7 +98,10 @@ QUESTIONS: dict[str, dict[str, Any]] = {
                 "or invertebrates; microbial composition, function, or microbial detection alone does not qualify."
             ),
             "out_of_scope": (
-                "The study does not itself analyze environmentally obtained DNA or RNA. This includes reviews, "
+                "The study targets fungi rather than macroscopic vertebrates or invertebrates: fungal species "
+                "detection, fungal pathogens, airborne fungal spores, soil fungi, mycobiomes or fungal diversity, "
+                "including environmental DNA/RNA and fungal-specific detection methods. Also out of scope when "
+                "the study does not itself analyze environmentally obtained DNA or RNA. This includes reviews, "
                 "systematic reviews, meta-analyses of published studies, perspectives, opinion pieces, editorials, "
                 "book chapters, and conference reports, even when eDNA/eRNA is their main subject; studies based only"
                 " on tissue, blood, isolated organisms, cultured strains, museum specimens, individual genomes, "
@@ -136,7 +144,9 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             "or viruses) or of microbiomes, metagenomes, or metatranscriptomes, where nucleic acids are simply "
             "the source material and the study is not framed as eDNA/eRNA detection, monitoring, sampling, or "
             "method development for macroscopic vertebrates or invertebrates? Microbial-only methods, detection "
-            "and monitoring still count as microbial_only."
+            "and monitoring still count as microbial_only. Studies targeting fungi, including yeasts, molds, "
+            "mushrooms and fungal pathogens, count as true regardless of fungal size or eDNA terminology. "
+            "Do not mistake fungi for macroscopic invertebrate animals."
         ),
         "criteria": {
             "true": (
@@ -162,7 +172,8 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             "RNA recovered from environmental samples (water, sediment, soil, air, wastewater, biofilm, swabs, or"
             " similar), using its own data? For microbial studies, qualify only if the method is directly "
             "evaluated for detection or monitoring of macroscopic vertebrates or invertebrates; microbial-only "
-            "detection, profiling and activity measurement do not qualify."
+            "detection, profiling and activity measurement do not qualify. Methods intended to detect, identify "
+            "or monitor fungi or fungal pathogens do not qualify; fungi are not invertebrate animals."
         ),
         "criteria": {
             "true": (

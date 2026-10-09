@@ -356,8 +356,8 @@ python3 script/fetch.py \
 
 `script/screen.py` は、Strands DeciderのHTTP APIを使ってCSVの `abstract` 列を判定します。
 既定はClef 27B Q8_0です。旧Strandsも同じHTTP APIで利用できます。
-微生物・microbiomeだけの研究は対象外です。例外は大型脊椎動物・無脊椎動物の検出・監視に直接関わる手法の検討です。
-質問は `edna-macrofauna-v5` に更新し、microbial-only確率が0.80以上で手法関連性が0.60以下の場合は自動除外します。
+微生物・microbiomeだけの研究は対象外です。真菌（酵母・カビ・キノコ・真菌病原体）の検出・同定・監視を対象とする研究も、eDNAや手法開発であっても対象外です。例外は大型脊椎動物・無脊椎動物の検出・監視に直接関わる手法の検討です。
+質問は `edna-macrofauna-v6` に更新し、microbial-only確率が0.80以上で手法関連性が0.60以下の場合は自動除外します。
 
 判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を評価します。Clefの既定設定は5問を1 HTTP requestにまとめて送信します。
 

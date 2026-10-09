@@ -4,7 +4,7 @@
 
 GPU 1のClef-Flash Q8_0で一次判定し、確信度の高い採用・除外を確定する。
 要確認と確信度の低い判定だけGPU 0のClef 27B Q8_0へ渡す。
-両モデルで同じ `edna-macrofauna-v5` の質問と判定規則を使う。
+両モデルで同じ `edna-macrofauna-v6` の質問と判定規則を使う。
 
 設定例は `config/clef_cascade.example.jsonc`。
 `first_stage_min_probability` は速度重視の初期値0.80とした。
@@ -73,7 +73,8 @@ pixi run fetch --email you@example.com --days 14 --strands --out-dir results --o
 
 ## 実測と限界
 
-取得済みCSVの先頭20件を使用した動作確認。
+以下は質問版 `edna-macrofauna-v5` で取得済みCSVの先頭20件を使用した動作確認である。
+真菌検出の除外を明記したv6の精度・速度比較はまだ行っていない。
 RTX 8000で27B、RTX 5060 TiでFlashを実行し、既存の27B全件処理も継続した状態で測った。
 
 | 設定 | Flashで確定 | 27Bで再判定 | 20件の時間 |
