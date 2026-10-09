@@ -58,6 +58,18 @@ pixi run screen results/edna_latest.csv --out-csv results/edna_latest.clef.csv -
 pixi run screen results/edna_latest.csv --out-csv results/edna_latest.clef.csv
 ```
 
+実行モードは次の引数で選択できる。
+`--both`はStrandsで一次判定し、`unsure`だけClef 27Bへ渡す。
+指定しない場合は設定ファイルの構成を維持する。
+各引数は同時に指定できず、`--strandes`も`--strands`の別名として受け付ける。
+明示したモードを優先し、閾値などは指定した設定ファイルから引き継ぐ。
+
+```bash
+pixi run screen results/edna_latest.csv --strands --out-csv results/edna_latest.strands.csv
+pixi run screen results/edna_latest.csv --both --out-csv results/edna_latest.both.csv
+pixi run screen results/edna_latest.csv --clef --out-csv results/edna_latest.clef.csv
+```
+
 出力先は毎回書き直す。
 GPUの空きメモリを調べ、不足する両モデルを同じGPUに配置する。
 既存のローカルサーバーのGPUを特定できる場合は、そのGPUに追加する。

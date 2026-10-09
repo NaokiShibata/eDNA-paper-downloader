@@ -4,6 +4,7 @@ import csv
 import json
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -12,7 +13,7 @@ import typer
 from tqdm import tqdm
 
 from libs.cli_logging import setup_logger
-from libs.screen_servers import gpu_progress, screening_servers
+from libs.screen_servers import STRANDS_MODEL, gpu_progress, screening_servers
 from libs.strands_screening import (
     EXTRA_COLUMNS,
     QUESTIONS,
@@ -30,6 +31,25 @@ from libs.strands_screening import (
 )
 
 app = typer.Typer(add_completion=False)
+
+
+def _select_mode(cfg: ScreeningConfig, mode: str | None) -> ScreeningConfig:
+    if mode is None:
+        return cfg
+    strands_url = cfg.first_stage_base_url or (
+        cfg.base_url if cfg.expected_model in (None, STRANDS_MODEL) else "http://127.0.0.1:8012"
+    )
+    strands_batch = cfg.first_stage_batch_questions if cfg.first_stage_base_url else (
+        cfg.batch_questions if cfg.expected_model in (None, STRANDS_MODEL) else False
+    )
+    if mode == "strands":
+        return replace(cfg, base_url=strands_url, expected_model=STRANDS_MODEL, batch_questions=strands_batch,
+                       first_stage_base_url=None, first_stage_model=None)
+    clef_url = cfg.base_url if cfg.expected_model == "clef-27b-q8" else "http://127.0.0.1:8014"
+    return replace(cfg, base_url=clef_url, expected_model="clef-27b-q8", batch_questions=True,
+                   first_stage_base_url=strands_url if mode == "both" else None,
+                   first_stage_model=STRANDS_MODEL if mode == "both" else None,
+                   first_stage_batch_questions=strands_batch)
 
 
 def _row_to_meta(row: pd.Series) -> dict[str, str]:
@@ -50,12 +70,17 @@ def flag(
     abstract_column: str = typer.Option("abstract", "--abstract-column"),
     limit: int | None = typer.Option(None, "--limit", min=1),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    strands: bool = typer.Option(False, "--strands", "--strandes", help="Use Strands only."),
+    both: bool = typer.Option(False, "--both", help="Use Strands, then Clef 27B for unsure results."),
+    clef: bool = typer.Option(False, "--clef", help="Use Clef 27B only."),
     auto_server: bool = typer.Option(True, "--auto-server/--no-auto-server", help="Start missing local model servers and stop owned servers on exit."),
     server_startup_timeout: float = typer.Option(180, "--server-startup-timeout", min=1, help="Maximum seconds to wait for each automatically started server."),
     log_file: Path = typer.Option(Path("logs/screen.log"), "--log-file"),
     log_level: str = typer.Option("INFO", "--log-level"),
 ) -> None:
     """Flag eDNA/eRNA papers, reusing or automatically starting model servers."""
+    if sum((strands, both, clef)) > 1:
+        raise typer.BadParameter("choose only one of --strands/--strandes, --both, --clef")
     config = config or default_config_path()
     out_csv = out_csv or input_csv.with_name(f"{input_csv.stem}.strands.csv")
     logger = setup_logger("screen", log_level=log_level, log_file=log_file)
@@ -64,6 +89,9 @@ def flag(
         cfg = ScreeningConfig.from_sources(load_config(config))
     except (FileNotFoundError, ValueError) as exc:
         raise typer.BadParameter(f"invalid Strands config: {exc}") from exc
+    mode = "strands" if strands else "both" if both else "clef" if clef else None
+    cfg = _select_mode(cfg, mode)
+    logger.info("screening mode=%s", mode or ("both" if cfg.first_stage_base_url else cfg.expected_model or "configured"))
     df = pd.read_csv(input_csv, dtype=str, keep_default_na=False)
     if abstract_column not in df.columns:
         raise typer.BadParameter(
