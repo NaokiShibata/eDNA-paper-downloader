@@ -114,7 +114,7 @@ def fetch(
             health_data = check_health(strands_session, strands_cfg.base_url, strands_cfg.timeout, strands_cfg.first_stage_base_url)
         except Exception as exc:
             raise typer.BadParameter(
-                f"could not connect to Strands Decider at {strands_cfg.base_url}: {exc}"
+                f"screening server check failed: {exc}"
             ) from exc
         logger.info(
             "Strands filter server status=%s model=%s device=%s max_length=%s",

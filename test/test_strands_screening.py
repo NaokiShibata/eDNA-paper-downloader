@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import requests
 from typer.testing import CliRunner
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,7 @@ from libs.strands_screening import (
     _strip_jsonc,
     apply_thresholds,
     build_state,
+    check_health,
     classify_abstract,
     decide_label,
     default_config_path,
@@ -33,6 +35,15 @@ from libs.strands_screening import (
     record_id,
     screen_row,
 )
+
+
+class HealthCheckTests(unittest.TestCase):
+    def test_first_stage_failure_reports_actual_server(self):
+        session = Mock()
+        session.get.side_effect = requests.ConnectionError("connection refused")
+        with self.assertRaisesRegex(RuntimeError, "http://127.0.0.1:8012/health"):
+            check_health(session, "http://127.0.0.1:8014", 30, "http://127.0.0.1:8012")
+        session.get.assert_called_once_with("http://127.0.0.1:8012/health", timeout=15.0)
 
 
 class StrandsScreeningTest(unittest.TestCase):

@@ -428,13 +428,16 @@ def check_health(
     if first_stage_base_url is not None:
         check_health(session, first_stage_base_url, timeout)
     url = f"{base_url.rstrip('/')}/health"
-    response = session.get(url, timeout=min(timeout, 15.0))
-    response.raise_for_status()
-    data = response.json()
+    try:
+        response = session.get(url, timeout=min(timeout, 15.0))
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"screening server health check failed at {url}: {exc}") from exc
     if not isinstance(data, dict):
-        raise RuntimeError("Strands Decider health endpoint returned a non-object response")
+        raise RuntimeError(f"screening server at {url} returned a non-object response")
     if data.get("status") != "ok":
-        raise RuntimeError(f"unexpected Strands Decider health response: {data!r}")
+        raise RuntimeError(f"unexpected screening server health response at {url}: {data!r}")
     return data
 
 

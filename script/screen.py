@@ -92,7 +92,7 @@ def flag(
             health_data.get("max_length"),
         )
     except Exception as exc:
-        raise typer.BadParameter(f"could not connect to Strands Decider at {cfg.base_url}: {exc}") from exc
+        raise typer.BadParameter(f"screening server check failed: {exc}") from exc
 
     processed_count = 0
     error_count = 0
