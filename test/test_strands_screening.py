@@ -135,6 +135,18 @@ class StrandsScreeningTest(unittest.TestCase):
             self.assertEqual(result["evaluation_stage"], "second")
             self.assertEqual(result["first_stage_error"], "offline")
 
+    def test_cascade_strands_uses_sequential_requests(self) -> None:
+        from libs.strands_screening import evaluate_abstract
+        cfg = ScreeningConfig(first_stage_base_url="http://strands", first_stage_batch_questions=False)
+        fast = {"flag_model_path": "strands", "strands_latency_ms": 1,
+                "strands_p_in_scope": 0.96, "strands_p_out_of_scope": 0.02, "strands_p_unsure": 0.02,
+                "strands_p_actual_use": 0.8, "strands_p_microbial_only": 0.1,
+                "strands_p_method_relevance": 0.4, "strands_p_review": 0.1}
+        with patch("libs.strands_screening._evaluate_abstract", return_value=fast) as infer:
+            self.assertEqual(evaluate_abstract(Mock(), "abstract", cfg)["evaluation_stage"], "first")
+            self.assertEqual(infer.call_args.args[2].base_url, "http://strands")
+            self.assertFalse(infer.call_args.args[2].batch_questions)
+
     def test_default_config_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

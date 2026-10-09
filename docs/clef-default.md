@@ -1,6 +1,6 @@
 # Clef 27B Q8_0の実行例
 
-既定の判定モデルはCloudflare Clefの27B版（ggml-org Q8_0）である。
+既定はStrands Deciderで一次判定し、不確かな結果をCloudflare Clefの27B版（ggml-org Q8_0）で再判定する二段階構成である。
 `screen` と `fetch --strands` は `config/clef_flagger.jsonc` があれば読み込み、なければ `config/clef_flagger.example.jsonc` を使う。
 旧 `config/strands_flagger.jsonc` は自動選択しない。
 質問は `edna-macrofauna-v6` を使用し、同一入力・質問・モデル名のスコアキャッシュを有効にする。
@@ -35,6 +35,17 @@ pixi run serve
 CUDA_VISIBLE_DEVICES=0 llama-server -m .cache/clef/Clef-Q8_0.gguf --alias clef-27b-q8 --host 127.0.0.1 --port 8014 -ngl 99 -c 8192 -b 8192 -ub 8192 -np 1
 ```
 
+## Strandsの一次判定サーバーを起動する
+
+別ターミナルでStrands（port 8012）を起動する。
+GPU 1がFlashで使用中のこの環境では、空きメモリのあるGPU 0に27Bと同居させる。
+
+```bash
+pixi run serve-strands --preferred-gpu 0
+```
+
+両サーバーがすでに起動中なら再起動は不要である。
+
 ## CSVを判定する
 
 別ターミナルで実行する。
@@ -62,7 +73,7 @@ benchmarkのeval/tuneは旧 `strands_*` 列と新列の両方を読み込める�
 以前の比較資料は旧質問・旧判定ルールでの結果であり、今回の精度を示すものではない。
 設定を変える場合は `config/clef_flagger.example.jsonc` を `config/clef_flagger.jsonc` にコピーして編集する。
 
-## 旧Strandsを明示的に使う
+## Strands単独を明示的に使う
 
 ```bash
 pixi run serve-strands

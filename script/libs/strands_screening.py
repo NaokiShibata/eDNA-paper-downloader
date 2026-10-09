@@ -26,6 +26,7 @@ class ScreeningConfig:
     expected_model: str | None = None
     first_stage_base_url: str | None = None
     first_stage_model: str | None = None
+    first_stage_batch_questions: bool = True
     first_stage_min_probability: float = 0.90
     timeout: float = 120.0
     retries: int = 3
@@ -58,7 +59,7 @@ class ScreeningConfig:
                     value = str(value)
                 elif name in ("retries", "max_abstract_chars"):
                     value = int(value)
-                elif name == "batch_questions":
+                elif name in ("batch_questions", "first_stage_batch_questions"):
                     value = bool(value)
                 else:
                     value = float(value)
@@ -644,7 +645,7 @@ def evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningCo
     if cfg.first_stage_base_url is None:
         return _evaluate_abstract(session, abstract, cfg) | {"evaluation_stage": "single"}
     fast_cfg = replace(cfg, base_url=cfg.first_stage_base_url, expected_model=cfg.first_stage_model,
-                       first_stage_base_url=None, batch_questions=True)
+                       first_stage_base_url=None, batch_questions=cfg.first_stage_batch_questions)
     started = time.perf_counter()
     try:
         fast = _evaluate_abstract(session, abstract, fast_cfg)
@@ -713,6 +714,7 @@ def screen_row(
                 "model": cfg.expected_model, "batch_questions": cfg.batch_questions,
                 "first_stage_server": cfg.first_stage_base_url, "first_stage_model": cfg.first_stage_model,
                 "first_stage_min_probability": cfg.first_stage_min_probability,
+                "first_stage_batch_questions": cfg.first_stage_batch_questions,
                 "routing_policy": {field.name: getattr(cfg, field.name) for field in fields(cfg)
                                    if field.name.startswith(("include_", "exclude_", "actual_use_"))}
                                    if cfg.first_stage_base_url is not None else None,

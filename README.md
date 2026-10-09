@@ -1,6 +1,6 @@
 # eDNA-paper-downloader
 
-デフォルトの判定モデルは **Clef 27B Q8_0** です。`screen` と `fetch --strands` が使用します。
+デフォルトは **Strands → Clef 27B Q8_0** の二段階判定です。`screen` と `fetch --strands` が使用します。
 モデル取得・起動・実行例は [Clefの実行手順](docs/clef-default.md) を参照してください。
 `--strands` というオプション名は互換性のため維持しています。CSV列名はモデルに依存しない情報名を使用します。
 
@@ -269,7 +269,7 @@ results/edna_latest.no_abstract.csv
 `--strands` 指定時にStrands Deciderのhealth checkが失敗した場合は、未判定データをフィルタ済みとして出力せず処理を停止します。
 
 fetchとscreenは設定の `cache_csv` を共用し、判定スコアをCSVに保存して再利用します。
-Clefの既定設定は `.cache/clef_27b_scores.csv` のスコアキャッシュを使用します。旧Strands設定では `.cache/strands_scores.strands-v4.csv` に保存します。
+二段階判定の既定設定は `.cache/strands_clef_cascade_scores.csv` のスコアキャッシュを使用します。旧Strands設定では `.cache/strands_scores.strands-v4.csv` に保存します。
 キャッシュは論文ID・入力・質問・モデル名・サーバー設定で照合し、判定ラベルは毎回現在の閾値で計算します。
 軽量モデルから27Bへの二段階判定、起動・実行例、時間測定は [速度改善の手順](docs/clef-speed.md) を参照してください。
 判定エラーと要旨なしは保存せず、終了時にヒット数とミス数を表示します。
@@ -355,11 +355,11 @@ python3 script/fetch.py \
 ## Strands DeciderでのAbstract判定 (screen.py)
 
 `script/screen.py` は、Strands DeciderのHTTP APIを使ってCSVの `abstract` 列を判定します。
-既定はClef 27B Q8_0です。旧Strandsも同じHTTP APIで利用できます。
+既定はStrandsで一次判定し、不確かな結果だけClef 27B Q8_0で再判定します。
 微生物・microbiomeだけの研究は対象外です。真菌（酵母・カビ・キノコ・真菌病原体）の検出・同定・監視を対象とする研究も、eDNAや手法開発であっても対象外です。例外は大型脊椎動物・無脊椎動物の検出・監視に直接関わる手法の検討です。
 質問は `edna-macrofauna-v6` に更新し、microbial-only確率が0.80以上で手法関連性が0.60以下の場合は自動除外します。
 
-判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を評価します。Clefの既定設定は5問を1 HTTP requestにまとめて送信します。
+判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を評価します。Strandsには5問を順次送信し、Clef 27Bには5問を1 HTTP requestにまとめて送信します。
 
 - `study_type`: 原著・レビュー・その他の分類
 - `scope`: `in_scope` / `out_of_scope` / `unsure`

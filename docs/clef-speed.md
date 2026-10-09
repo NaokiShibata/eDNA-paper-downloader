@@ -2,7 +2,8 @@
 
 ## 軽量モデルから27Bへの二段階判定
 
-GPU 1のClef-Flash Q8_0で一次判定し、確信度の高い採用・除外を確定する。
+Strands Deciderで一次判定し、確信度の高い採用・除外を確定する。
+Strandsは5問を順次送信し、27Bは5問を一括送信する。
 要確認と確信度の低い判定だけGPU 0のClef 27B Q8_0へ渡す。
 両モデルで同じ `edna-macrofauna-v6` の質問と判定規則を使う。
 
@@ -13,7 +14,7 @@ GPU 1のClef-Flash Q8_0で一次判定し、確信度の高い採用・除外を
 短い抄録の自動除外防止は最終段でも維持する。
 0.80は独立データで校正した閾値ではなく、モデルの出す確率を確定精度と解釈しない。
 
-CSVの `evaluation_stage` は `first` がFlashのみ、`second` が27Bで再判定した結果を表す。
+CSVの `evaluation_stage` は `first` がStrandsのみ、`second` が27Bで再判定した結果を表す。
 最終採用・除外には `flag_label` を使う。
 `flag_model_path` は最終スコアを出したモデル名で、一次判定のモデル・ラベル・確率・根拠の強さは `first_stage_*` 列に記録する。
 `latency_ms` はHTTP待ち時間と再試行を含む両段合計、`first_stage_latency_ms` は一次判定のHTTP時間である。
@@ -22,15 +23,19 @@ CSVの `evaluation_stage` は `first` がFlashのみ、`second` が27Bで再判�
 
 ## 起動・実行例
 
-両GPUとモデルファイルが必要である。
+Strandsと27Bのサーバーが必要である。
 27Bの取得は[実行手順](clef-default.md)を参照。
-Flashをまだ取得していない場合は、リポジトリのルートで実行する。
+Strandsは次のコマンドでport 8012へ起動する。
 
 ```bash
-mkdir -p .cache/clef
-curl -fL --retry 2 https://huggingface.co/ggml-org/Clef-Flash-GGUF/resolve/4a192915ef971886004b5b13294f2b4c7a7fc39d/Clef-Flash-Q8_0.gguf -o .cache/clef/Clef-Flash-Q8_0.gguf
-printf '%s  %s\n' d7c352faf1bdd9ea24d0b9347e8eb1eb4bbadeff6c02383bf750215a74f2f1f1 .cache/clef/Clef-Flash-Q8_0.gguf | sha256sum -c -
-pixi run serve-fast
+pixi run serve-strands
+```
+
+GPU 1のメモリがFlashなどで使用中の場合は、空きメモリを確認してGPU 0へ配置する。
+今回の接続確認では、27BとStrandsをRTX 8000に同居させた。
+
+```bash
+pixi run python script/serve.py --preferred-gpu 0
 ```
 
 別ターミナルで27Bを起動する。
@@ -56,11 +61,12 @@ cp config/clef_cascade.example.jsonc config/clef_flagger.jsonc
 pixi run fetch --email you@example.com --days 14 --strands --out-dir results --out-prefix edna_latest
 ```
 
-既定の設定例は27B単独のままで、二段階判定には明示指定か上記のローカル設定が必要である。
+既定の設定例とこの環境のローカル設定はStrands→27Bの二段階判定である。
+27B単独にする場合は、設定の `first_stage_base_url` を `null` にする。
 
 ## キャッシュ
 
-既定の27B設定は `.cache/clef_27b_scores.csv`、二段階設定は `.cache/clef_cascade_scores.csv` に結果を保存する。
+既定のStrands→27B設定は `.cache/strands_clef_cascade_scores.csv` に結果を保存する。
 実際のファイル名には質問版を付ける。
 入力タイトル・抄録、質問内容、サーバーURL、期待するモデル名、質問の一括送信、二段階の振り分け条件をキーに含める。
 同じ論文でも抄録やモデル名を変えると再推論する。
@@ -71,10 +77,10 @@ pixi run fetch --email you@example.com --days 14 --strands --out-dir results --o
 キャッシュヒット時のCSVの時間は元の推論時間であり、新しい実行に要した時間ではない。
 キャッシュ・評価CSVはローカルのみで、コミット・pushしない。
 
-## 実測と限界
+## 以前のFlash→27B測定（現在のStrands構成とは異なる）
 
 以下は質問版 `edna-macrofauna-v5` で取得済みCSVの先頭20件を使用した動作確認である。
-真菌検出の除外を明記したv6の精度・速度比較はまだ行っていない。
+現在はユーザー指定に従いStrands→27Bへ変更した。以下の時間を現在の構成の実績として扱わない。
 RTX 8000で27B、RTX 5060 TiでFlashを実行し、既存の27B全件処理も継続した状態で測った。
 
 | 設定 | Flashで確定 | 27Bで再判定 | 20件の時間 |
@@ -94,3 +100,19 @@ RTX 8000で27B、RTX 5060 TiでFlashを実行し、既存の27B全件処理も�
 Clefは全質問を一つのpromptにまとめ、一つの物理バッチで評価するため、既定の5問一括送信を維持する。
 単にクライアントの並列数を増やしてもGPU計算量は減らない。
 [llama.cppのSystem One API仕様](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1systemone-typesafe-compatible-system-one-api)
+
+## Strands→27Bの動作・時間確認
+
+v6の同じ入力20件を、二段階と27B単独で続けて実行した。
+Strandsと27BはRTX 8000上に同居させ、キャッシュヒットなしで測った。
+
+| 設定 | Strandsで確定 | 27Bで判定 | HTTP合計 |
+|---|---:|---:|---:|
+| Strands→27B | 3 | 17 | 96.3秒 |
+| 27B単独 | 0 | 20 | 75.3秒 |
+
+最終ラベルの差と処理エラーは0件だった。
+ただし二段階は約28%遅く、Strandsの追加処理約43.6秒を27Bの省略3件で回収できなかった。
+少数件・同一GPU・時点の異なる参考測定であり、独立した確定ラベルによる精度改善は未検証である。
+一次モデルはユーザーの意図に従いStrandsとしたが、この構成が高速化したとは結論しない。
+実装は1論文ずつの直列処理で、別論文のStrandsと27Bを重ねる並列パイプラインは未実装。
