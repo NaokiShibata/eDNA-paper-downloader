@@ -2,7 +2,7 @@
 
 デフォルトの判定モデルは **Clef 27B Q8_0** です。`screen` と `fetch --strands` が使用します。
 モデル取得・起動・実行例は [Clefの実行手順](docs/clef-default.md) を参照してください。
-`--strands` というオプション名とCSV列名は互換性のため維持しています。
+`--strands` というオプション名は互換性のため維持しています。CSV列名はモデルに依存しない情報名を使用します。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python: 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
@@ -355,6 +355,8 @@ python3 script/fetch.py \
 
 `script/screen.py` は、Strands DeciderのHTTP APIを使ってCSVの `abstract` 列を判定します。
 既定はClef 27B Q8_0です。旧Strandsも同じHTTP APIで利用できます。
+微生物・microbiomeだけの研究は対象外です。例外は大型脊椎動物・無脊椎動物の検出・監視に直接関わる手法の検討です。
+質問は `edna-macrofauna-v5` に更新し、microbial-only確率が0.80以上で手法関連性が0.60以下の場合は自動除外します。
 
 判定は単純なキーワード一致ではなく、1つのAbstractに対して以下を評価します。Clefの既定設定は5問を1 HTTP requestにまとめて送信します。
 
@@ -479,18 +481,18 @@ pixi run screen \
 
 Strands固有の診断列:
 
-- `strands_scope_choice`
-- `strands_p_in_scope`
-- `strands_p_out_of_scope`
-- `strands_p_unsure`
-- `strands_p_actual_use`
-- `strands_p_microbial_only`
-- `strands_p_method_relevance`
-- `strands_latency_ms`（4質問の合計）
-- `strands_input_tokens`（4質問の合計）
+- `scope_choice`
+- `p_in_scope`
+- `p_out_of_scope`
+- `p_unsure`
+- `p_actual_use`
+- `p_microbial_only`
+- `p_method_relevance`
+- `latency_ms`（5質問の合計）
+- `input_tokens`（5質問の合計）
 
 `flag_confidence` は `P(in_scope)` そのものではありません。採否の検証や閾値調整では
-`strands_p_in_scope` などの確率列も確認してください。
+`p_in_scope` などの確率列も確認してください。
 
 ## 最新文献のE2Eテスト
 

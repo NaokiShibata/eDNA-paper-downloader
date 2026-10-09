@@ -27,6 +27,8 @@ from libs.strands_screening import (
     decide_label,
     default_config_path,
     extract_scores,
+    output_column,
+    output_row,
     prepare_abstract,
     record_id,
     screen_row,
@@ -49,8 +51,8 @@ class StrandsScreeningTest(unittest.TestCase):
             self.assertIsNone(cache.get("missing"))
             cache.put("doi:current", scores | {"flag_label": "out_of_scope"})
             with cache.path.open("a", newline="", encoding="utf-8") as stream:
-                writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS])
-                writer.writerow({"flag_record_id": "doi:old", "flag_prompt_version": "old", **scores})
+                writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *(output_column(col) for col in SCORE_COLUMNS)])
+                writer.writerow(output_row({"flag_record_id": "doi:old", "flag_prompt_version": "old", **scores}))
             loaded = ScoreCache(path)
             self.assertIsNone(loaded.get("doi:old"))
             hit = loaded.get("doi:current")
@@ -134,6 +136,8 @@ class StrandsScreeningTest(unittest.TestCase):
                         rows = list(csv.DictReader(stream))
                     self.assertEqual(len(rows), 1)
                     self.assertEqual(rows[0]["flag_label"], label)
+                    self.assertIn("p_in_scope", rows[0])
+                    self.assertNotIn("strands_p_in_scope", rows[0])
                 evaluate.assert_called_once()
                 input_csv.write_text("doi,title,abstract\n", encoding="utf-8")
                 result = CliRunner().invoke(screen.app, args)
@@ -198,7 +202,7 @@ class StrandsScreeningTest(unittest.TestCase):
             "flag_label": "in_scope",
             "flag_reason": "in_scope: scope=in_scope; p_in_scope=0.820; p_out_of_scope=0.100; "
             "p_unsure=0.080; actual_use=0.750; microbial_only=0.200; method_relevance=0.400; review=0.100",
-            "flag_prompt_version": "strands-v4",
+            "flag_prompt_version": PROMPT_VERSION,
         })
         self.assertEqual(
             apply_thresholds(scores, ScreeningConfig(include_threshold=0.9))["flag_label"], "unsure",
@@ -308,11 +312,13 @@ class StrandsScreeningTest(unittest.TestCase):
         self.assertEqual(label, "unsure")
 
     def test_microbial_only_inclusion_guard(self) -> None:
-        for probability, expected in [(0.349, "in_scope"), (0.35, "unsure"), (0.8, "unsure")]:
+        for probability, method, expected in [(0.349, 0.4, "in_scope"), (0.35, 0.4, "unsure"),
+                                             (0.799, 0.4, "unsure"), (0.8, 0.4, "out_of_scope"),
+                                             (0.8, 0.8, "unsure")]:
             with self.subTest(probability=probability):
                 self.assertEqual(decide_label(
                     p_in_scope=0.45, p_out_of_scope=0.1, p_actual_use=0.60,
-                    p_method_relevance=0.4, p_microbial_only=probability, p_review=0.1,
+                    p_method_relevance=method, p_microbial_only=probability, p_review=0.1,
                     include_threshold=0.45, include_microbial_only_max=0.35,
                     actual_use_threshold=0.60, exclude_threshold=0.50,
                     exclude_actual_use_max=0.50, exclude_method_relevance_max=0.60,

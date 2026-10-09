@@ -22,6 +22,7 @@ from libs.strands_screening import (
     build_state,
     check_health,
     extract_scores,
+    output_row,
     prepare_abstract,
 )
 
@@ -102,7 +103,7 @@ def infer(source: Path, target: Path, base_url: str, model_file: Path, model_nam
                         < MIN_ABSTRACT_CHARS_FOR_EXCLUSION and labels["flag_label"] == "out_of_scope"):
                     labels["flag_label"] = "unsure"
                     labels["flag_reason"] = "unsure: abstract too short to exclude"
-                result = {"flag_record_id": row["benchmark_record_id"]} | scores | labels
+                result = output_row({"flag_record_id": row["benchmark_record_id"]} | scores | labels)
                 if writer is None:
                     writer = csv.DictWriter(stream, fieldnames=list(result))
                     writer.writeheader()

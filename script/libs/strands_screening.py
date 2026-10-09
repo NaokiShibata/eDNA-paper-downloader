@@ -13,7 +13,7 @@ import requests
 
 from libs.text_normalize import clean_doi
 
-PROMPT_VERSION = "strands-v4"
+PROMPT_VERSION = "edna-macrofauna-v5"
 MIN_ABSTRACT_CHARS_FOR_EXCLUSION = 300
 DEFAULT_BASE_URL = "http://127.0.0.1:8012"
 
@@ -25,6 +25,7 @@ class ScreeningConfig:
     retries: int = 3
     include_threshold: float = 0.45
     include_microbial_only_max: float = 0.35
+    exclude_microbial_only_min: float = 0.80
     actual_use_threshold: float = 0.60
     exclude_threshold: float = 0.50
     exclude_actual_use_max: float = 0.50
@@ -64,7 +65,10 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "type": "choice",
         "instructions": (
             "Classify whether this scientific abstract should be retained as environmental DNA (eDNA) or "
-            "environmental RNA (eRNA) research. Judge what the study actually does, not whether the terms eDNA, "
+            "environmental RNA (eRNA) research. Microbiome-only and microbial-only studies are out of scope, "
+            "even if described as eDNA/eRNA detection, monitoring, or method development, unless the study directly "
+            "evaluates methods for detecting or monitoring macroscopic vertebrates or invertebrates. Judge what the study "
+            "actually does, not whether the terms eDNA, "
             "eRNA, environmental DNA, or environmental RNA literally appear."
         ),
         "criteria": {
@@ -75,7 +79,9 @@ QUESTIONS: dict[str, dict[str, Any]] = {
                 "samplers, environmental swabs, dust, or similar material. Include studies using these nucleic acids "
                 "to detect or characterize organisms, taxa, populations, communities, biodiversity, biological "
                 "signals, pathogens, or ecological patterns. The eDNA/eRNA terminology does not need to be explicit. "
-                "The study must report its own primary data from such environmental samples."
+                "The study must report its own primary data from such environmental samples. Microbial-only studies "
+                "qualify only when directly evaluating methods for detection or monitoring of macroscopic vertebrates "
+                "or invertebrates; microbial composition, function, or microbial detection alone does not qualify."
             ),
             "out_of_scope": (
                 "The study does not itself analyze environmentally obtained DNA or RNA. This includes reviews, "
@@ -85,7 +91,8 @@ QUESTIONS: dict[str, dict[str, Any]] = {
                 "ordinary transcriptomics, diet or gut-content DNA, or host-associated microbiomes (gut, skin, plant "
                 "or fruit surfaces); generic profiling of microbial communities (bacteria, archaea, fungi, "
                 "microalgae, protists, viruses) or metagenomics/metatranscriptomics without an eDNA/eRNA detection, "
-                "monitoring, or methodological purpose; and studies that mention eDNA/eRNA only in the background, "
+                "monitoring, or methodological purpose for macroscopic vertebrates or invertebrates; and studies that "
+                "mention eDNA/eRNA only in the background, "
                 "discussion, comparison, citation, or future work."
             ),
             "unsure": (
@@ -119,19 +126,22 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             "Is this primarily a study of microbial communities (bacteria, archaea, fungi, microalgae, protists, "
             "or viruses) or of microbiomes, metagenomes, or metatranscriptomes, where nucleic acids are simply "
             "the source material and the study is not framed as eDNA/eRNA detection, monitoring, sampling, or "
-            "method development?"
+            "method development for macroscopic vertebrates or invertebrates? Microbial-only methods, detection "
+            "and monitoring still count as microbial_only."
         ),
         "criteria": {
             "true": (
                 "The main goal is to describe microbial community composition, diversity, function, or responses to "
                 "environmental factors (e.g. soil fungal diversity, harmful algal assemblages, bacterial communities "
                 "in water or sediment, MAGs, resistomes, viromes), without an explicit eDNA/eRNA detection, "
-                "monitoring, or methodological contribution."
+                "monitoring, or methodological contribution related to macroscopic vertebrates or invertebrates."
             ),
             "false": (
                 "The study is not merely generic microbial profiling, or it has a meaningful eDNA/eRNA detection, "
-                "monitoring, sampling, quantification, validation, or methodological component. Do not mark true "
-                "solely because 16S, 18S, ITS, rbcL, COI, metabarcoding, or metagenomics terms appear."
+                "monitoring, sampling, quantification, validation, or methodological component directly related to "
+                "macroscopic vertebrates or invertebrates. Do not mark true "
+                "solely because marker or metabarcoding terms appear. A microbial-only study remains true even when "
+                "it uses eDNA terminology or develops microbial detection methods."
             ),
         },
     },
@@ -141,7 +151,9 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             "Does the study itself develop, evaluate, compare, or validate a sampling, preservation, extraction, "
             "detection, amplification, sequencing, quantification, bioinformatic, or modeling method for DNA or "
             "RNA recovered from environmental samples (water, sediment, soil, air, wastewater, biofilm, swabs, or"
-            " similar), using its own data?"
+            " similar), using its own data? For microbial studies, qualify only if the method is directly "
+            "evaluated for detection or monitoring of macroscopic vertebrates or invertebrates; microbial-only "
+            "detection, profiling and activity measurement do not qualify."
         ),
         "criteria": {
             "true": (
@@ -198,6 +210,18 @@ SCORE_COLUMNS = [col for col in EXTRA_COLUMNS if col not in {
 }]
 
 
+def output_column(name: str) -> str:
+    return name.removeprefix("strands_") if name in EXTRA_COLUMNS else name
+
+
+def output_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(row)
+    for name in EXTRA_COLUMNS:
+        if name.startswith("strands_") and name in result:
+            result[output_column(name)] = result.pop(name)
+    return result
+
+
 class ScoreCache:
     def __init__(self, path: Path):
         path = path.with_name(f"{path.stem}.{PROMPT_VERSION}{path.suffix}")
@@ -210,12 +234,12 @@ class ScoreCache:
         if path.exists():
             with path.open(newline="", encoding="utf-8") as stream:
                 reader = csv.DictReader(stream)
-                self._incompatible_header = not set(["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS]).issubset(reader.fieldnames or [])
+                self._incompatible_header = not set(["flag_record_id", "flag_prompt_version", *(output_column(col) for col in SCORE_COLUMNS)]).issubset(reader.fieldnames or [])
                 if self._incompatible_header:
                     return
                 for row in reader:
                     if row.get("flag_prompt_version") == PROMPT_VERSION:
-                        self.rows[row["flag_record_id"]] = {col: row[col] for col in SCORE_COLUMNS}
+                        self.rows[row["flag_record_id"]] = {col: row[output_column(col)] for col in SCORE_COLUMNS}
 
     def get(self, rec_id: str) -> dict[str, str] | None:
         scores = self.rows.get(rec_id)
@@ -229,10 +253,10 @@ class ScoreCache:
         row = {col: str(scores.get(col, "")) for col in SCORE_COLUMNS}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("w" if self._incompatible_header else "a", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS])
+            writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *(output_column(col) for col in SCORE_COLUMNS)])
             if stream.tell() == 0:
                 writer.writeheader()
-            writer.writerow({"flag_record_id": rec_id, "flag_prompt_version": PROMPT_VERSION, **row})
+            writer.writerow(output_row({"flag_record_id": rec_id, "flag_prompt_version": PROMPT_VERSION, **row}))
             stream.flush()
         self._incompatible_header = False
         self.rows[rec_id] = row
@@ -476,7 +500,10 @@ def decide_label(
     exclude_method_relevance_max: float,
     exclude_review_min: float,
     exclude_review_out_min: float,
+    exclude_microbial_only_min: float = 0.80,
 ) -> str:
+    if p_microbial_only >= exclude_microbial_only_min and p_method_relevance <= exclude_method_relevance_max:
+        return "out_of_scope"
     if (
         p_in_scope >= include_threshold
         and p_actual_use >= actual_use_threshold
@@ -564,6 +591,7 @@ def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[st
         p_review=p_review,
         include_threshold=cfg.include_threshold,
         include_microbial_only_max=cfg.include_microbial_only_max,
+        exclude_microbial_only_min=cfg.exclude_microbial_only_min,
         actual_use_threshold=cfg.actual_use_threshold,
         exclude_threshold=cfg.exclude_threshold,
         exclude_actual_use_max=cfg.exclude_actual_use_max,

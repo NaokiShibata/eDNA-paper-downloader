@@ -1,7 +1,8 @@
 {
-  // Default Clef 27B Q8_0 server; uses the evaluated Strands v4 thresholds.
+  // Default Clef 27B Q8_0 server; uses the macrofauna-related microbial policy.
   "base_url": "http://127.0.0.1:8014",
   "batch_questions": true,
+  "exclude_microbial_only_min": 0.80,
   // Prevent sharing Strands scores with a different model.
   "cache_csv": null
 }

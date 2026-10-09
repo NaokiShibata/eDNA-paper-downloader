@@ -51,10 +51,10 @@ def _validate_filtered_outputs(
         "title",
         "abstract",
         "flag_label",
-        "strands_p_in_scope",
-        "strands_p_out_of_scope",
-        "strands_p_actual_use",
-        "strands_p_method_relevance",
+        "p_in_scope",
+        "p_out_of_scope",
+        "p_actual_use",
+        "p_method_relevance",
     }
     for name, df in (("retained", retained), ("rejected", rejected)):
         missing = sorted(required - set(df.columns))

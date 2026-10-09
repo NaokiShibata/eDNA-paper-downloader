@@ -20,6 +20,8 @@ from libs.strands_screening import (
     default_config_path,
     format_status,
     load_config,
+    output_column,
+    output_row,
     prepare_abstract,
     screen_row,
 )
@@ -77,7 +79,7 @@ def flag(
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     cache = ScoreCache(Path(cfg.cache_csv)) if cfg.cache_csv is not None else None
-    fieldnames = list(df.columns) + [col for col in EXTRA_COLUMNS if col not in df.columns]
+    fieldnames = list(dict.fromkeys(output_column(col) for col in list(df.columns) + EXTRA_COLUMNS))
 
     session = requests.Session()
     try:
@@ -120,7 +122,7 @@ def flag(
                 error_count += 1
                 logger.warning("process_error record=%s error=%s", out_row["flag_record_id"], out_row["flag_reason"])
 
-            writer.writerow(out_row)
+            writer.writerow(output_row(out_row))
             handle.flush()
             processed_count += 1
 
