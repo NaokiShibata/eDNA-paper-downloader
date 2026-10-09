@@ -72,6 +72,45 @@ def _command(model: str | None, url: str) -> tuple[list[str], int]:
     return command, (weights.stat().st_size + 1024**2 - 1) // 1024**2 + 3072
 
 
+def _server_gpu_uuids(urls: list[str], device_uuids: set[str]) -> set[str]:
+    processes = subprocess.run(
+        ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, check=True, timeout=10,
+    )
+    pinned = set()
+    ports = {str(urlsplit(url).port) for url in urls if urlsplit(url).hostname in ("localhost", "127.0.0.1")}
+    for row in csv.reader(processes.stdout.splitlines()):
+        if len(row) != 2 or row[1].strip() not in device_uuids:
+            continue
+        try:
+            argv = Path(f"/proc/{int(row[0])}/cmdline").read_bytes().decode().split("\0")
+        except (OSError, ValueError):
+            continue
+        if any(arg == "--port" and following in ports for arg, following in zip(argv, argv[1:], strict=False)):
+            pinned.add(row[1].strip())
+    return pinned
+
+
+def _gpu_status(url: str, gpu: int | None = None) -> str:
+    if urlsplit(url).hostname not in ("localhost", "127.0.0.1"):
+        return "gpu=unknown vram=unavailable (remote server)"
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,uuid,name,memory.used,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+        rows = [[value.strip() for value in row] for row in csv.reader(result.stdout.splitlines())]
+        uuids = _server_gpu_uuids([url], {row[1] for row in rows}) if gpu is None else set()
+        statuses = []
+        for index, uuid, name, used, total in rows:
+            if (gpu is not None and int(index) == gpu) or (gpu is None and uuid in uuids):
+                percentage = 100 * int(used) / int(total)
+                statuses.append(f"gpu={index} gpu_name={name} vram={used}/{total} MiB ({percentage:.1f}%, GPU total)")
+        return "; ".join(statuses) or "gpu=unknown vram=unavailable"
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, ZeroDivisionError):
+        return "gpu=unknown vram=unavailable"
+
+
 def _gpu(required_mib: int, reused_urls: list[str]) -> int:
     try:
         result = subprocess.run(
@@ -80,23 +119,10 @@ def _gpu(required_mib: int, reused_urls: list[str]) -> int:
         )
         devices = {row[1].strip(): (int(row[0]), int(row[2])) for row in csv.reader(result.stdout.splitlines())}
         # Keep newly started models on the GPU of an existing local stage.
-        processes = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
+        pinned = _server_gpu_uuids(reused_urls, set(devices))
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         raise RuntimeError(f"cannot inspect GPU free memory: {exc}") from exc
-    pinned = set()
     ports = {str(urlsplit(url).port) for url in reused_urls if urlsplit(url).hostname in ("localhost", "127.0.0.1")}
-    for row in csv.reader(processes.stdout.splitlines()):
-        if len(row) != 2 or row[1].strip() not in devices:
-            continue
-        try:
-            argv = Path(f"/proc/{int(row[0])}/cmdline").read_bytes().decode().split("\0")
-        except (OSError, ValueError):
-            continue
-        if any(arg == "--port" and following in ports for arg, following in zip(argv, argv[1:], strict=False)):
-            pinned.add(row[1].strip())
     if len(pinned) > 1:
         raise RuntimeError("existing screening servers use different GPUs; automatic startup requires one GPU")
     if ports and not pinned:
@@ -131,19 +157,21 @@ def screening_servers(
     cfg: ScreeningConfig, session: requests.Session, logger: logging.Logger, log_dir: Path,
     *, enabled: bool = True, startup_timeout: float = 180,
 ) -> Iterator[ScreeningConfig]:
-    if not enabled:
-        yield cfg
-        return
     model = cfg.expected_model or (STRANDS_MODEL if cfg.base_url == DEFAULT_BASE_URL else None)
     stages = [("base_url", cfg.base_url, model)]
     if cfg.first_stage_base_url is not None:
         stages.append(("first_stage_base_url", cfg.first_stage_base_url, cfg.first_stage_model))
+    if not enabled:
+        for _, url, model in stages:
+            logger.info("using screening server model=%s url=%s %s", model, url, _gpu_status(url))
+        yield cfg
+        return
     missing = []
     reused = []
     for field, url, model in stages:
         if _ready(session, url, model):
             reused.append(url)
-            logger.info("reusing screening server model=%s url=%s", model, url)
+            logger.info("reusing screening server model=%s url=%s %s", model, url, _gpu_status(url))
         else:
             selected = _free_url(url)
             command, memory = _command(model, selected)
@@ -168,7 +196,7 @@ def screening_servers(
             if ptxas is not None:
                 env.setdefault("TRITON_PTXAS_BLACKWELL_PATH", ptxas)
             log = log_dir / f"screen-server-{os.getpid()}-{urlsplit(url).port}.log"
-            logger.info("starting model=%s gpu=%s url=%s log=%s", model, gpu, url, log)
+            logger.info("starting model=%s url=%s %s log=%s", model, url, _gpu_status(url, gpu), log)
             with log.open("w") as handle:
                 try:
                     process = subprocess.Popen(command, env=env, stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
@@ -181,6 +209,7 @@ def screening_servers(
                 if process.poll() is not None:
                     raise RuntimeError(f"server for {model} exited with code {process.returncode}; see {log}")
                 if _ready(session, url, model):
+                    logger.info("ready screening server model=%s url=%s %s", model, url, _gpu_status(url, gpu))
                     break
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"server for {model} did not become ready within {startup_timeout}s; see {log}")

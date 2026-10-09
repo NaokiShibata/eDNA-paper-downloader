@@ -14,7 +14,16 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "script"))
 
-from libs.screen_servers import STRANDS_MODEL, _free_url, _gpu, _ready, _stop, _terminate, screening_servers
+from libs.screen_servers import (
+    STRANDS_MODEL,
+    _free_url,
+    _gpu,
+    _gpu_status,
+    _ready,
+    _stop,
+    _terminate,
+    screening_servers,
+)
 from libs.strands_screening import ScreeningConfig
 
 
@@ -24,23 +33,46 @@ class ScreenServersTests(unittest.TestCase):
                                    first_stage_base_url="http://127.0.0.1:8012", first_stage_model=STRANDS_MODEL)
         self.logger = Mock(spec=logging.Logger)
 
+    def test_gpu_status_reports_gpu_total_for_selected_device(self):
+        with patch("libs.screen_servers.subprocess.run", return_value=Mock(stdout="0, GPU-A, RTX 8000, 24576, 49152\n")):
+            status = _gpu_status(self.cfg.base_url, 0)
+        self.assertEqual(status, "gpu=0 gpu_name=RTX 8000 vram=24576/49152 MiB (50.0%, GPU total)")
+
+    def test_reused_server_gpu_is_identified_by_process_port(self):
+        results = [Mock(stdout="0, GPU-A, RTX 8000, 24576, 49152\n1, GPU-B, RTX 5060 Ti, 2048, 16384\n"),
+                   Mock(stdout="123, GPU-A\n")]
+        with patch("libs.screen_servers.subprocess.run", side_effect=results), \
+                patch("libs.screen_servers.Path.read_bytes", return_value=b"llama-server\0--port\08014\0"):
+            self.assertIn("gpu_name=RTX 8000", _gpu_status(self.cfg.base_url))
+
+    def test_gpu_status_failure_does_not_break_screening(self):
+        with patch("libs.screen_servers.subprocess.run", side_effect=FileNotFoundError):
+            self.assertEqual(_gpu_status(self.cfg.base_url), "gpu=unknown vram=unavailable")
+        with patch("libs.screen_servers.subprocess.run") as query:
+            self.assertIn("remote server", _gpu_status("https://example.com:8014"))
+            query.assert_not_called()
+
     def test_existing_servers_are_never_started_or_stopped(self):
         with patch("libs.screen_servers._ready", return_value=True), \
+                patch("libs.screen_servers._gpu_status", return_value="gpu=0 vram=50%"), \
                 patch("libs.screen_servers.subprocess.Popen") as start, \
                 patch("libs.screen_servers._stop") as stop:
             with screening_servers(self.cfg, Mock(), self.logger, Path("logs")) as cfg:
                 self.assertEqual(cfg, self.cfg)
             start.assert_not_called()
             stop.assert_not_called()
+            self.assertTrue(all(call.args[-1] == "gpu=0 vram=50%" for call in self.logger.info.call_args_list))
 
     def test_disabled_does_not_probe_or_start(self):
-        with patch("libs.screen_servers._ready") as probe:
+        with patch("libs.screen_servers._ready") as probe, \
+                patch("libs.screen_servers._gpu_status", return_value="gpu=unknown vram=unavailable"):
             with screening_servers(self.cfg, Mock(), self.logger, Path("logs"), enabled=False) as cfg:
                 self.assertEqual(cfg, self.cfg)
             probe.assert_not_called()
 
     def test_owned_first_stage_stops_even_on_interrupt(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch("libs.screen_servers._gpu_status", return_value="gpu=0 vram=50%"))
             stack.enter_context(patch("libs.screen_servers._ready", side_effect=[True, False, True]))
             stack.enter_context(patch("libs.screen_servers._free_url", return_value="http://127.0.0.1:19012"))
             stack.enter_context(patch("libs.screen_servers._command", return_value=(["strands-decider"], 6144)))
@@ -59,6 +91,7 @@ class ScreenServersTests(unittest.TestCase):
 
     def test_partial_start_failure_cleans_up_previous_server(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch("libs.screen_servers._gpu_status", return_value="gpu=0 vram=50%"))
             stack.enter_context(patch("libs.screen_servers._ready", side_effect=[False, False, True]))
             stack.enter_context(patch("libs.screen_servers._free_url", side_effect=lambda url: url))
             stack.enter_context(patch("libs.screen_servers._command", return_value=(["server"], 100)))
@@ -76,6 +109,7 @@ class ScreenServersTests(unittest.TestCase):
     def test_startup_timeout_stops_owned_server(self):
         previous_handler = signal.getsignal(signal.SIGTERM)
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch("libs.screen_servers._gpu_status", return_value="gpu=0 vram=50%"))
             stack.enter_context(patch("libs.screen_servers._ready", side_effect=[True, False, False]))
             stack.enter_context(patch("libs.screen_servers._free_url", side_effect=lambda url: url))
             stack.enter_context(patch("libs.screen_servers._command", return_value=(["server"], 100)))
