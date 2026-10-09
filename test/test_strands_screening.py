@@ -117,12 +117,12 @@ class StrandsScreeningTest(unittest.TestCase):
 
     def test_cascade_routes_uncertain_results_and_first_stage_failure(self) -> None:
         from libs.strands_screening import evaluate_abstract
-        cfg = ScreeningConfig(first_stage_base_url="http://fast", first_stage_model="fast", first_stage_min_probability=0.95)
+        cfg = ScreeningConfig(first_stage_base_url="http://fast", first_stage_model="fast")
         fast = {"flag_model_path": "fast", "strands_latency_ms": 1,
                 "strands_p_in_scope": 0.96, "strands_p_out_of_scope": 0.02, "strands_p_unsure": 0.02,
                 "strands_p_actual_use": 0.8, "strands_p_microbial_only": 0.1,
                 "strands_p_method_relevance": 0.4, "strands_p_review": 0.1}
-        for probability, actual_use, expected in [(0.96, 0.8, "first"), (0.94, 0.8, "second"),
+        for probability, actual_use, expected in [(0.96, 0.8, "first"), (0.94, 0.8, "first"),
                                                  (0.96, 0.2, "second")]:
             candidate = fast | {"strands_p_in_scope": probability, "strands_p_unsure": 0.98 - probability,
                                 "strands_p_actual_use": actual_use}
@@ -134,6 +134,19 @@ class StrandsScreeningTest(unittest.TestCase):
             result = evaluate_abstract(Mock(), "abstract", cfg)
             self.assertEqual(result["evaluation_stage"], "second")
             self.assertEqual(result["first_stage_error"], "offline")
+
+    def test_cascade_accepts_exclusion_and_routes_short_abstract_to_27b(self) -> None:
+        from libs.strands_screening import evaluate_abstract
+        cfg = ScreeningConfig(first_stage_base_url="http://strands")
+        scores = {"flag_model_path": "strands", "strands_latency_ms": 1,
+                  "strands_p_in_scope": 0.2, "strands_p_out_of_scope": 0.7, "strands_p_unsure": 0.1,
+                  "strands_p_actual_use": 0.2, "strands_p_microbial_only": 0.1,
+                  "strands_p_method_relevance": 0.1, "strands_p_review": 0.1}
+        for text, stage in [("Abstract " * 50, "first"), ("Title: Study\nAbstract: Too short", "second")]:
+            with patch("libs.strands_screening._evaluate_abstract", side_effect=[scores.copy(), scores.copy()]) as infer:
+                result = evaluate_abstract(Mock(), text, cfg)
+                self.assertEqual(result["evaluation_stage"], stage)
+                self.assertEqual(infer.call_count, 1 if stage == "first" else 2)
 
     def test_cascade_strands_uses_sequential_requests(self) -> None:
         from libs.strands_screening import evaluate_abstract

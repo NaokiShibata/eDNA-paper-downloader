@@ -2,17 +2,17 @@
 
 ## 軽量モデルから27Bへの二段階判定
 
-Strands Deciderで一次判定し、確信度の高い採用・除外を確定する。
+Strands Deciderで一次判定し、`in_scope` と `out_of_scope` を確定する。
 Strandsは5問を順次送信し、27Bは5問を一括送信する。
-要確認と確信度の低い判定だけGPU 0のClef 27B Q8_0へ渡す。
+最終ラベルが `unsure` の論文だけGPU 0のClef 27B Q8_0へ渡す。一次推論のエラー・不正な確率は例外として27Bへ回す。
 両モデルで同じ `edna-macrofauna-v6` の質問と判定規則を使う。
 
 設定例は `config/clef_cascade.example.jsonc`。
-`first_stage_min_probability` は速度重視の初期値0.80とした。
-採用の根拠は `p_in_scope`、除外の根拠は `p_out_of_scope`、除外条件を満たす `p_microbial_only` または `p_review` とする。
-一次判定が `unsure` の場合は、scope確率が高くても27Bへ渡す。
-短い抄録の自動除外防止は最終段でも維持する。
-0.80は独立データで校正した閾値ではなく、モデルの出す確率を確定精度と解釈しない。
+以前の `first_stage_min_probability` は削除し、確信度による追加ゲートを使わない。
+Strandsのscope回答ではなく、採用・除外ガードを適用した最終ラベルで振り分ける。
+短い抄録で除外を保留した論文は一次でも `unsure` とし、27Bへ渡す。
+Strandsが確定した採用・除外の誤りは27Bで修正されない。
+既存のローカル設定に `first_stage_min_probability` がある場合は削除する。
 
 CSVの `evaluation_stage` は `first` がStrandsのみ、`second` が27Bで再判定した結果を表す。
 最終採用・除外には `flag_label` を使う。
@@ -101,7 +101,7 @@ Clefは全質問を一つのpromptにまとめ、一つの物理バッチで評�
 単にクライアントの並列数を増やしてもGPU計算量は減らない。
 [llama.cppのSystem One API仕様](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1systemone-typesafe-compatible-system-one-api)
 
-## Strands→27Bの動作・時間確認
+## 以前の確信度ゲートによるStrands→27Bの動作・時間確認
 
 v6の同じ入力20件を、二段階と27B単独で続けて実行した。
 Strandsと27BはRTX 8000上に同居させ、キャッシュヒットなしで測った。
@@ -116,3 +116,10 @@ Strandsと27BはRTX 8000上に同居させ、キャッシュヒットなしで�
 少数件・同一GPU・時点の異なる参考測定であり、独立した確定ラベルによる精度改善は未検証である。
 一次モデルはユーザーの意図に従いStrandsとしたが、この構成が高速化したとは結論しない。
 実装は1論文ずつの直列処理で、別論文のStrandsと27Bを重ねる並列パイプラインは未実装。
+
+## unsureだけを再評価する変更
+
+現在はユーザー指定に従い、Strandsの `unsure` だけを27Bで再評価する。
+変更前の処理中CSV143件ではStrandsの `unsure` が99件（約69%）だったため、以前の約90%より27Bの割合が減る見込み。
+短い抄録の保留を含む実際の割合と、変更後の実行時間・精度は未測定。
+進行中のプロセスには変更が反映されないため、次回の実行から適用する。

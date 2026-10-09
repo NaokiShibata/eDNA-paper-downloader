@@ -1,6 +1,6 @@
 # Clef 27B Q8_0の実行例
 
-既定はStrands Deciderで一次判定し、不確かな結果をCloudflare Clefの27B版（ggml-org Q8_0）で再判定する二段階構成である。
+既定はStrands Deciderで一次判定し、`unsure` の結果だけをCloudflare Clefの27B版（ggml-org Q8_0）で再判定する二段階構成である。
 `screen` と `fetch --strands` は `config/clef_flagger.jsonc` があれば読み込み、なければ `config/clef_flagger.example.jsonc` を使う。
 旧 `config/strands_flagger.jsonc` は自動選択しない。
 質問は `edna-macrofauna-v6` を使用し、同一入力・質問・モデル名のスコアキャッシュを有効にする。

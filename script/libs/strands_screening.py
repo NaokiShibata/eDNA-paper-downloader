@@ -27,7 +27,6 @@ class ScreeningConfig:
     first_stage_base_url: str | None = None
     first_stage_model: str | None = None
     first_stage_batch_questions: bool = True
-    first_stage_min_probability: float = 0.90
     timeout: float = 120.0
     retries: int = 3
     include_threshold: float = 0.45
@@ -64,10 +63,7 @@ class ScreeningConfig:
                 else:
                     value = float(value)
             values[name] = value
-        cfg = cls(**values)
-        if not math.isfinite(cfg.first_stage_min_probability) or not 0.5 < cfg.first_stage_min_probability <= 1:
-            raise ValueError("first_stage_min_probability must be > 0.5 and <= 1")
-        return cfg
+        return cls(**values)
 
 
 QUESTIONS: dict[str, dict[str, Any]] = {
@@ -650,6 +646,9 @@ def evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningCo
     try:
         fast = _evaluate_abstract(session, abstract, fast_cfg)
         label = apply_thresholds(fast, cfg)["flag_label"]
+        abstract_text = abstract.split("\nAbstract:", 1)[-1].strip()
+        if label == "out_of_scope" and len(abstract_text) < MIN_ABSTRACT_CHARS_FOR_EXCLUSION:
+            label = "unsure"
         metadata = {
             "first_stage_model": fast["flag_model_path"], "first_stage_label": label,
             "first_stage_p_in_scope": fast["strands_p_in_scope"],
@@ -667,7 +666,7 @@ def evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningCo
             if float(fast["strands_p_out_of_scope"]) >= cfg.exclude_review_out_min:
                 confidence = max(confidence, float(fast["strands_p_review"]))
         metadata["first_stage_confidence"] = confidence
-        if label in ("in_scope", "out_of_scope") and valid and confidence >= cfg.first_stage_min_probability:
+        if label in ("in_scope", "out_of_scope") and valid:
             return fast | metadata | {"evaluation_stage": "first"}
     except Exception as exc:
         metadata = {"first_stage_model": cfg.first_stage_model or "", "first_stage_label": "process_error",
@@ -713,7 +712,6 @@ def screen_row(
                 "state": state, "questions": QUESTIONS, "server": cfg.base_url,
                 "model": cfg.expected_model, "batch_questions": cfg.batch_questions,
                 "first_stage_server": cfg.first_stage_base_url, "first_stage_model": cfg.first_stage_model,
-                "first_stage_min_probability": cfg.first_stage_min_probability,
                 "first_stage_batch_questions": cfg.first_stage_batch_questions,
                 "routing_policy": {field.name: getattr(cfg, field.name) for field in fields(cfg)
                                    if field.name.startswith(("include_", "exclude_", "actual_use_"))}
