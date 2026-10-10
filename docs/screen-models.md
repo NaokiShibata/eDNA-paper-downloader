@@ -41,6 +41,24 @@ pixi run screen results/edna_latest.csv --model1 clef_flash --out-csv results/ed
 `--strands`/`--strandes`は`--model1 strands`、`--clef`は`--model1 clef`、`--both`は`--model1 strands --model2 clef`に相当する。
 旧引数と`--model1`/`--model2`は同時に指定できない。
 
+## GPUの指定
+
+`--gpu`で`nvidia-smi`の物理GPU番号を指定する。省略時は従来の自動選択を使う。
+
+```bash
+pixi run screen 入力.csv --model1 strands --gpu 1
+pixi run screen 入力.csv --model1 strands --model2 clef --gpu 0
+pixi run screen 入力.csv --model1 strands --model2 clef_omni --gpu 0,1
+```
+
+Omniを含む場合は2枚を指定し、先頭に約48,200MiB、次に約13,700MiBの空きが必要である。
+この順序をCUDA配置に使い、Omni以外の段は先頭GPUを使う。
+Omniを含まない実行は1枚を指定する。
+容量不足・存在しない番号・既存サーバーのGPU不一致ではエラーにし、別GPUへ切り替えない。
+既存サーバーのGPUを変更・停止する操作は行わない。
+指定した番号と実際のGPU情報はログに記録する。
+`--no-auto-server`とは併用できない。
+
 ## Omniの準備
 
 この環境では公式重みと隔離した実行環境を取得済みで、再ダウンロードは不要である。

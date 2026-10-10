@@ -42,6 +42,7 @@ class StagedScreenTests(unittest.TestCase):
         @contextmanager
         def servers(cfg, *args, **kwargs):
             self.assertFalse(active, "stage 1 must exit before stage 2 starts")
+            self.assertEqual(kwargs["gpu_indices"], [0, 1])
             active.append(cfg.expected_model)
             events.append(("start", cfg.expected_model))
             try:
@@ -66,7 +67,7 @@ class StagedScreenTests(unittest.TestCase):
             root = Path(directory)
             cfg = screen._select_models(ScreeningConfig(cache_csv=str(root / "cache.csv")), "strands", "clef_omni")
             out = root / "output.csv"
-            screen._screen_staged(df, out, "abstract", cfg, Mock(), Mock(), enabled=True, startup_timeout=5, log_dir=root)
+            screen._screen_staged(df, out, "abstract", cfg, Mock(), Mock(), enabled=True, startup_timeout=5, log_dir=root, gpu_indices=[0, 1])
             with out.open() as handle:
                 first = list(csv.DictReader(handle))
             self.assertEqual(events, [("start", STRANDS_MODEL), ("stop", STRANDS_MODEL),
@@ -78,7 +79,7 @@ class StagedScreenTests(unittest.TestCase):
             self.assertEqual(first[2]["latency_ms"], "20.0")
             self.assertFalse(any(h.startswith("strands_") for h in first[0]))
             calls.clear()
-            screen._screen_staged(df, out, "abstract", cfg, Mock(), Mock(), enabled=True, startup_timeout=5, log_dir=root)
+            screen._screen_staged(df, out, "abstract", cfg, Mock(), Mock(), enabled=True, startup_timeout=5, log_dir=root, gpu_indices=[0, 1])
             self.assertEqual(calls, [(STRANDS_MODEL, "error")], "successful per-model scores must be cached independently")
             with out.open() as handle:
                 self.assertEqual(first, list(csv.DictReader(handle)))

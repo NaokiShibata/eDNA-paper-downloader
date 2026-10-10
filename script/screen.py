@@ -107,6 +107,7 @@ def flag(
     clef: bool = typer.Option(False, "--clef", help="Use Clef 27B only."),
     model1: str | None = typer.Option(None, "--model1", help="Initial model: strands, clef, clef_flash, clef_omni."),
     model2: str | None = typer.Option(None, "--model2", help="Recheck unsure results with this model; requires --model1."),
+    gpu: str | None = typer.Option(None, "--gpu", help="Physical nvidia-smi GPU index, or ordered pair for Omni (e.g. 0,1)."),
     auto_server: bool = typer.Option(True, "--auto-server/--no-auto-server", help="Start missing local model servers and stop owned servers on exit."),
     server_startup_timeout: float = typer.Option(180, "--server-startup-timeout", min=1, help="Maximum seconds to wait for each automatically started server."),
     log_file: Path = typer.Option(Path("logs/screen.log"), "--log-file"),
@@ -125,7 +126,7 @@ def flag(
     log_run_header(logger, params={
         "input_csv": str(input_csv.resolve()), "out_csv": str(out_csv.resolve()),
         "config": str(config.resolve()), "abstract_column": abstract_column,
-        "limit": limit, "dry_run": dry_run, "model1": model1, "model2": model2,
+        "limit": limit, "dry_run": dry_run, "model1": model1, "model2": model2, "gpu": gpu,
         "strands": strands, "both": both, "clef": clef, "auto_server": auto_server,
         "server_startup_timeout": server_startup_timeout, "log_level": log_level,
     }, log_file=log_file, command=shlex.join([sys.executable, *sys.argv]),
@@ -138,6 +139,17 @@ def flag(
         raise typer.BadParameter(f"invalid screening config: {exc}") from exc
     mode = "strands" if strands else "both" if both else "clef" if clef else None
     cfg = _select_models(cfg, model1, model2) if model1 is not None else _select_mode(cfg, mode)
+    gpu_indices = None
+    if gpu is not None:
+        try:
+            gpu_indices = [int(value.strip()) for value in gpu.split(",")]
+        except ValueError as exc:
+            raise typer.BadParameter("--gpu must contain integer indices, e.g. 0 or 0,1") from exc
+        count = 2 if OMNI_MODEL in (cfg.expected_model, cfg.first_stage_model) else 1
+        if len(gpu_indices) != count or len(set(gpu_indices)) != count or min(gpu_indices) < 0:
+            raise typer.BadParameter(f"--gpu requires {count} distinct non-negative GPU indices")
+        if not auto_server:
+            raise typer.BadParameter("--gpu cannot be combined with --no-auto-server")
     logger.info("Effective screening settings: %s", json.dumps(asdict(cfg), sort_keys=True))
     logger.info("prompt_version=%s input_fields=title+%s", PROMPT_VERSION, abstract_column)
     logger.info("screening mode=%s", mode or ("both" if cfg.first_stage_base_url else cfg.expected_model or "configured"))
@@ -168,10 +180,10 @@ def flag(
         try:
             if cfg.first_stage_base_url and OMNI_MODEL in (cfg.expected_model, cfg.first_stage_model):
                 _screen_staged(df, out_csv, abstract_column, cfg, session, logger, enabled=auto_server,
-                               startup_timeout=server_startup_timeout, log_dir=log_file.parent)
+                               startup_timeout=server_startup_timeout, log_dir=log_file.parent, gpu_indices=gpu_indices)
                 return
             with screening_servers(cfg, session, logger, log_file.parent, enabled=auto_server,
-                                   startup_timeout=server_startup_timeout) as running_cfg:
+                                   startup_timeout=server_startup_timeout, gpu_indices=gpu_indices) as running_cfg:
                 _screen(df, out_csv, abstract_column, running_cfg, session, logger)
         except RuntimeError as exc:
             logger.exception("Screening failed")
@@ -256,6 +268,7 @@ def _screen_staged(
     df: pd.DataFrame, out_csv: Path, abstract_column: str, cfg: ScreeningConfig,
     session: requests.Session, logger: logging.Logger, *, enabled: bool, startup_timeout: float,
     log_dir: Path,
+    gpu_indices: list[int] | None = None,
 ) -> None:
     """Release owned first-stage weights before loading a GPU-filling Omni model."""
     primary = replace(cfg, base_url=cfg.first_stage_base_url or cfg.base_url,
@@ -264,7 +277,7 @@ def _screen_staged(
     secondary = replace(cfg, first_stage_base_url=None, first_stage_model=None)
     typer.echo(f"Stage 1: model={primary.expected_model}; stage 2: model={secondary.expected_model} (unsure only)")
     with screening_servers(primary, session, logger, log_dir, enabled=enabled,
-                           startup_timeout=startup_timeout) as running:
+                           startup_timeout=startup_timeout, gpu_indices=gpu_indices) as running:
         rows = _screen(df, out_csv, abstract_column, running, session, logger, collect=True)
     pending = []
     details = {}
@@ -305,7 +318,7 @@ def _screen_staged(
         logger.info("Stage 2: model=%s rechecking=%d total=%d", secondary.expected_model, len(pending), len(rows))
         if pending:
             with screening_servers(secondary, session, logger, log_dir, enabled=enabled,
-                                   startup_timeout=startup_timeout, wait_for_memory=True) as running:
+                                   startup_timeout=startup_timeout, wait_for_memory=True, gpu_indices=gpu_indices) as running:
                 checked = _screen(df.iloc[pending], Path(directory) / "second.csv", abstract_column,
                                   running, session, logger, collect=True)
             for index, result in zip(pending, checked, strict=True):

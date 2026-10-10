@@ -152,7 +152,7 @@ def gpu_progress(urls: list[str], update: Callable[[str], None]) -> Iterator[Non
         worker.join(timeout=5)
 
 
-def _gpu(required_mib: int, reused_urls: list[str], *, wait_seconds: float = 0) -> int:
+def _gpu(required_mib: int, reused_urls: list[str], *, wait_seconds: float = 0, selected: int | None = None) -> int:
     deadline = time.monotonic() + wait_seconds
     while True:
         try:
@@ -171,15 +171,18 @@ def _gpu(required_mib: int, reused_urls: list[str], *, wait_seconds: float = 0) 
         if ports and not pinned:
             raise RuntimeError("cannot identify the GPU of an existing local screening server; start missing stages manually and use --no-auto-server")
         candidates = [value for uuid, value in devices.items() if not pinned or uuid in pinned]
+        if selected is not None:
+            candidates = [value for value in candidates if value[0] == selected]
         fitting = [(index, free) for index, free in candidates if free >= required_mib]
         if fitting:
             return max(fitting, key=lambda item: item[1])[0]
         if time.monotonic() >= deadline:
-            raise RuntimeError(f"no suitable GPU has the estimated {required_mib} MiB free for missing servers; existing servers were left running")
+            raise RuntimeError(f"no suitable GPU has the estimated {required_mib} MiB free for missing servers "
+                               f"(requested GPU={selected}, candidate GPU/free MiB={candidates}); existing servers were left running")
         time.sleep(.5)
 
 
-def _omni_gpus(*, wait_seconds: float = 0) -> list[int]:
+def _omni_gpus(*, wait_seconds: float = 0, selected: list[int] | None = None) -> list[int]:
     """Reserve room for the verified 37/11-layer FP16 placement, including buffers."""
     deadline = time.monotonic() + wait_seconds
     while True:
@@ -190,6 +193,9 @@ def _omni_gpus(*, wait_seconds: float = 0) -> list[int]:
             )
             devices = sorted(((int(row[0]), int(row[1])) for row in csv.reader(result.stdout.splitlines())),
                              key=lambda item: item[1], reverse=True)
+            if selected is not None:
+                free = dict(devices)
+                devices = [(index, free.get(index, 0)) for index in selected]
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             raise RuntimeError(f"cannot inspect GPU free memory: {exc}") from exc
         if len(devices) >= 2 and devices[0][1] >= 48200 and devices[1][1] >= 13700:
@@ -224,11 +230,16 @@ def _terminate(signum: int, _frame: FrameType | None) -> None:
 def screening_servers(
     cfg: ScreeningConfig, session: requests.Session, logger: logging.Logger, log_dir: Path,
     *, enabled: bool = True, startup_timeout: float = 180, wait_for_memory: bool = False,
+    gpu_indices: list[int] | None = None,
 ) -> Iterator[ScreeningConfig]:
     model = cfg.expected_model or (STRANDS_MODEL if cfg.base_url == DEFAULT_BASE_URL else None)
     stages = [("base_url", cfg.base_url, model)]
     if cfg.first_stage_base_url is not None:
         stages.append(("first_stage_base_url", cfg.first_stage_base_url, cfg.first_stage_model))
+    if gpu_indices is not None:
+        if not enabled:
+            raise RuntimeError("--gpu requires automatic server management; existing servers cannot be moved")
+        logger.info("Requested physical GPU indices=%s", gpu_indices)
     if not enabled:
         for _, url, model in stages:
             logger.info("using screening server model=%s url=%s %s", model, url, _gpu_status(url))
@@ -238,6 +249,20 @@ def screening_servers(
     reused = []
     for field, url, model in stages:
         if _ready(session, url, model):
+            if gpu_indices is not None:
+                try:
+                    result = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader,nounits"],
+                        capture_output=True, text=True, check=True, timeout=10,
+                    )
+                    devices = {int(row[0]): row[1].strip() for row in csv.reader(result.stdout.splitlines())}
+                    requested_indices = gpu_indices if model == OMNI_MODEL else gpu_indices[:1]
+                    expected = {devices[index] for index in requested_indices}
+                    actual = _server_gpu_uuids([url], set(devices.values()))
+                except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+                    raise RuntimeError(f"cannot verify requested GPU for existing server {url}: {exc}") from exc
+                if actual != expected:
+                    raise RuntimeError(f"existing server {url} does not use requested GPUs {requested_indices}; it was left running")
             reused.append(url)
             logger.info("reusing screening server model=%s url=%s %s", model, url, _gpu_status(url))
         else:
@@ -250,10 +275,14 @@ def screening_servers(
     if any(item[2] == OMNI_MODEL for item in missing):
         if len(stages) != 1:
             raise RuntimeError("Clef Omni needs staged startup; use screen --model1 ... --model2 clef_omni")
-        gpu: int | list[int] = _omni_gpus(wait_seconds=5)
+        gpu: int | list[int] = (_omni_gpus(wait_seconds=5, selected=gpu_indices) if gpu_indices is not None
+                                else _omni_gpus(wait_seconds=5))
     else:
         required = sum(item[4] for item in missing)
-        gpu = _gpu(required, reused, wait_seconds=5) if wait_for_memory else _gpu(required, reused)
+        if gpu_indices is not None:
+            gpu = _gpu(required, reused, wait_seconds=5 if wait_for_memory else 0, selected=gpu_indices[0])
+        else:
+            gpu = _gpu(required, reused, wait_seconds=5) if wait_for_memory else _gpu(required, reused)
     owned: list[subprocess.Popen[Any]] = []
     log_dir.mkdir(parents=True, exist_ok=True)
     previous_handler = signal.getsignal(signal.SIGTERM)

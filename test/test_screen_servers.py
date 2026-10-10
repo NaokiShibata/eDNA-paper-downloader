@@ -32,6 +32,30 @@ from libs.strands_screening import ScreeningConfig
 
 
 class ScreenServersTests(unittest.TestCase):
+    def test_explicit_gpu_does_not_fall_back_to_more_free_memory(self):
+        with patch("libs.screen_servers.subprocess.run", return_value=Mock(stdout="0, GPU-A, 49000\n1, GPU-B, 14000\n")), \
+                patch("libs.screen_servers._server_gpu_uuids", return_value=set()):
+            self.assertEqual(_gpu(6144, [], selected=1), 1)
+            for selected in [1, 9]:
+                with self.assertRaises(RuntimeError):
+                    _gpu(30000, [], selected=selected)
+        with patch("libs.screen_servers.subprocess.run", return_value=Mock(stdout="0, 49000\n1, 14000\n")):
+            self.assertEqual(_omni_gpus(selected=[0, 1]), [0, 1])
+            with self.assertRaises(RuntimeError):
+                _omni_gpus(selected=[1, 0])
+
+    def test_explicit_gpu_rejects_mismatched_existing_server_without_stopping_it(self):
+        with patch("libs.screen_servers._ready", return_value=True), \
+                patch("libs.screen_servers.subprocess.run", return_value=Mock(stdout="0, GPU-A\n1, GPU-B\n")), \
+                patch("libs.screen_servers._server_gpu_uuids", return_value={"GPU-A"}), \
+                patch("libs.screen_servers._stop") as stop, \
+                patch("libs.screen_servers.subprocess.Popen") as start:
+            with self.assertRaisesRegex(RuntimeError, "does not use requested"):
+                with screening_servers(self.cfg, Mock(), self.logger, Path("logs"), gpu_indices=[1]):
+                    pass
+            stop.assert_not_called()
+            start.assert_not_called()
+
     def setUp(self):
         self.cfg = ScreeningConfig(base_url="http://127.0.0.1:8014", expected_model="clef-27b-q8",
                                    first_stage_base_url="http://127.0.0.1:8012", first_stage_model=STRANDS_MODEL)

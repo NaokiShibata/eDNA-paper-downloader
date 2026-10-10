@@ -17,6 +17,33 @@ from libs.strands_screening import ScreeningConfig
 
 
 class ScreenModesTests(TestCase):
+    def test_gpu_cli_validates_and_forwards_physical_indices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.csv"
+            source.write_text("title,abstract\nStudy,Abstract\n")
+            config = root / "config.json"
+            config.write_text("{}")
+            args = [str(source), "--config", str(config), "--log-file", str(root / "screen.log")]
+            with patch("screen.screening_servers", side_effect=lambda cfg, *a, **kw: nullcontext(cfg)) as servers, \
+                    patch("screen._screen"):
+                result = CliRunner().invoke(screen.app, args + ["--model1", "strands", "--gpu", "1"])
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertEqual(servers.call_args.kwargs["gpu_indices"], [1])
+            with patch("screen._screen_staged") as staged:
+                result = CliRunner().invoke(screen.app, args + ["--model1", "strands", "--model2", "clef_omni", "--gpu", "0,1"])
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertEqual(staged.call_args.kwargs["gpu_indices"], [0, 1])
+            for options in [["--gpu", "-1"], ["--gpu", "abc"], ["--gpu", "0,1"],
+                            ["--gpu", "1", "--no-auto-server"],
+                            ["--model2", "clef_omni", "--gpu", "0"],
+                            ["--model2", "clef_omni", "--gpu", "0,0"]]:
+                with self.subTest(options=options), patch("screen.screening_servers") as servers, patch("screen._screen_staged") as staged:
+                    result = CliRunner().invoke(screen.app, args + ["--model1", "strands"] + options)
+                    self.assertNotEqual(result.exit_code, 0, result.output)
+                    servers.assert_not_called()
+                    staged.assert_not_called()
+
     def test_run_log_records_command_effective_settings_and_completion(self):
         import shlex
 
