@@ -94,6 +94,14 @@ CUDA_VISIBLE_DEVICES=0,1 .venv/bin/python script/serve_omni.py --port 8016
 この引数追加はOmniを既定モデルへ変更するものではない。
 分類精度の予備比較と限界は[FP16の2GPU実測](clef-omni-fp16-multigpu.md)を参照。
 
+## 実行ログ
+
+既定の`logs/screen.log`（`--log-file`で変更可能）へ、開始日時・実行Pythonと引数をシェルで引用したコマンド・作業ディレクトリ・入出力の絶対パスを記録する。
+`pixi run`など外側のラッパーはPythonから取得できないため、コマンド欄は実際のPythonプロセスの起動内容である。
+選択モデル、適用後のURL・閾値・質問送信方式・タイムアウト・キャッシュ設定、プロンプト版、入力/処理対象件数も記録する。
+サーバー起動・再利用・停止、GPU情報、キャッシュのヒット数、処理エラーと完了件数・出力先を同じログで確認できる。
+ログの詳細度は`--log-level`に従い、これらの通常情報は既定の`INFO`で出力する。
+
 ## 動作確認
 
 RTX 8000＋RTX 5060 Tiで、Strands→OmniとOmni→Strandsをそれぞれ3件で実行した。

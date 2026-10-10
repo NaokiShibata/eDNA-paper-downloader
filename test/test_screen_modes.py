@@ -17,6 +17,31 @@ from libs.strands_screening import ScreeningConfig
 
 
 class ScreenModesTests(TestCase):
+    def test_run_log_records_command_effective_settings_and_completion(self):
+        import shlex
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input papers.csv"
+            source.write_text("title,abstract\nStudy,Abstract\n")
+            config = root / "config.json"
+            config.write_text("{}")
+            log = root / "screen.log"
+            argv = ["script/screen.py", str(source), "--config", str(config),
+                    "--model1", "strands", "--model2", "clef_omni", "--dry-run",
+                    "--log-file", str(log)]
+            with patch("screen.sys.argv", argv), patch("screen.screening_servers") as servers:
+                result = CliRunner().invoke(screen.app, argv[1:])
+            self.assertEqual(result.exit_code, 0, result.output)
+            servers.assert_not_called()
+            text = log.read_text()
+            self.assertIn("command     : " + shlex.join([sys.executable, *argv]), text)
+            for expected in ["cwd", str(source.resolve()), "Effective screening settings:",
+                             OMNI_MODEL, STRANDS_MODEL, '"cache_csv":', '"include_threshold":',
+                             "prompt_version=edna-macrofauna-v6", "Input records=1 selected=1",
+                             "Dry run finished"]:
+                self.assertIn(expected, text)
+
     def setUp(self):
         self.cfg = ScreeningConfig(base_url="http://127.0.0.1:19014", expected_model="clef-27b-q8",
                                    batch_questions=True, first_stage_base_url="http://127.0.0.1:19012",

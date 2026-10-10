@@ -3,9 +3,10 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import shlex
 import sys
 import tempfile
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +15,11 @@ import requests
 import typer
 from tqdm import tqdm
 
-from libs.cli_logging import setup_logger
+from libs.cli_logging import log_run_header, setup_logger
 from libs.screen_servers import MODEL_CHOICES, OMNI_MODEL, STRANDS_MODEL, gpu_progress, screening_servers
 from libs.strands_screening import (
     EXTRA_COLUMNS,
+    PROMPT_VERSION,
     QUESTIONS,
     ScoreCache,
     ScreeningConfig,
@@ -120,17 +122,29 @@ def flag(
     config = config or default_config_path()
     out_csv = out_csv or input_csv.with_name(f"{input_csv.stem}.strands.csv")
     logger = setup_logger("screen", log_level=log_level, log_file=log_file)
+    log_run_header(logger, params={
+        "input_csv": str(input_csv.resolve()), "out_csv": str(out_csv.resolve()),
+        "config": str(config.resolve()), "abstract_column": abstract_column,
+        "limit": limit, "dry_run": dry_run, "model1": model1, "model2": model2,
+        "strands": strands, "both": both, "clef": clef, "auto_server": auto_server,
+        "server_startup_timeout": server_startup_timeout, "log_level": log_level,
+    }, log_file=log_file, command=shlex.join([sys.executable, *sys.argv]),
+        versions={"pandas": pd.__version__, "typer": typer.__version__})
     logger.info("Screening config: %s", config)
     try:
         cfg = ScreeningConfig.from_sources(load_config(config))
     except (FileNotFoundError, ValueError) as exc:
+        logger.exception("Invalid screening config: %s", config)
         raise typer.BadParameter(f"invalid screening config: {exc}") from exc
     mode = "strands" if strands else "both" if both else "clef" if clef else None
     cfg = _select_models(cfg, model1, model2) if model1 is not None else _select_mode(cfg, mode)
+    logger.info("Effective screening settings: %s", json.dumps(asdict(cfg), sort_keys=True))
+    logger.info("prompt_version=%s input_fields=title+%s", PROMPT_VERSION, abstract_column)
     logger.info("screening mode=%s", mode or ("both" if cfg.first_stage_base_url else cfg.expected_model or "configured"))
     logger.info("model1=%s model2=%s", cfg.first_stage_model or cfg.expected_model,
                 cfg.expected_model if cfg.first_stage_base_url else None)
     df = pd.read_csv(input_csv, dtype=str, keep_default_na=False)
+    input_count = len(df)
     if abstract_column not in df.columns:
         raise typer.BadParameter(
             f"abstract column {abstract_column!r} was not found; available columns: {', '.join(df.columns)}"
@@ -138,6 +152,7 @@ def flag(
 
     if limit is not None:
         df = df.iloc[:limit]
+    logger.info("Input records=%d selected=%d", input_count, len(df))
 
     if dry_run:
         for _, row in df.iterrows():
@@ -146,6 +161,7 @@ def flag(
             if abstract:
                 typer.echo(json.dumps({"state": build_state(meta, cfg, abstract_column), "questions": QUESTIONS}, indent=2, ensure_ascii=False))
                 break
+        logger.info("Dry run finished: selected=%d; no inference performed", len(df))
         return
 
     with requests.Session() as session:
@@ -158,6 +174,7 @@ def flag(
                                    startup_timeout=server_startup_timeout) as running_cfg:
                 _screen(df, out_csv, abstract_column, running_cfg, session, logger)
         except RuntimeError as exc:
+            logger.exception("Screening failed")
             raise typer.BadParameter(str(exc)) from exc
 
 
@@ -231,6 +248,7 @@ def _screen(
         logger.info("Score cache hits=%d misses=%d", cache.hits, cache.misses)
 
     typer.echo(f"Finished: processed={processed_count} errors={error_count} output={out_csv}")
+    logger.info("Finished: processed=%d errors=%d output=%s", processed_count, error_count, out_csv.resolve())
     return rows
 
 
@@ -284,6 +302,7 @@ def _screen_staged(
         # Preserve completed first-stage work even if startup or stage 2 is interrupted.
         save()
         typer.echo(f"Stage 2: {len(pending)}/{len(rows)} records require rechecking")
+        logger.info("Stage 2: model=%s rechecking=%d total=%d", secondary.expected_model, len(pending), len(rows))
         if pending:
             with screening_servers(secondary, session, logger, log_dir, enabled=enabled,
                                    startup_timeout=startup_timeout, wait_for_memory=True) as running:
@@ -297,6 +316,7 @@ def _screen_staged(
             save()
     errors = sum(row.get("flag_label") == "process_error" for row in rows)
     typer.echo(f"Finished cascade: processed={len(rows)} errors={errors} output={out_csv}")
+    logger.info("Finished cascade: processed=%d errors=%d output=%s", len(rows), errors, out_csv.resolve())
 
 if __name__ == "__main__":
     app()
