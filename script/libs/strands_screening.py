@@ -640,6 +640,33 @@ def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[st
     return {"flag_label": label, "flag_reason": reason, "flag_prompt_version": PROMPT_VERSION}
 
 
+def first_stage_details(
+    fast: Mapping[str, Any], cfg: ScreeningConfig, abstract_text: str,
+) -> tuple[dict[str, Any], bool]:
+    """Share guards and probability validation between streaming and staged cascades."""
+    label = apply_thresholds(fast, cfg)["flag_label"]
+    if label == "out_of_scope" and len(abstract_text) < MIN_ABSTRACT_CHARS_FOR_EXCLUSION:
+        label = "unsure"
+    metadata = {
+        "first_stage_model": fast["flag_model_path"], "first_stage_label": label,
+        "first_stage_p_in_scope": fast["strands_p_in_scope"],
+        "first_stage_p_out_of_scope": fast["strands_p_out_of_scope"],
+        "first_stage_latency_ms": fast["strands_latency_ms"], "first_stage_error": "",
+    }
+    probabilities = [float(fast[f"strands_p_{name}"]) for name in ("in_scope", "out_of_scope", "unsure")]
+    checks = probabilities + [float(fast[f"strands_p_{name}"]) for name in
+                              ("actual_use", "microbial_only", "method_relevance", "review")]
+    valid = all(math.isfinite(p) and 0 <= p <= 1 for p in checks) and math.isclose(sum(probabilities), 1, abs_tol=0.001)
+    confidence = float(fast["strands_p_in_scope"]) if label == "in_scope" else float(fast["strands_p_out_of_scope"])
+    if label == "out_of_scope":
+        if float(fast["strands_p_method_relevance"]) <= cfg.exclude_method_relevance_max:
+            confidence = max(confidence, float(fast["strands_p_microbial_only"]))
+        if float(fast["strands_p_out_of_scope"]) >= cfg.exclude_review_out_min:
+            confidence = max(confidence, float(fast["strands_p_review"]))
+    metadata["first_stage_confidence"] = confidence
+    return metadata, label in ("in_scope", "out_of_scope") and valid
+
+
 def evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
     if cfg.first_stage_base_url is None:
         return _evaluate_abstract(session, abstract, cfg) | {"evaluation_stage": "single"}
@@ -648,28 +675,8 @@ def evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningCo
     started = time.perf_counter()
     try:
         fast = _evaluate_abstract(session, abstract, fast_cfg)
-        label = apply_thresholds(fast, cfg)["flag_label"]
-        abstract_text = abstract.split("\nAbstract:", 1)[-1].strip()
-        if label == "out_of_scope" and len(abstract_text) < MIN_ABSTRACT_CHARS_FOR_EXCLUSION:
-            label = "unsure"
-        metadata = {
-            "first_stage_model": fast["flag_model_path"], "first_stage_label": label,
-            "first_stage_p_in_scope": fast["strands_p_in_scope"],
-            "first_stage_p_out_of_scope": fast["strands_p_out_of_scope"],
-            "first_stage_latency_ms": fast["strands_latency_ms"], "first_stage_error": "",
-        }
-        probabilities = [float(fast[f"strands_p_{name}"]) for name in ("in_scope", "out_of_scope", "unsure")]
-        checks = probabilities + [float(fast[f"strands_p_{name}"]) for name in
-                                  ("actual_use", "microbial_only", "method_relevance", "review")]
-        valid = all(math.isfinite(p) and 0 <= p <= 1 for p in checks) and math.isclose(sum(probabilities), 1, abs_tol=0.001)
-        confidence = float(fast["strands_p_in_scope"]) if label == "in_scope" else float(fast["strands_p_out_of_scope"])
-        if label == "out_of_scope":
-            if float(fast["strands_p_method_relevance"]) <= cfg.exclude_method_relevance_max:
-                confidence = max(confidence, float(fast["strands_p_microbial_only"]))
-            if float(fast["strands_p_out_of_scope"]) >= cfg.exclude_review_out_min:
-                confidence = max(confidence, float(fast["strands_p_review"]))
-        metadata["first_stage_confidence"] = confidence
-        if label in ("in_scope", "out_of_scope") and valid:
+        metadata, accepted = first_stage_details(fast, cfg, abstract.split("\nAbstract:", 1)[-1].strip())
+        if accepted:
             return fast | metadata | {"evaluation_stage": "first"}
     except Exception as exc:
         metadata = {"first_stage_model": cfg.first_stage_model or "", "first_stage_label": "process_error",

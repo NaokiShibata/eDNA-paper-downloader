@@ -214,7 +214,7 @@ class StrandsScreeningTest(unittest.TestCase):
                 self.assertEqual(result.exit_code, 0, result.output)
                 with output.open(encoding="utf-8") as stream:
                     self.assertEqual(list(csv.DictReader(stream)), [])
-            self.assertIn("Strands cache hits=1 misses=0", (root / "flagger.log").read_text())
+            self.assertIn("Score cache hits=1 misses=0", (root / "flagger.log").read_text())
 
     def test_unknown_config_keys(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown screening config keys: abstract_column, resume"):

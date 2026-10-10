@@ -9,6 +9,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -25,6 +26,14 @@ from libs.strands_screening import DEFAULT_BASE_URL, ScreeningConfig, check_heal
 
 ROOT = Path(__file__).resolve().parents[2]
 STRANDS_MODEL = "strands-decider-2B-hobson-v19"
+OMNI_REVISION = "0db1cd2607d76a7bdb2a382f659e7b313079f84b"
+OMNI_MODEL = f"clef-omni-fp16-{OMNI_REVISION[:12]}"
+MODEL_CHOICES = {
+    "strands": (STRANDS_MODEL, "http://127.0.0.1:8012", False),
+    "clef": ("clef-27b-q8", "http://127.0.0.1:8014", True),
+    "clef_flash": ("ggml-org/Clef-Flash-GGUF:Q8_0", "http://127.0.0.1:8085", True),
+    "clef_omni": (OMNI_MODEL, "http://127.0.0.1:8016", True),
+}
 
 
 def _ready(session: requests.Session, url: str, model: str | None) -> bool:
@@ -52,6 +61,14 @@ def _free_url(url: str) -> str:
 
 def _command(model: str | None, url: str) -> tuple[list[str], int]:
     port = str(urlsplit(url).port)
+    if model == OMNI_MODEL:
+        weights = ROOT / ".cache" / "clef-omni"
+        runtime = ROOT / ".cache" / "omni-runtime"
+        if not (weights / "joint_schema_model.py").is_file() or not (runtime / "transformers").is_dir():
+            raise RuntimeError("Clef Omni needs local weights and its isolated runtime; see docs/screen-models.md")
+        python = ROOT / ".venv" / "bin" / "python"
+        return [str(python) if python.is_file() else sys.executable, str(ROOT / "script" / "serve_omni.py"),
+                "--model-dir", str(weights), "--runtime-dir", str(runtime), "--port", port], 0
     if model == STRANDS_MODEL:
         binary = shutil.which("strands-decider")
         if binary is None:
@@ -91,7 +108,7 @@ def _server_gpu_uuids(urls: list[str], device_uuids: set[str]) -> set[str]:
     return pinned
 
 
-def _gpu_status(url: str | list[str], gpu: int | None = None) -> str:
+def _gpu_status(url: str | list[str], gpu: int | list[int] | None = None) -> str:
     urls = [url] if isinstance(url, str) else url
     local = [value for value in urls if urlsplit(value).hostname in ("localhost", "127.0.0.1")]
     if not local:
@@ -104,8 +121,9 @@ def _gpu_status(url: str | list[str], gpu: int | None = None) -> str:
         rows = [[value.strip() for value in row] for row in csv.reader(result.stdout.splitlines())]
         uuids = _server_gpu_uuids(local, {row[1] for row in rows}) if gpu is None else set()
         statuses = []
+        indices = gpu if isinstance(gpu, list) else [gpu]
         for index, uuid, name, used, total, utilization in rows:
-            if (gpu is not None and int(index) == gpu) or (gpu is None and uuid in uuids):
+            if (gpu is not None and int(index) in indices) or (gpu is None and uuid in uuids):
                 percentage = 100 * int(used) / int(total)
                 statuses.append(f"gpu={index} gpu_name={name} gpu_util={utilization}% vram={used}/{total} MiB ({percentage:.1f}%, GPU total)")
         return "; ".join(statuses) or "gpu=unknown vram=unavailable"
@@ -134,27 +152,54 @@ def gpu_progress(urls: list[str], update: Callable[[str], None]) -> Iterator[Non
         worker.join(timeout=5)
 
 
-def _gpu(required_mib: int, reused_urls: list[str]) -> int:
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,uuid,memory.free", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
-        devices = {row[1].strip(): (int(row[0]), int(row[2])) for row in csv.reader(result.stdout.splitlines())}
-        # Keep newly started models on the GPU of an existing local stage.
-        pinned = _server_gpu_uuids(reused_urls, set(devices))
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        raise RuntimeError(f"cannot inspect GPU free memory: {exc}") from exc
-    ports = {str(urlsplit(url).port) for url in reused_urls if urlsplit(url).hostname in ("localhost", "127.0.0.1")}
-    if len(pinned) > 1:
-        raise RuntimeError("existing screening servers use different GPUs; automatic startup requires one GPU")
-    if ports and not pinned:
-        raise RuntimeError("cannot identify the GPU of an existing local screening server; start missing stages manually and use --no-auto-server")
-    candidates = [value for uuid, value in devices.items() if not pinned or uuid in pinned]
-    fitting = [(index, free) for index, free in candidates if free >= required_mib]
-    if not fitting:
-        raise RuntimeError(f"no suitable GPU has the estimated {required_mib} MiB free for missing servers; existing servers were left running")
-    return max(fitting, key=lambda item: item[1])[0]
+def _gpu(required_mib: int, reused_urls: list[str], *, wait_seconds: float = 0) -> int:
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,uuid,memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, check=True, timeout=10,
+            )
+            devices = {row[1].strip(): (int(row[0]), int(row[2])) for row in csv.reader(result.stdout.splitlines())}
+            # Keep newly started models on the GPU of an existing local stage.
+            pinned = _server_gpu_uuids(reused_urls, set(devices))
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise RuntimeError(f"cannot inspect GPU free memory: {exc}") from exc
+        ports = {str(urlsplit(url).port) for url in reused_urls if urlsplit(url).hostname in ("localhost", "127.0.0.1")}
+        if len(pinned) > 1:
+            raise RuntimeError("existing screening servers use different GPUs; automatic startup requires one GPU")
+        if ports and not pinned:
+            raise RuntimeError("cannot identify the GPU of an existing local screening server; start missing stages manually and use --no-auto-server")
+        candidates = [value for uuid, value in devices.items() if not pinned or uuid in pinned]
+        fitting = [(index, free) for index, free in candidates if free >= required_mib]
+        if fitting:
+            return max(fitting, key=lambda item: item[1])[0]
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"no suitable GPU has the estimated {required_mib} MiB free for missing servers; existing servers were left running")
+        time.sleep(.5)
+
+
+def _omni_gpus(*, wait_seconds: float = 0) -> list[int]:
+    """Reserve room for the verified 37/11-layer FP16 placement, including buffers."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, check=True, timeout=10,
+            )
+            devices = sorted(((int(row[0]), int(row[1])) for row in csv.reader(result.stdout.splitlines())),
+                             key=lambda item: item[1], reverse=True)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise RuntimeError(f"cannot inspect GPU free memory: {exc}") from exc
+        if len(devices) >= 2 and devices[0][1] >= 48200 and devices[1][1] >= 13700:
+            return [devices[0][0], devices[1][0]]
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Clef Omni FP16 needs two GPUs with approximately 48200/13700 MiB free; "
+                               f"available (GPU, MiB)={devices}. Existing servers were left running. "
+                               "Stop them manually or use a remote server with --no-auto-server.")
+        # Driver memory accounting can lag behind a just-terminated owned stage.
+        time.sleep(.5)
 
 
 def _stop(process: subprocess.Popen[Any], logger: logging.Logger) -> None:
@@ -178,7 +223,7 @@ def _terminate(signum: int, _frame: FrameType | None) -> None:
 @contextmanager
 def screening_servers(
     cfg: ScreeningConfig, session: requests.Session, logger: logging.Logger, log_dir: Path,
-    *, enabled: bool = True, startup_timeout: float = 180,
+    *, enabled: bool = True, startup_timeout: float = 180, wait_for_memory: bool = False,
 ) -> Iterator[ScreeningConfig]:
     model = cfg.expected_model or (STRANDS_MODEL if cfg.base_url == DEFAULT_BASE_URL else None)
     stages = [("base_url", cfg.base_url, model)]
@@ -202,7 +247,13 @@ def screening_servers(
     if not missing:
         yield cfg
         return
-    gpu = _gpu(sum(item[4] for item in missing), reused)
+    if any(item[2] == OMNI_MODEL for item in missing):
+        if len(stages) != 1:
+            raise RuntimeError("Clef Omni needs staged startup; use screen --model1 ... --model2 clef_omni")
+        gpu: int | list[int] = _omni_gpus(wait_seconds=5)
+    else:
+        required = sum(item[4] for item in missing)
+        gpu = _gpu(required, reused, wait_seconds=5) if wait_for_memory else _gpu(required, reused)
     owned: list[subprocess.Popen[Any]] = []
     log_dir.mkdir(parents=True, exist_ok=True)
     previous_handler = signal.getsignal(signal.SIGTERM)
@@ -212,7 +263,7 @@ def screening_servers(
             signal.signal(signal.SIGTERM, _terminate)
         for field, url, model, command, _ in missing:
             env = os.environ.copy()
-            env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu)) if isinstance(gpu, list) else str(gpu)
             env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
             # Conda's ptxas can compile Blackwell kernels even without this alias.
             ptxas = shutil.which("ptxas")

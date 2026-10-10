@@ -16,10 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "script"))
 
 from libs.screen_servers import (
+    OMNI_MODEL,
     STRANDS_MODEL,
     _free_url,
     _gpu,
     _gpu_status,
+    _omni_gpus,
     _ready,
     _stop,
     _terminate,
@@ -168,6 +170,45 @@ class ScreenServersTests(unittest.TestCase):
         with patch("libs.screen_servers.subprocess.run", side_effect=[query[0], Mock(stdout="")]):
             with self.assertRaisesRegex(RuntimeError, "cannot identify the GPU"):
                 _gpu(6144, [self.cfg.base_url])
+
+    def test_omni_selects_two_gpus_and_never_stops_existing_processes_to_fit(self):
+        with patch("libs.screen_servers.subprocess.run", return_value=Mock(stdout="1, 15000\n0, 49000\n")):
+            self.assertEqual(_omni_gpus(), [0, 1])
+        for devices in ["0, 49000\n", "0, 30000\n1, 15000\n", "0, 49000\n1, 13000\n"]:
+            with self.subTest(devices=devices), \
+                    patch("libs.screen_servers.subprocess.run", return_value=Mock(stdout=devices)), \
+                    patch("libs.screen_servers._stop") as stop:
+                with self.assertRaisesRegex(RuntimeError, "two GPUs"):
+                    _omni_gpus()
+                stop.assert_not_called()
+
+    def test_owned_omni_uses_both_selected_gpus_and_cleans_up(self):
+        cfg = ScreeningConfig(base_url="http://127.0.0.1:8016", expected_model=OMNI_MODEL)
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch("libs.screen_servers._gpu_status", return_value="GPUs 0,1"))
+            stack.enter_context(patch("libs.screen_servers._ready", side_effect=[False, True]))
+            stack.enter_context(patch("libs.screen_servers._free_url", side_effect=lambda url: url))
+            stack.enter_context(patch("libs.screen_servers._command", return_value=(["python", "serve_omni.py"], 0)))
+            stack.enter_context(patch("libs.screen_servers._omni_gpus", return_value=[0, 1]))
+            start = stack.enter_context(patch("libs.screen_servers.subprocess.Popen"))
+            start.return_value.poll.return_value = None
+            stop = stack.enter_context(patch("libs.screen_servers._stop"))
+            with screening_servers(cfg, Mock(), self.logger, Path(directory)):
+                self.assertEqual(start.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"], "0,1")
+            stop.assert_called_once_with(start.return_value, self.logger)
+
+    def test_gpu_selection_waits_for_driver_to_release_previous_owned_stage(self):
+        with patch("libs.screen_servers.subprocess.run", side_effect=[Mock(stdout="0, GPU-A, 1000\n"),
+                                                                       Mock(stdout="0, GPU-A, 40000\n")]), \
+                patch("libs.screen_servers._server_gpu_uuids", return_value=set()), \
+                patch("libs.screen_servers.time.sleep") as sleep:
+            self.assertEqual(_gpu(6144, [], wait_seconds=5), 0)
+            sleep.assert_called_once_with(.5)
+        with patch("libs.screen_servers.subprocess.run", side_effect=[Mock(stdout="0, 47000\n1, 14000\n"),
+                                                                       Mock(stdout="0, 49000\n1, 14000\n")]), \
+                patch("libs.screen_servers.time.sleep") as sleep:
+            self.assertEqual(_omni_gpus(wait_seconds=5), [0, 1])
+            sleep.assert_called_once_with(.5)
 
     def test_wrong_model_is_not_replaced(self):
         with patch("libs.screen_servers.check_health", return_value={"model": "another-model"}):

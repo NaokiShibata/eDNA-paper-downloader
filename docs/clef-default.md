@@ -58,20 +58,22 @@ pixi run screen results/edna_latest.csv --out-csv results/edna_latest.clef.csv -
 pixi run screen results/edna_latest.csv --out-csv results/edna_latest.clef.csv
 ```
 
-実行モードは次の引数で選択できる。
-`--both`はStrandsで一次判定し、`unsure`だけClef 27Bへ渡す。
-指定しない場合は設定ファイルの構成を維持する。
-各引数は同時に指定できず、`--strandes`も`--strands`の別名として受け付ける。
-明示したモードを優先し、閾値などは指定した設定ファイルから引き継ぐ。
+`--model1`で一次判定モデル、`--model2`で`unsure`の再判定モデルを選ぶ。
+`--model2`を省略すると単独実行、両方を省略すると設定ファイルの構成を維持する。
+指定名は`strands`、`clef`（27B）、`clef_flash`、`clef_omni`で、閾値などは設定ファイルから引き継ぐ。
+Omniの準備・二段階実行・GPU配置は[モデル指定の手順](screen-models.md)を参照。
 
 ```bash
-pixi run screen results/edna_latest.csv --strands --out-csv results/edna_latest.strands.csv
-pixi run screen results/edna_latest.csv --both --out-csv results/edna_latest.both.csv
-pixi run screen results/edna_latest.csv --clef --out-csv results/edna_latest.clef.csv
+pixi run screen results/edna_latest.csv --model1 strands --out-csv results/edna_latest.strands.csv
+pixi run screen results/edna_latest.csv --model1 strands --model2 clef --out-csv results/edna_latest.both.csv
+pixi run screen results/edna_latest.csv --model1 clef --out-csv results/edna_latest.clef.csv
+pixi run screen results/edna_latest.csv --model1 strands --model2 clef_omni --out-csv results/edna_latest.omni.csv
 ```
 
+旧`--strands`/`--strandes`、`--both`、`--clef`も互換性のため維持するが、新引数とは同時に指定できない。
+
 出力先は毎回書き直す。
-GPUの空きメモリを調べ、不足する両モデルを同じGPUに配置する。
+GPUの空きメモリを調べ、Omniを含まない組み合わせでは不足する両モデルを同じGPUに配置する。
 既存のローカルサーバーのGPUを特定できる場合は、そのGPUに追加する。
 既存サーバーのGPUを特定できない場合は、別GPUへ自動配置せず、手動起動を案内する。
 必要容量はStrands約6 GiB、ClefはGGUFファイルの容量に約3 GiBを足した値で見積もる。
@@ -90,7 +92,8 @@ GPUを特定できない場合やリモートサーバーでは`unknown`/`unavai
 各サーバーの起動待ちは既定180秒で、`--server-startup-timeout 300`のように変更できる。
 強制終了のSIGKILLでは後片付けを実行できない。
 
-自動起動はローカルHTTPのStrandsと既定のClef 27B / Flashモデルに対応する。
+自動起動はローカルHTTPのStrandsとClef 27B / Flash / Omniに対応する。
+Omniは2GPUのFP16で実行し、Omniを含む二段階では一次全件を処理して所有サーバーを停止してから再判定する。
 モデルの取得や別マシンへの配置は自動化しない。
 手動管理や別モデル・リモートサーバーを使う場合は、次のように指定する。
 
