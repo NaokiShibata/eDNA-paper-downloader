@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import math
 import shutil
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +15,7 @@ import requests
 
 from libs.text_normalize import clean_doi
 
-PROMPT_VERSION = "strands-v4"
+PROMPT_VERSION = "edna-macrofauna-v6"
 MIN_ABSTRACT_CHARS_FOR_EXCLUSION = 300
 DEFAULT_BASE_URL = "http://127.0.0.1:8012"
 
@@ -21,10 +23,15 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8012"
 @dataclass(frozen=True)
 class ScreeningConfig:
     base_url: str = DEFAULT_BASE_URL
+    expected_model: str | None = None
+    first_stage_base_url: str | None = None
+    first_stage_model: str | None = None
+    first_stage_batch_questions: bool = True
     timeout: float = 120.0
     retries: int = 3
     include_threshold: float = 0.45
     include_microbial_only_max: float = 0.35
+    exclude_microbial_only_min: float = 0.80
     actual_use_threshold: float = 0.60
     exclude_threshold: float = 0.50
     exclude_actual_use_max: float = 0.50
@@ -45,13 +52,13 @@ class ScreeningConfig:
             name = field.name
             value = coalesce(overrides.get(name), config, name, field.default)
             if value is not None:
-                if name == "base_url":
+                if name in ("base_url", "first_stage_base_url"):
                     value = str(value).rstrip("/")
-                elif name == "cache_csv":
+                elif name in ("cache_csv", "expected_model", "first_stage_model"):
                     value = str(value)
                 elif name in ("retries", "max_abstract_chars"):
                     value = int(value)
-                elif name == "batch_questions":
+                elif name in ("batch_questions", "first_stage_batch_questions"):
                     value = bool(value)
                 else:
                     value = float(value)
@@ -64,7 +71,15 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "type": "choice",
         "instructions": (
             "Classify whether this scientific abstract should be retained as environmental DNA (eDNA) or "
-            "environmental RNA (eRNA) research. Judge what the study actually does, not whether the terms eDNA, "
+            "environmental RNA (eRNA) research. Studies targeting the detection, identification, monitoring, "
+            "distribution or diversity of fungi (including yeasts, molds, mushrooms and fungal pathogens) are "
+            "out of scope, even when they use environmental DNA/RNA or develop fungal detection methods. "
+            "Fungi are not vertebrates or invertebrates. A passing mention of fungi does not exclude a study "
+            "whose actual environmental DNA/RNA detection target is macroscopic vertebrates or invertebrates. "
+            "Microbiome-only and microbial-only studies are out of scope, "
+            "even if described as eDNA/eRNA detection, monitoring, or method development, unless the study directly "
+            "evaluates methods for detecting or monitoring macroscopic vertebrates or invertebrates. Judge what the study "
+            "actually does, not whether the terms eDNA, "
             "eRNA, environmental DNA, or environmental RNA literally appear."
         ),
         "criteria": {
@@ -75,17 +90,23 @@ QUESTIONS: dict[str, dict[str, Any]] = {
                 "samplers, environmental swabs, dust, or similar material. Include studies using these nucleic acids "
                 "to detect or characterize organisms, taxa, populations, communities, biodiversity, biological "
                 "signals, pathogens, or ecological patterns. The eDNA/eRNA terminology does not need to be explicit. "
-                "The study must report its own primary data from such environmental samples."
+                "The study must report its own primary data from such environmental samples. Microbial-only studies "
+                "qualify only when directly evaluating methods for detection or monitoring of macroscopic vertebrates "
+                "or invertebrates; microbial composition, function, or microbial detection alone does not qualify."
             ),
             "out_of_scope": (
-                "The study does not itself analyze environmentally obtained DNA or RNA. This includes reviews, "
+                "The study targets fungi rather than macroscopic vertebrates or invertebrates: fungal species "
+                "detection, fungal pathogens, airborne fungal spores, soil fungi, mycobiomes or fungal diversity, "
+                "including environmental DNA/RNA and fungal-specific detection methods. Also out of scope when "
+                "the study does not itself analyze environmentally obtained DNA or RNA. This includes reviews, "
                 "systematic reviews, meta-analyses of published studies, perspectives, opinion pieces, editorials, "
                 "book chapters, and conference reports, even when eDNA/eRNA is their main subject; studies based only"
                 " on tissue, blood, isolated organisms, cultured strains, museum specimens, individual genomes, "
                 "ordinary transcriptomics, diet or gut-content DNA, or host-associated microbiomes (gut, skin, plant "
                 "or fruit surfaces); generic profiling of microbial communities (bacteria, archaea, fungi, "
                 "microalgae, protists, viruses) or metagenomics/metatranscriptomics without an eDNA/eRNA detection, "
-                "monitoring, or methodological purpose; and studies that mention eDNA/eRNA only in the background, "
+                "monitoring, or methodological purpose for macroscopic vertebrates or invertebrates; and studies that "
+                "mention eDNA/eRNA only in the background, "
                 "discussion, comparison, citation, or future work."
             ),
             "unsure": (
@@ -119,19 +140,24 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             "Is this primarily a study of microbial communities (bacteria, archaea, fungi, microalgae, protists, "
             "or viruses) or of microbiomes, metagenomes, or metatranscriptomes, where nucleic acids are simply "
             "the source material and the study is not framed as eDNA/eRNA detection, monitoring, sampling, or "
-            "method development?"
+            "method development for macroscopic vertebrates or invertebrates? Microbial-only methods, detection "
+            "and monitoring still count as microbial_only. Studies targeting fungi, including yeasts, molds, "
+            "mushrooms and fungal pathogens, count as true regardless of fungal size or eDNA terminology. "
+            "Do not mistake fungi for macroscopic invertebrate animals."
         ),
         "criteria": {
             "true": (
                 "The main goal is to describe microbial community composition, diversity, function, or responses to "
                 "environmental factors (e.g. soil fungal diversity, harmful algal assemblages, bacterial communities "
                 "in water or sediment, MAGs, resistomes, viromes), without an explicit eDNA/eRNA detection, "
-                "monitoring, or methodological contribution."
+                "monitoring, or methodological contribution related to macroscopic vertebrates or invertebrates."
             ),
             "false": (
                 "The study is not merely generic microbial profiling, or it has a meaningful eDNA/eRNA detection, "
-                "monitoring, sampling, quantification, validation, or methodological component. Do not mark true "
-                "solely because 16S, 18S, ITS, rbcL, COI, metabarcoding, or metagenomics terms appear."
+                "monitoring, sampling, quantification, validation, or methodological component directly related to "
+                "macroscopic vertebrates or invertebrates. Do not mark true "
+                "solely because marker or metabarcoding terms appear. A microbial-only study remains true even when "
+                "it uses eDNA terminology or develops microbial detection methods."
             ),
         },
     },
@@ -141,7 +167,10 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             "Does the study itself develop, evaluate, compare, or validate a sampling, preservation, extraction, "
             "detection, amplification, sequencing, quantification, bioinformatic, or modeling method for DNA or "
             "RNA recovered from environmental samples (water, sediment, soil, air, wastewater, biofilm, swabs, or"
-            " similar), using its own data?"
+            " similar), using its own data? For microbial studies, qualify only if the method is directly "
+            "evaluated for detection or monitoring of macroscopic vertebrates or invertebrates; microbial-only "
+            "detection, profiling and activity measurement do not qualify. Methods intended to detect, identify "
+            "or monitor fungi or fungal pathogens do not qualify; fungi are not invertebrate animals."
         ),
         "criteria": {
             "true": (
@@ -180,6 +209,14 @@ EXTRA_COLUMNS = [
     "flag_reason",
     "flag_model_path",
     "flag_prompt_version",
+    "evaluation_stage",
+    "first_stage_model",
+    "first_stage_label",
+    "first_stage_p_in_scope",
+    "first_stage_p_out_of_scope",
+    "first_stage_confidence",
+    "first_stage_latency_ms",
+    "first_stage_error",
     "strands_scope_choice",
     "strands_p_in_scope",
     "strands_p_out_of_scope",
@@ -198,6 +235,18 @@ SCORE_COLUMNS = [col for col in EXTRA_COLUMNS if col not in {
 }]
 
 
+def output_column(name: str) -> str:
+    return name.removeprefix("strands_") if name in EXTRA_COLUMNS else name
+
+
+def output_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(row)
+    for name in EXTRA_COLUMNS:
+        if name.startswith("strands_") and name in result:
+            result[output_column(name)] = result.pop(name)
+    return result
+
+
 class ScoreCache:
     def __init__(self, path: Path):
         path = path.with_name(f"{path.stem}.{PROMPT_VERSION}{path.suffix}")
@@ -210,12 +259,12 @@ class ScoreCache:
         if path.exists():
             with path.open(newline="", encoding="utf-8") as stream:
                 reader = csv.DictReader(stream)
-                self._incompatible_header = not set(["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS]).issubset(reader.fieldnames or [])
+                self._incompatible_header = not set(["flag_record_id", "flag_prompt_version", *(output_column(col) for col in SCORE_COLUMNS)]).issubset(reader.fieldnames or [])
                 if self._incompatible_header:
                     return
                 for row in reader:
                     if row.get("flag_prompt_version") == PROMPT_VERSION:
-                        self.rows[row["flag_record_id"]] = {col: row[col] for col in SCORE_COLUMNS}
+                        self.rows[row["flag_record_id"]] = {col: row[output_column(col)] for col in SCORE_COLUMNS}
 
     def get(self, rec_id: str) -> dict[str, str] | None:
         scores = self.rows.get(rec_id)
@@ -229,10 +278,10 @@ class ScoreCache:
         row = {col: str(scores.get(col, "")) for col in SCORE_COLUMNS}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("w" if self._incompatible_header else "a", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *SCORE_COLUMNS])
+            writer = csv.DictWriter(stream, fieldnames=["flag_record_id", "flag_prompt_version", *(output_column(col) for col in SCORE_COLUMNS)])
             if stream.tell() == 0:
                 writer.writeheader()
-            writer.writerow({"flag_record_id": rec_id, "flag_prompt_version": PROMPT_VERSION, **row})
+            writer.writerow(output_row({"flag_record_id": rec_id, "flag_prompt_version": PROMPT_VERSION, **row}))
             stream.flush()
         self._incompatible_header = False
         self.rows[rec_id] = row
@@ -321,8 +370,8 @@ def _remove_trailing_commas(text: str) -> str:
 
 def default_config_path() -> Path:
     config_dir = Path(__file__).resolve().parents[2] / "config"
-    local = config_dir / "strands_flagger.jsonc"
-    return local if local.exists() else config_dir / "strands_flagger.example.jsonc"
+    local = config_dir / "clef_flagger.jsonc"
+    return local if local.exists() else config_dir / "clef_flagger.example.jsonc"
 
 
 def load_config(path: Path | None) -> dict[str, Any]:
@@ -374,15 +423,21 @@ def check_health(
     session: requests.Session,
     base_url: str,
     timeout: float,
+    first_stage_base_url: str | None = None,
 ) -> dict[str, Any]:
+    if first_stage_base_url is not None:
+        check_health(session, first_stage_base_url, timeout)
     url = f"{base_url.rstrip('/')}/health"
-    response = session.get(url, timeout=min(timeout, 15.0))
-    response.raise_for_status()
-    data = response.json()
+    try:
+        response = session.get(url, timeout=min(timeout, 15.0))
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"screening server health check failed at {url}: {exc}") from exc
     if not isinstance(data, dict):
-        raise RuntimeError("Strands Decider health endpoint returned a non-object response")
+        raise RuntimeError(f"screening server at {url} returned a non-object response")
     if data.get("status") != "ok":
-        raise RuntimeError(f"unexpected Strands Decider health response: {data!r}")
+        raise RuntimeError(f"unexpected screening server health response at {url}: {data!r}")
     return data
 
 
@@ -476,7 +531,10 @@ def decide_label(
     exclude_method_relevance_max: float,
     exclude_review_min: float,
     exclude_review_out_min: float,
+    exclude_microbial_only_min: float = 0.80,
 ) -> str:
+    if p_microbial_only >= exclude_microbial_only_min and p_method_relevance <= exclude_method_relevance_max:
+        return "out_of_scope"
     if (
         p_in_scope >= include_threshold
         and p_actual_use >= actual_use_threshold
@@ -564,6 +622,7 @@ def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[st
         p_review=p_review,
         include_threshold=cfg.include_threshold,
         include_microbial_only_max=cfg.include_microbial_only_max,
+        exclude_microbial_only_min=cfg.exclude_microbial_only_min,
         actual_use_threshold=cfg.actual_use_threshold,
         exclude_threshold=cfg.exclude_threshold,
         exclude_actual_use_max=cfg.exclude_actual_use_max,
@@ -581,12 +640,62 @@ def apply_thresholds(scores: Mapping[str, Any], cfg: ScreeningConfig) -> dict[st
     return {"flag_label": label, "flag_reason": reason, "flag_prompt_version": PROMPT_VERSION}
 
 
+def first_stage_details(
+    fast: Mapping[str, Any], cfg: ScreeningConfig, abstract_text: str,
+) -> tuple[dict[str, Any], bool]:
+    """Share guards and probability validation between streaming and staged cascades."""
+    label = apply_thresholds(fast, cfg)["flag_label"]
+    if label == "out_of_scope" and len(abstract_text) < MIN_ABSTRACT_CHARS_FOR_EXCLUSION:
+        label = "unsure"
+    metadata = {
+        "first_stage_model": fast["flag_model_path"], "first_stage_label": label,
+        "first_stage_p_in_scope": fast["strands_p_in_scope"],
+        "first_stage_p_out_of_scope": fast["strands_p_out_of_scope"],
+        "first_stage_latency_ms": fast["strands_latency_ms"], "first_stage_error": "",
+    }
+    probabilities = [float(fast[f"strands_p_{name}"]) for name in ("in_scope", "out_of_scope", "unsure")]
+    checks = probabilities + [float(fast[f"strands_p_{name}"]) for name in
+                              ("actual_use", "microbial_only", "method_relevance", "review")]
+    valid = all(math.isfinite(p) and 0 <= p <= 1 for p in checks) and math.isclose(sum(probabilities), 1, abs_tol=0.001)
+    confidence = float(fast["strands_p_in_scope"]) if label == "in_scope" else float(fast["strands_p_out_of_scope"])
+    if label == "out_of_scope":
+        if float(fast["strands_p_method_relevance"]) <= cfg.exclude_method_relevance_max:
+            confidence = max(confidence, float(fast["strands_p_microbial_only"]))
+        if float(fast["strands_p_out_of_scope"]) >= cfg.exclude_review_out_min:
+            confidence = max(confidence, float(fast["strands_p_review"]))
+    metadata["first_stage_confidence"] = confidence
+    return metadata, label in ("in_scope", "out_of_scope") and valid
+
+
 def evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
+    if cfg.first_stage_base_url is None:
+        return _evaluate_abstract(session, abstract, cfg) | {"evaluation_stage": "single"}
+    fast_cfg = replace(cfg, base_url=cfg.first_stage_base_url, expected_model=cfg.first_stage_model,
+                       first_stage_base_url=None, batch_questions=cfg.first_stage_batch_questions)
+    started = time.perf_counter()
+    try:
+        fast = _evaluate_abstract(session, abstract, fast_cfg)
+        metadata, accepted = first_stage_details(fast, cfg, abstract.split("\nAbstract:", 1)[-1].strip())
+        if accepted:
+            return fast | metadata | {"evaluation_stage": "first"}
+    except Exception as exc:
+        metadata = {"first_stage_model": cfg.first_stage_model or "", "first_stage_label": "process_error",
+                    "first_stage_error": str(exc), "first_stage_latency_ms": (time.perf_counter() - started) * 1000}
+    final = _evaluate_abstract(session, abstract, cfg)
+    final["strands_latency_ms"] = (time.perf_counter() - started) * 1000
+    return final | metadata | {"evaluation_stage": "second"}
+
+
+def _evaluate_abstract(session: requests.Session, abstract: str, cfg: ScreeningConfig) -> dict[str, Any]:
     url = f"{cfg.base_url.rstrip('/')}/v1/systemone"
+    started = time.perf_counter()
     if cfg.batch_questions:
         data = _post_with_retry(session, url, {"state": abstract, "questions": QUESTIONS}, cfg.timeout, cfg.retries)
     else:
         data = evaluate_questions_sequentially(session, url, abstract, QUESTIONS, cfg.timeout, cfg.retries)
+    if cfg.expected_model is not None and data.get("model") != cfg.expected_model:
+        raise RuntimeError(f"expected model {cfg.expected_model!r}, got {data.get('model')!r}")
+    data["latency_ms"] = (time.perf_counter() - started) * 1000
     return extract_scores(data)
 
 
@@ -608,12 +717,22 @@ def screen_row(
         label, reason = "unsure", "unsure: abstract is empty"
     else:
         try:
-            scores = cache.get(result["flag_record_id"]) if cache is not None else None
+            state = build_state(meta, cfg, abstract_column)
+            cache_key = result["flag_record_id"] + ":" + hashlib.sha256(json.dumps({
+                "state": state, "questions": QUESTIONS, "server": cfg.base_url,
+                "model": cfg.expected_model, "batch_questions": cfg.batch_questions,
+                "first_stage_server": cfg.first_stage_base_url, "first_stage_model": cfg.first_stage_model,
+                "first_stage_batch_questions": cfg.first_stage_batch_questions,
+                "routing_policy": {field.name: getattr(cfg, field.name) for field in fields(cfg)
+                                   if field.name.startswith(("include_", "exclude_", "actual_use_"))}
+                                   if cfg.first_stage_base_url is not None else None,
+            }, sort_keys=True).encode()).hexdigest()
+            scores = cache.get(cache_key) if cache is not None else None
             if scores is None:
-                scores = evaluate_abstract(session, build_state(meta, cfg, abstract_column), cfg)
+                scores = evaluate_abstract(session, state, cfg)
                 labels = apply_thresholds(scores, cfg)
                 if cache is not None:
-                    cache.put(result["flag_record_id"], scores)
+                    cache.put(cache_key, scores)
             else:
                 labels = apply_thresholds(scores, cfg)
             if len(abstract) < MIN_ABSTRACT_CHARS_FOR_EXCLUSION and labels["flag_label"] == "out_of_scope":

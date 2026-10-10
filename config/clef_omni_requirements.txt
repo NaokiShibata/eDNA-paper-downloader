@@ -1,0 +1,4 @@
+# Install into .cache/omni-runtime, leaving the Strands environment unchanged.
+transformers==4.57.3
+tokenizers==0.22.2
+huggingface-hub==0.36.0

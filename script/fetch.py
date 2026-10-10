@@ -33,6 +33,8 @@ from libs.strands_screening import (
     default_config_path,
     format_status,
     load_config,
+    output_column,
+    output_row,
     screen_row,
 )
 
@@ -109,10 +111,10 @@ def fetch(
             raise typer.BadParameter(f"invalid Strands config: {exc}") from exc
         strands_session = requests.Session()
         try:
-            health_data = check_health(strands_session, strands_cfg.base_url, strands_cfg.timeout)
+            health_data = check_health(strands_session, strands_cfg.base_url, strands_cfg.timeout, strands_cfg.first_stage_base_url)
         except Exception as exc:
             raise typer.BadParameter(
-                f"could not connect to Strands Decider at {strands_cfg.base_url}: {exc}"
+                f"screening server check failed: {exc}"
             ) from exc
         logger.info(
             "Strands filter server status=%s model=%s device=%s max_length=%s",
@@ -300,8 +302,9 @@ def fetch(
         screened_columns = list(df.columns) + [
             col for col in EXTRA_COLUMNS if col not in df.columns
         ]
-        df = pd.DataFrame(kept_rows, columns=screened_columns)
-        rejected_df = pd.DataFrame(rejected_rows, columns=screened_columns)
+        screened_columns = [output_column(col) for col in screened_columns]
+        df = pd.DataFrame([output_row(row) for row in kept_rows], columns=screened_columns)
+        rejected_df = pd.DataFrame([output_row(row) for row in rejected_rows], columns=screened_columns)
         logger.info(
             "Strands filter result: retained=%d rejected=%d process_error=%d",
             len(df),

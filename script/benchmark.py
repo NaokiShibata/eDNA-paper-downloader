@@ -12,10 +12,12 @@ import pandas as pd
 import typer
 
 from libs.strands_screening import (
+    EXTRA_COLUMNS,
     ScreeningConfig,
     decide_label,
     default_config_path,
     load_config,
+    output_column,
     record_id,
 )
 
@@ -500,6 +502,8 @@ def evaluate(
     """Evaluate Strands predictions against blinded human labels."""
     gold = pd.read_csv(gold_csv, dtype=str, keep_default_na=False)
     pred = pd.read_csv(predictions_csv, dtype=str, keep_default_na=False)
+    pred = pred.rename(columns={output_column(col): col for col in EXTRA_COLUMNS
+                                if col.startswith("strands_") and col not in pred.columns})
     pred_count = len(pred)
     pred = pred.drop_duplicates(subset="flag_record_id", keep="last")
     if dropped := pred_count - len(pred):
@@ -636,7 +640,7 @@ def evaluate(
             "abstract",
         ]
         cols = [c for c in preferred if c in errors.columns]
-        errors[cols].to_csv(out_errors, index=False)
+        errors[cols].rename(columns={col: output_column(col) for col in cols}).to_csv(out_errors, index=False)
         typer.echo(f"Error/review rows -> {out_errors}")
 
     if out_json is not None:
@@ -674,6 +678,8 @@ def tune(
     actual_use_threshold = cfg.actual_use_threshold
     gold = pd.read_csv(gold_csv, dtype=str, keep_default_na=False)
     pred = pd.read_csv(predictions_csv, dtype=str, keep_default_na=False)
+    pred = pred.rename(columns={output_column(col): col for col in EXTRA_COLUMNS
+                                if col.startswith("strands_") and col not in pred.columns})
     pred_count = len(pred)
     pred = pred.drop_duplicates(subset="flag_record_id", keep="last")
     if dropped := pred_count - len(pred):
@@ -767,6 +773,7 @@ def tune(
             exclude_method_relevance_max=mr,
             exclude_review_min=cfg.exclude_review_min,
             exclude_review_out_min=cfg.exclude_review_out_min,
+            exclude_microbial_only_min=cfg.exclude_microbial_only_min,
         )
         counts = _binary_metrics(frame["gold_label"].astype(str).str.strip().str.lower(), labels)
         m = {

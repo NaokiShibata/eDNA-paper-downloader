@@ -1,0 +1,12 @@
+{
+  // Default Strands -> Clef 27B screening, using the current exclusion policy.
+  "base_url": "http://127.0.0.1:8014",
+  "expected_model": "clef-27b-q8",
+  "batch_questions": true,
+  "first_stage_base_url": "http://127.0.0.1:8012",
+  "first_stage_model": "strands-decider-2B-hobson-v19",
+  "first_stage_batch_questions": false,
+  "exclude_microbial_only_min": 0.80,
+  // Reuse only identical input, question, server and expected-model scores.
+  "cache_csv": ".cache/strands_clef_cascade_scores.csv"
+}

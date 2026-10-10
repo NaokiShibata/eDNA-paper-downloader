@@ -57,6 +57,19 @@ class BenchmarkScriptsTest(unittest.TestCase):
             self.assertEqual(payload["fixed_actual_use_threshold"], 0.9)
             self.assertEqual(payload["best"]["pos_review"], 1)
 
+    def test_evaluate_accepts_old_and_model_neutral_probabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gold, pred, output = root / "gold.csv", root / "pred.csv", root / "metrics.json"
+            gold.write_text("benchmark_record_id,gold_label\na,in_scope\n")
+            for prefix in ("strands_", ""):
+                pred.write_text(f"flag_record_id,flag_label,{prefix}p_in_scope\na,in_scope,0.8\n")
+                result = CliRunner().invoke(app, ["eval", str(gold), str(pred),
+                    "--partition", "all", "--out-json", str(output)])
+                self.assertEqual(result.exit_code, 0, result.output)
+                metrics = json.loads(output.read_text())["metrics"]
+                self.assertAlmostEqual(metrics["brier_p_in_scope"], 0.04)
+
     def test_evaluate_counts_only_last_prediction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             gold_csv = Path(directory) / "gold.csv"

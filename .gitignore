@@ -16,3 +16,5 @@ benchmark/*.errors.csv
 results/
 
 .cache/
+/benchmark/clef/
+config/clef_flagger.jsonc

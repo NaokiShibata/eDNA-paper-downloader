@@ -51,10 +51,10 @@ def _validate_filtered_outputs(
         "title",
         "abstract",
         "flag_label",
-        "strands_p_in_scope",
-        "strands_p_out_of_scope",
-        "strands_p_actual_use",
-        "strands_p_method_relevance",
+        "p_in_scope",
+        "p_out_of_scope",
+        "p_actual_use",
+        "p_method_relevance",
     }
     for name, df in (("retained", retained), ("rejected", rejected)):
         missing = sorted(required - set(df.columns))
@@ -166,11 +166,11 @@ def run(
     typer.echo(f"output dir   : {out_dir_path}")
 
     try:
-        health = check_health(requests.Session(), cfg.base_url, cfg.timeout)
+        health = check_health(requests.Session(), cfg.base_url, cfg.timeout, cfg.first_stage_base_url)
     except Exception as exc:
         raise typer.BadParameter(
             f"Strands Decider is not reachable at {cfg.base_url.rstrip('/')}/health: {exc}. "
-            "Start it first with: pixi run serve"
+            "Start Clef with: pixi run serve (or start the server for your selected config)"
         ) from exc
     typer.echo(
         "Strands      : "

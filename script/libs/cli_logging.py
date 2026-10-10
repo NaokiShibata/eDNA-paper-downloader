@@ -76,6 +76,7 @@ def log_run_header(
     param_width: int = 16,
     versions: dict[str, str] | None = None,
     fallback_command: str = "python script",
+    command: str | None = None,
 ) -> None:
     try:
         import getpass
@@ -116,7 +117,7 @@ def log_run_header(
         f"platform    : {platform.platform()}",
         f"python      : {sys.version.split()[0]}",
         f"cwd         : {Path.cwd()}",
-        f"command     : {redacted_command}",
+        f"command     : {command if command is not None else redacted_command}",
         f"log_file    : {str(log_file) if log_file else '(console only)'}",
         "-" * 80,
         "PARAMETERS",

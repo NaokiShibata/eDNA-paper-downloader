@@ -24,9 +24,9 @@ class E2ETest(unittest.TestCase):
             root = Path(directory)
 
             def fetch_outputs(**kwargs: object) -> None:
-                columns = ["title", "abstract", "flag_label", "strands_p_in_scope",
-                           "strands_p_out_of_scope", "strands_p_actual_use",
-                           "strands_p_method_relevance"]
+                columns = ["title", "abstract", "flag_label", "p_in_scope",
+                           "p_out_of_scope", "p_actual_use",
+                           "p_method_relevance"]
                 pd.DataFrame([["title", "abstract", "in_scope", 1, 0, 1, 1]],
                              columns=columns).to_csv(root / "demo.csv", index=False)
                 pd.DataFrame(columns=columns).to_csv(root / "demo.rejected.csv", index=False)
